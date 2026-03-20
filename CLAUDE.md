@@ -116,11 +116,14 @@ Pipeline model: each pipeline binds (source, table, filters, transforms, target)
 
 ### Philosophy
 
+- **Every change must include tests.** New code needs tests that validate its behavior. Bug fixes need a regression test that fails without the fix. Refactors must not reduce coverage.
+- **Coverage must remain above 80%.** Check with `go test -coverprofile=coverage.txt ./... && go tool cover -func=coverage.txt`. If a change would drop coverage below 80%, add tests before merging.
+- **All test tiers must pass before completing a task.** Not just unit tests — run integration and e2e tests too if they exist for the affected packages. A task is not done until `go test ./...` (and `go test -tags=integration ./test/integration/...` if applicable) passes clean.
+- **Each change should improve the test suite.** Use tests to validate behavior and ensure regressions are detected in future work. When touching existing code, look for missing edge case coverage and add it.
 - **No mocks.** Use real instances for unit tests. The `source/testsource` package exists for this purpose — it provides a programmable in-memory source.
 - **Table-driven tests** for all pure functions and type behavior.
 - **`testutil` helpers** for common setup (sample tables, columns, rows, observer).
 - **Integration tests** use testcontainers for real PostgreSQL. Tagged with `integration` build tag.
-- **Always verify after changes**: run `go test ./...` after any code change. Tests must pass.
 
 ### Test tiers
 
