@@ -151,5 +151,17 @@ func (o *TestObserver) OnFanOutJournalPruned(pipelineID string, entriesPruned, o
 	o.record("FanOutJournalPruned", map[string]interface{}{"pipelineID": pipelineID, "entriesPruned": entriesPruned, "oldestSequence": oldestSequence})
 }
 
+// EventCount returns the number of recorded events of the given type.
+func (o *TestObserver) EventCount(typ string) int {
+	return len(o.EventsByType(typ))
+}
+
+// Reset clears all recorded events.
+func (o *TestObserver) Reset() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.Events = nil
+}
+
 // Verify that TestObserver implements EngineObserver at compile time.
 var _ laredo.EngineObserver = (*TestObserver)(nil)
