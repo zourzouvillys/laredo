@@ -1,10 +1,13 @@
 version: "2"
 
+formatters:
+  enable:
+    - gofumpt
+
 linters:
   default: standard
   enable:
     - revive
-    - gofumpt
     - misspell
     - unconvert
     - goconst
