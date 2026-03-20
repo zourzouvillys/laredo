@@ -157,6 +157,16 @@ The documentation site lives in `website/` (Docusaurus). See [`website/CLAUDE.md
 
 **When making code changes, update the docs.** If a change affects CLI commands, gRPC API, config options, Go library API, health endpoints, metrics, or any user-facing behavior, update the corresponding page in `website/docs/` and the root `README.md`. Stale docs are worse than no docs.
 
+**Docs must be comprehensive.** Before completing any change or new feature, ensure the documentation is well-structured and accurate. Every feature should be documented across five dimensions:
+
+1. **Concept** — what it is, why it exists, how it fits into the architecture
+2. **Configuration** — every option, with defaults, types, and examples
+3. **Usage** — how to use it (library API, CLI commands, config snippets)
+4. **Operations** — how to monitor, tune, and manage it in production
+5. **Troubleshooting** — how to diagnose and debug common problems, what to check, what the error messages mean
+
+A feature is not complete until someone unfamiliar with the codebase can understand, configure, operate, and debug it from the docs alone.
+
 ## Conventions
 
 - Run `golangci-lint run` before pushing (CI enforces it, config in `.golangci.yml`)
