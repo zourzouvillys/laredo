@@ -4,7 +4,7 @@ Real-time data sync library and service. Captures consistent baseline snapshots 
 
 ## Prerequisites
 
-Requires Go 1.23+.
+Requires Go 1.26+.
 
 ```bash
 # macOS
@@ -189,7 +189,8 @@ After each change, leave the code cleaner than you found it:
 ## Conventions
 
 - Run `golangci-lint run` before pushing (CI enforces it, config in `.golangci.yml`)
-- Go 1.23+, modern patterns (standard library where possible)
+- Go 1.26+, modern patterns (standard library where possible)
+- Use modern Go idioms: iterators (`iter.Seq`/`iter.Seq2`), `maps`/`slices` stdlib packages, `strings.Cut`, range-over-func, generic type aliases
 - No mocks in tests — use real instances and `source/testsource`
 - `gofumpt` for formatting (enforced by golangci-lint)
 - Exported types need doc comments; internal code: comment only when non-obvious

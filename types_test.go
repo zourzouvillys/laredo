@@ -1,6 +1,9 @@
 package laredo
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestTableIdentifier_String(t *testing.T) {
 	tests := []struct {
@@ -18,6 +21,60 @@ func TestTableIdentifier_String(t *testing.T) {
 	}
 }
 
+func TestTableIdentifier_MarshalText(t *testing.T) {
+	ti := Table("public", "users")
+	got, err := ti.MarshalText()
+	if err != nil {
+		t.Fatalf("MarshalText() error: %v", err)
+	}
+	if string(got) != ti.String() {
+		t.Errorf("MarshalText() = %q, want %q", got, ti.String())
+	}
+}
+
+func TestTableIdentifier_UnmarshalText(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    TableIdentifier
+		wantErr bool
+	}{
+		{"normal", "public.users", Table("public", "users"), false},
+		{"dots in table", "a.b.c", Table("a", "b.c"), false},
+		{"empty", "", TableIdentifier{}, true},
+		{"no dot", "nodot", TableIdentifier{}, true},
+		{"empty schema", ".table", TableIdentifier{}, true},
+		{"empty table", "schema.", TableIdentifier{}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got TableIdentifier
+			err := got.UnmarshalText([]byte(tt.input))
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("UnmarshalText(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("UnmarshalText(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTableIdentifier_RoundTrip(t *testing.T) {
+	original := Table("myschema", "my_table")
+	text, err := original.MarshalText()
+	if err != nil {
+		t.Fatalf("MarshalText() error: %v", err)
+	}
+	var restored TableIdentifier
+	if err := restored.UnmarshalText(text); err != nil {
+		t.Fatalf("UnmarshalText() error: %v", err)
+	}
+	if restored != original {
+		t.Errorf("round-trip: got %v, want %v", restored, original)
+	}
+}
+
 func TestRow_GetString(t *testing.T) {
 	r := Row{"name": "alice", "age": 30, "nil_val": nil}
 
@@ -32,6 +89,55 @@ func TestRow_GetString(t *testing.T) {
 	}
 	if got := r.GetString("nil_val"); got != "" {
 		t.Errorf("GetString(nil_val) = %q, want empty", got)
+	}
+}
+
+func TestRow_Get(t *testing.T) {
+	tests := []struct {
+		name    string
+		row     Row
+		key     string
+		wantVal Value
+		wantOK  bool
+	}{
+		{"exists non-nil", Row{"k": 42}, "k", 42, true},
+		{"exists nil", Row{"k": nil}, "k", nil, true},
+		{"missing", Row{"k": 1}, "other", nil, false},
+		{"empty row", Row{}, "k", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v, ok := tt.row.Get(tt.key)
+			if ok != tt.wantOK {
+				t.Errorf("Get(%q) ok = %v, want %v", tt.key, ok, tt.wantOK)
+			}
+			if v != tt.wantVal {
+				t.Errorf("Get(%q) value = %v, want %v", tt.key, v, tt.wantVal)
+			}
+		})
+	}
+}
+
+func TestRow_Keys(t *testing.T) {
+	tests := []struct {
+		name string
+		row  Row
+		want []string
+	}{
+		{"multiple keys sorted", Row{"c": 3, "a": 1, "b": 2}, []string{"a", "b", "c"}},
+		{"empty row", Row{}, nil},
+		{"single key", Row{"x": 1}, []string{"x"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := slices.Collect(tt.row.Keys())
+			if len(got) == 0 && len(tt.want) == 0 {
+				return
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("Keys() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

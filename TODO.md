@@ -8,16 +8,16 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 1.1 Types & Interfaces
 
-- [ ] Finalize `Value` type — decide on concrete representation (e.g. `any`, typed union, or custom `Value` interface with accessors for string/int/float/bool/bytes/json/time/nil)
-- [ ] Add `Row.Get(key) (Value, bool)` accessor
-- [ ] Add `Row.Keys() []string` for deterministic iteration
-- [ ] `Position` — add `fmt.Stringer` requirement or keep opaque? Currently `interface{}`; consider a marker interface
-- [ ] `ChangeEvent` — add `CommitTimestamp` field for sources that provide commit-level timestamps
-- [ ] `ColumnDefinition` — add `DefaultValue`, `TypeOID` (PG-specific?), `MaxLength`
-- [ ] `IndexDefinition` — ensure parity with spec's gRPC `IndexInfo` message
-- [ ] `TableIdentifier` — implement `encoding.TextMarshaler`/`TextUnmarshaler` for config round-tripping
-- [ ] Add `CompositeObserver` that fans out to multiple `EngineObserver` implementations
-- [ ] Add no-op `NullObserver` for embedded users who don't need observability
+- [x] Finalize `Value` type — type alias to `any`
+- [x] Add `Row.Get(key) (Value, bool)` accessor
+- [x] Add `Row.Keys() iter.Seq[string]` for deterministic iteration
+- [x] `Position` — keep opaque as type alias to `any`; sources handle serialization via `PositionToString`/`PositionFromString`
+- [x] `ChangeEvent` — add `CommitTimestamp *time.Time` field for sources that provide commit-level timestamps
+- [x] `ColumnDefinition` — add `OrdinalPosition`, `PrimaryKeyOrdinal`, `DefaultValue`, `TypeOID`, `MaxLength`
+- [x] `IndexDefinition` — parity confirmed; spec's `IndexInfo.entry_count` is runtime state, not definition
+- [x] `TableIdentifier` — implement `encoding.TextMarshaler`/`TextUnmarshaler` for config round-tripping
+- [x] Add `CompositeObserver` that fans out to multiple `EngineObserver` implementations
+- [x] Add no-op `NullObserver` for embedded users who don't need observability
 
 ### 1.2 Engine Interface
 

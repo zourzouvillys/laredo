@@ -100,6 +100,31 @@ laredo.WithPipeline("pg_main",
 ),
 ```
 
+## Working with rows
+
+`Row` is a `map[string]Value` with convenience accessors:
+
+```go
+row, ok := target.Lookup("inst_abc", "settings/default")
+if !ok {
+    return
+}
+
+// Get a value with presence check (distinguishes NULL from absent)
+val, exists := row.Get("config_json")
+
+// Get a string value (returns "" if missing or not a string)
+name := row.GetString("name")
+
+// Iterate columns in deterministic (sorted) order
+for key := range row.Keys() {
+    fmt.Printf("%s = %v\n", key, row[key])
+}
+
+// Create a copy without sensitive fields
+safe := row.Without("ssn", "internal_notes")
+```
+
 ## Attaching gRPC management
 
 ```go

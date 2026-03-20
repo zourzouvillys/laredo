@@ -1,3 +1,3 @@
 module github.com/zourzouvillys/laredo
 
-go 1.23
+go 1.26

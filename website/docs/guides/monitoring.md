@@ -77,4 +77,31 @@ engine, _ := laredo.NewEngine(
 )
 ```
 
-Use `CompositeObserver` to fan out to multiple observers simultaneously.
+### NullObserver
+
+Use `NullObserver` when embedding Laredo and you don't need observability callbacks:
+
+```go
+laredo.WithObserver(laredo.NullObserver{})
+```
+
+All methods are no-ops. This is useful for suppressing the default behavior when no observer is configured.
+
+### CompositeObserver
+
+Use `CompositeObserver` to fan out events to multiple observers simultaneously:
+
+```go
+observer := laredo.NewCompositeObserver(
+    prometheusObserver,
+    myCustomObserver,
+    myLogObserver,
+)
+
+engine, _ := laredo.NewEngine(
+    // ...
+    laredo.WithObserver(observer),
+)
+```
+
+Each event is delivered to all registered observers in order. Nil observers passed to `NewCompositeObserver` are filtered out automatically.
