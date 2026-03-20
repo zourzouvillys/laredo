@@ -167,6 +167,16 @@ The documentation site lives in `website/` (Docusaurus). See [`website/CLAUDE.md
 
 A feature is not complete until someone unfamiliar with the codebase can understand, configure, operate, and debug it from the docs alone.
 
+## Completing a Task
+
+A task is not done until all of the following are true:
+
+1. **All tests pass** — unit, integration, and e2e (as applicable).
+2. **Docs are updated** — per the documentation requirements above.
+3. **TODO.md is updated** — completed items checked off, new items added.
+4. **Changes are committed and pushed** — working tree must be clean (`git status` shows nothing dirty or untracked). Do not leave uncommitted work.
+5. **CI workflows pass** — after pushing, check that all GitHub Actions workflows complete successfully. If a workflow fails, fix the issue and push again before considering the task done. Use `gh run list` or check the GitHub Actions tab.
+
 ## Conventions
 
 - Run `golangci-lint run` before pushing (CI enforces it, config in `.golangci.yml`)
