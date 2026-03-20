@@ -177,6 +177,15 @@ A task is not done until all of the following are true:
 4. **Changes are committed and pushed** — working tree must be clean (`git status` shows nothing dirty or untracked). Do not leave uncommitted work.
 5. **CI workflows pass** — after pushing, check that all GitHub Actions workflows complete successfully. If a workflow fails, fix the issue and push again before considering the task done. Use `gh run list` or check the GitHub Actions tab.
 
+## Code Hygiene
+
+After each change, leave the code cleaner than you found it:
+
+- **Remove unused code.** Dead functions, unreachable branches, unused imports, commented-out code — delete them. Version control is the archive.
+- **Keep comments accurate.** When changing behavior, update the comments that describe it. A wrong comment is worse than no comment.
+- **Refactor when it helps.** If a function is getting long, a type is accumulating unrelated responsibilities, or duplication is creeping in, refactor. Don't wait for it to become a problem. Small, incremental refactors with each change keep the codebase healthy.
+- **Clean up adjacent code.** If you're working in a file and notice stale comments, inconsistent naming, or minor issues nearby, fix them in the same change.
+
 ## Conventions
 
 - Run `golangci-lint run` before pushing (CI enforces it, config in `.golangci.yml`)
