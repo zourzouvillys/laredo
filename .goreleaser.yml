@@ -1,0 +1,57 @@
+version: 2
+
+builds:
+  - id: laredo-server
+    main: ./cmd/laredo-server
+    binary: laredo-server
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/zourzouvillys/laredo.Version={{.Version}}
+
+  - id: laredo
+    main: ./cmd/laredo
+    binary: laredo
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/zourzouvillys/laredo.Version={{.Version}}
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+dockers:
+  - image_templates:
+      - "ghcr.io/zourzouvillys/laredo-server:{{ .Version }}"
+      - "ghcr.io/zourzouvillys/laredo-server:latest"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--label=org.opencontainers.image.version={{.Version}}"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+release:
+  github:
+    owner: zourzouvillys
+    name: laredo

@@ -1,0 +1,32 @@
+version: "2"
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - gosimple
+    - ineffassign
+    - unused
+    - revive
+    - gofumpt
+    - misspell
+    - unconvert
+    - goconst
+    - prealloc
+    - noctx
+    - bodyclose
+    - gosec
+
+linters-settings:
+  goconst:
+    min-len: 3
+    min-occurrences: 3
+  revive:
+    rules:
+      - name: exported
+        arguments:
+          - "checkPrivateReceivers"
+  gosec:
+    excludes:
+      - G104 # unhandled errors on deferred Close calls
