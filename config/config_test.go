@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"testing"
 )
 
@@ -266,6 +267,111 @@ func TestToEngineOptions_UnknownTargetType(t *testing.T) {
 	_, err := cfg.ToEngineOptions()
 	if err == nil {
 		t.Fatal("expected error for unknown target type")
+	}
+}
+
+func TestLoadWithOptions_ConfDir(t *testing.T) {
+	// Write main config.
+	dir := t.TempDir()
+	mainPath := dir + "/main.conf"
+	_ = os.WriteFile(mainPath, []byte(`
+sources { pg { type = postgresql, connection = "postgresql://localhost/db" } }
+tables = [{ source = pg, schema = public, table = users, targets = [{ type = indexed-memory }] }]
+grpc { port = 4001 }
+`), 0o600)
+
+	// Write conf.d file that overrides the gRPC port.
+	confDir := dir + "/conf.d"
+	_ = os.Mkdir(confDir, 0o750)
+	_ = os.WriteFile(confDir+"/override.conf", []byte(`grpc { port = 9999 }`), 0o600)
+
+	cfg, err := LoadWithOptions(mainPath, LoadOptions{ConfDir: confDir})
+	if err != nil {
+		t.Fatalf("LoadWithOptions: %v", err)
+	}
+
+	if cfg.GRPC == nil || cfg.GRPC.Port != 9999 {
+		t.Errorf("expected grpc.port=9999 from conf.d override, got %v", cfg.GRPC)
+	}
+}
+
+func TestLoadWithOptions_ConfDir_AlphabeticalOrder(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := dir + "/main.conf"
+	_ = os.WriteFile(mainPath, []byte(`
+sources { pg { type = postgresql, connection = "postgresql://localhost/db" } }
+tables = [{ source = pg, schema = public, table = users, targets = [{ type = indexed-memory }] }]
+grpc { port = 1000 }
+`), 0o600)
+
+	confDir := dir + "/conf.d"
+	_ = os.Mkdir(confDir, 0o750)
+	// 01 sets port to 2000, 02 overrides to 3000.
+	_ = os.WriteFile(confDir+"/01-first.conf", []byte(`grpc { port = 2000 }`), 0o600)
+	_ = os.WriteFile(confDir+"/02-second.conf", []byte(`grpc { port = 3000 }`), 0o600)
+
+	cfg, err := LoadWithOptions(mainPath, LoadOptions{ConfDir: confDir})
+	if err != nil {
+		t.Fatalf("LoadWithOptions: %v", err)
+	}
+
+	if cfg.GRPC == nil || cfg.GRPC.Port != 3000 {
+		t.Errorf("expected grpc.port=3000 (last conf.d file wins), got %v", cfg.GRPC)
+	}
+}
+
+func TestLoadWithOptions_ConfDir_Missing(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := dir + "/main.conf"
+	_ = os.WriteFile(mainPath, []byte(`
+sources { pg { type = postgresql, connection = "postgresql://localhost/db" } }
+tables = [{ source = pg, schema = public, table = users, targets = [{ type = indexed-memory }] }]
+`), 0o600)
+
+	// Non-existent conf.d should not error.
+	cfg, err := LoadWithOptions(mainPath, LoadOptions{ConfDir: dir + "/nonexistent"})
+	if err != nil {
+		t.Fatalf("expected no error for missing conf.d, got: %v", err)
+	}
+	if len(cfg.Sources) != 1 {
+		t.Errorf("expected 1 source, got %d", len(cfg.Sources))
+	}
+}
+
+func TestLoadWithOptions_SetOverride(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := dir + "/main.conf"
+	_ = os.WriteFile(mainPath, []byte(`
+sources { pg { type = postgresql, connection = "postgresql://localhost/db" } }
+tables = [{ source = pg, schema = public, table = users, targets = [{ type = indexed-memory }] }]
+grpc { port = 4001 }
+`), 0o600)
+
+	cfg, err := LoadWithOptions(mainPath, LoadOptions{
+		Overrides: []string{"grpc.port=8888"},
+	})
+	if err != nil {
+		t.Fatalf("LoadWithOptions: %v", err)
+	}
+
+	if cfg.GRPC == nil || cfg.GRPC.Port != 8888 {
+		t.Errorf("expected grpc.port=8888 from --set override, got %v", cfg.GRPC)
+	}
+}
+
+func TestLoadWithOptions_InvalidOverride(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := dir + "/main.conf"
+	_ = os.WriteFile(mainPath, []byte(`
+sources { pg { type = postgresql, connection = "postgresql://localhost/db" } }
+tables = [{ source = pg, schema = public, table = users, targets = [{ type = indexed-memory }] }]
+`), 0o600)
+
+	_, err := LoadWithOptions(mainPath, LoadOptions{
+		Overrides: []string{"invalid-no-equals"},
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid override")
 	}
 }
 

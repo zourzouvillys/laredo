@@ -98,19 +98,110 @@ type GRPCConfig struct {
 	Port int
 }
 
+// LoadOptions controls how configuration is loaded.
+type LoadOptions struct {
+	// ConfDir is an optional directory of *.conf files to merge (alphabetical order).
+	// Later files override earlier files. Conf.d files override the main config.
+	ConfDir string
+
+	// Overrides are key=value pairs applied after all files are loaded.
+	// Keys use HOCON dot notation: "sources.pg.connection=postgres://..."
+	Overrides []string
+}
+
 // Load parses a HOCON configuration file, applies environment variable
 // overrides, and returns a Config.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // config file path is from CLI flag, not user input
+	return LoadWithOptions(path, LoadOptions{})
+}
+
+// LoadWithOptions parses the main config file, merges conf.d files,
+// applies --set overrides, applies env var overrides, and returns a Config.
+func LoadWithOptions(path string, opts LoadOptions) (*Config, error) {
+	// 1. Read main config file.
+	data, err := os.ReadFile(path) //nolint:gosec // config file path is from CLI flag
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	cfg, err := Parse(string(data))
+	combined := string(data)
+
+	// 2. Merge conf.d directory (if specified).
+	if opts.ConfDir != "" {
+		extras, err := loadConfDir(opts.ConfDir)
+		if err != nil {
+			return nil, fmt.Errorf("load conf.d: %w", err)
+		}
+		combined += "\n" + extras
+	}
+
+	// 3. Apply --set key=value overrides as HOCON.
+	for _, override := range opts.Overrides {
+		key, value, ok := strings.Cut(override, "=")
+		if !ok {
+			return nil, fmt.Errorf("invalid override %q: expected key=value", override)
+		}
+		// Convert dotted key to nested HOCON: "a.b.c=v" → "a { b { c = v } }"
+		combined += "\n" + dotKeyToHOCON(strings.TrimSpace(key), strings.TrimSpace(value))
+	}
+
+	cfg, err := Parse(combined)
 	if err != nil {
 		return nil, err
 	}
+
+	// 4. Apply environment variable overrides.
 	cfg.ApplyEnvOverrides()
 	return cfg, nil
+}
+
+// loadConfDir reads all *.conf files from the given directory in alphabetical
+// order and concatenates their contents.
+func loadConfDir(dir string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil // directory doesn't exist — not an error
+		}
+		return "", fmt.Errorf("read directory %s: %w", dir, err)
+	}
+
+	var parts []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".conf") {
+			continue
+		}
+		data, err := os.ReadFile(dir + "/" + entry.Name()) //nolint:gosec // controlled directory path
+		if err != nil {
+			return "", fmt.Errorf("read %s: %w", entry.Name(), err)
+		}
+		parts = append(parts, string(data))
+	}
+
+	return strings.Join(parts, "\n"), nil
+}
+
+// dotKeyToHOCON converts "a.b.c" = "value" to nested HOCON: "a { b { c = value } }"
+func dotKeyToHOCON(key, value string) string {
+	segments := strings.Split(key, ".")
+	// Build nested braces: a { b { c = value } }
+	var sb strings.Builder
+	for i, seg := range segments {
+		if i > 0 {
+			sb.WriteString(" { ")
+		}
+		sb.WriteString(seg)
+	}
+	sb.WriteString(" = ")
+	// Quote the value if it contains special characters.
+	if strings.ContainsAny(value, " {},[]=#") {
+		sb.WriteString(`"` + value + `"`)
+	} else {
+		sb.WriteString(value)
+	}
+	for range len(segments) - 1 {
+		sb.WriteString(" }")
+	}
+	return sb.String()
 }
 
 // Parse parses a HOCON string and returns a Config.

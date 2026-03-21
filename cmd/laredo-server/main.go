@@ -46,10 +46,22 @@ func main() {
 	}
 }
 
+// setFlags is a flag.Value that collects multiple --set key=value pairs.
+type setFlags []string
+
+func (s *setFlags) String() string { return strings.Join(*s, ", ") }
+func (s *setFlags) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
 func run() error {
 	configPath := flag.String("config", "", "path to HOCON config file (or set LAREDO_CONFIG)")
+	confDir := flag.String("conf-dir", "/etc/laredo/conf.d", "directory of *.conf files to merge")
 	healthPort := flag.Int("health-port", 8080, "HTTP port for health and metrics endpoints")
 	logLevel := flag.String("log-level", "info", "log level (debug, info, warn, error)")
+	var sets setFlags
+	flag.Var(&sets, "set", "config override as key=value (repeatable)")
 	flag.Parse()
 
 	// Configure logging.
@@ -67,7 +79,10 @@ func run() error {
 	slog.Info("starting laredo-server", "version", laredo.Version, "config", cfgPath) //nolint:gosec // structured logging, not string interpolation
 
 	// Load and validate config.
-	cfg, err := config.Load(cfgPath)
+	cfg, err := config.LoadWithOptions(cfgPath, config.LoadOptions{
+		ConfDir:   *confDir,
+		Overrides: sets,
+	})
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}

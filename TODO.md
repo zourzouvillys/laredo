@@ -345,8 +345,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Target factory: map `type = indexed-memory`, `compiled-memory`, `http-sync`
 - [x] Filter/transform factory: map `type = field-equals`, `field-prefix`, `drop-fields`, `add-timestamp`
 - [x] Environment variable override: `SOURCES_PG_MAIN_CONNECTION` / `LAREDO_SOURCES_PG_MAIN_CONNECTION`
-- [ ] Config directory merge: load `conf.d/*.conf` in alphabetical order
-- [ ] `--set key=value` CLI flag override
+- [x] Config directory merge: load `conf.d/*.conf` in alphabetical order
+- [x] `--set key=value` CLI flag override
 - [x] Config validation: required fields, type checking, cross-references (source IDs in table config must exist)
 - [ ] Config dump command for debugging
 - [ ] Sensitive value masking in dumps/logs (connection strings, auth headers)
