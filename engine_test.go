@@ -825,6 +825,110 @@ func TestEngine_SourceInitError(t *testing.T) {
 	}
 }
 
+func TestEngine_PauseResume(t *testing.T) {
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+
+	target := memory.NewIndexedTarget()
+	obs := &testutil.TestObserver{}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Pause the source.
+	if err := e.Pause(ctx, "pg"); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+
+	// Verify pipeline transitioned to PAUSED.
+	stateChanges := obs.EventsByType("PipelineStateChanged")
+	lastChange := stateChanges[len(stateChanges)-1]
+	if lastChange.Data["newState"] != laredo.PipelinePaused {
+		t.Errorf("expected PAUSED, got %v", lastChange.Data["newState"])
+	}
+
+	// Verify source reports paused state.
+	if src.State() != laredo.SourcePaused {
+		t.Errorf("expected source state PAUSED, got %v", src.State())
+	}
+
+	// Resume the source.
+	if err := e.Resume(ctx, "pg"); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+
+	// Verify pipeline transitioned back to STREAMING.
+	stateChanges = obs.EventsByType("PipelineStateChanged")
+	lastChange = stateChanges[len(stateChanges)-1]
+	if lastChange.Data["newState"] != laredo.PipelineStreaming {
+		t.Errorf("expected STREAMING after resume, got %v", lastChange.Data["newState"])
+	}
+
+	// Verify source reports streaming state.
+	if src.State() != laredo.SourceStreaming {
+		t.Errorf("expected source state STREAMING, got %v", src.State())
+	}
+
+	// Verify changes still flow after resume.
+	src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(2, "bob"))
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return target.Count() == 2
+	}, "expected 2 rows after resume")
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+func TestEngine_PauseDoesNotAffectErrorPipelines(t *testing.T) {
+	src := configuredSource()
+	target := memory.NewIndexedTarget()
+	obs := &testutil.TestObserver{}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Pause and resume should work even when IsReady is true.
+	if err := e.Pause(ctx, "pg"); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	if err := e.Resume(ctx, "pg"); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
 // contains checks if s contains substr.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)

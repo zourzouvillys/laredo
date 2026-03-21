@@ -661,7 +661,7 @@ func (e *coreEngine) Reload(_ context.Context, sourceID string, _ TableIdentifie
 }
 
 //nolint:revive // Engine interface implementation.
-func (e *coreEngine) Pause(_ context.Context, sourceID string) error {
+func (e *coreEngine) Pause(ctx context.Context, sourceID string) error {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	if !e.started {
@@ -670,15 +670,28 @@ func (e *coreEngine) Pause(_ context.Context, sourceID string) error {
 	if e.stopped {
 		return errStopped
 	}
-	if _, ok := e.sources[sourceID]; !ok {
+	source, ok := e.sources[sourceID]
+	if !ok {
 		return fmt.Errorf("unknown source: %s", sourceID)
 	}
-	// TODO: implement pause
+
+	if err := source.Pause(ctx); err != nil {
+		return fmt.Errorf("pause source %s: %w", sourceID, err)
+	}
+
+	// Transition STREAMING pipelines to PAUSED.
+	for i := range e.pipelines {
+		p := &e.pipelines[i]
+		if p.sourceID == sourceID && p.state == PipelineStreaming {
+			e.transitionPipeline(i, PipelinePaused)
+		}
+	}
+
 	return nil
 }
 
 //nolint:revive // Engine interface implementation.
-func (e *coreEngine) Resume(_ context.Context, sourceID string) error {
+func (e *coreEngine) Resume(ctx context.Context, sourceID string) error {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	if !e.started {
@@ -687,10 +700,23 @@ func (e *coreEngine) Resume(_ context.Context, sourceID string) error {
 	if e.stopped {
 		return errStopped
 	}
-	if _, ok := e.sources[sourceID]; !ok {
+	source, ok := e.sources[sourceID]
+	if !ok {
 		return fmt.Errorf("unknown source: %s", sourceID)
 	}
-	// TODO: implement resume
+
+	if err := source.Resume(ctx); err != nil {
+		return fmt.Errorf("resume source %s: %w", sourceID, err)
+	}
+
+	// Transition PAUSED pipelines back to STREAMING.
+	for i := range e.pipelines {
+		p := &e.pipelines[i]
+		if p.sourceID == sourceID && p.state == PipelinePaused {
+			e.transitionPipeline(i, PipelineStreaming)
+		}
+	}
+
 	return nil
 }
 

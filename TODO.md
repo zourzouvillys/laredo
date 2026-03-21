@@ -32,7 +32,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `Engine.IsReady()` — global readiness (per-source/per-table/per-pipeline variants deferred)
 - [x] `Engine.OnReady(callback)` — callback-style readiness notification
 - [ ] `Engine.Reload()` — trigger re-baseline for a specific table (spec §4.1.2 forced re-baseline)
-- [ ] `Engine.Pause()` / `Engine.Resume()` — per-source pause/resume
+- [x] `Engine.Pause()` / `Engine.Resume()` — per-source pause/resume
 - [ ] `Engine.CreateSnapshot()` — on-demand snapshot with user metadata
 
 ### 1.3 Replay Engine (spec §15)
