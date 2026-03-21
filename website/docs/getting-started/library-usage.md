@@ -55,9 +55,12 @@ func main() {
     engine.AwaitReady(30 * time.Second)
 
     // Query the in-memory replica directly
-    target := laredo.GetTarget[*memory.IndexedTarget](
-        engine, "pg_main", "public.config_document",
+    target, ok := laredo.GetTarget[*memory.IndexedTarget](
+        engine, "pg_main", laredo.Table("public", "config_document"),
     )
+    if !ok {
+        log.Fatal("target not found")
+    }
 
     row, ok := target.Lookup("inst_abc", "settings/default")
     if ok {

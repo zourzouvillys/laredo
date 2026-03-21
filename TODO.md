@@ -21,7 +21,11 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 1.2 Engine Interface
 
-- [ ] Implement `NewEngine()` — validate config, wire sources/pipelines/targets, return errors
+- [x] Implement `NewEngine()` — validate config, wire sources/pipelines/targets, return errors
+- [x] `GetTarget[T]()` generic accessor — retrieve a typed target from the engine for direct querying
+- [x] Pipeline ID generation: `"{sourceID}:{schema}.{table}:{targetType}"`
+- [x] `Engine.Targets()` — lookup targets by source and table (supports `GetTarget[T]`)
+- [x] Lifecycle stubs: `Start`/`Stop` with state tracking (started/stopped guards)
 - [ ] `Engine.Start()` — launch goroutines for each source, begin baseline or restore
 - [ ] `Engine.Stop()` — graceful shutdown: snapshot-on-shutdown, drain buffers, close sources/targets
 - [ ] `Engine.AwaitReady()` — block until all pipelines reach `STREAMING` or timeout
@@ -30,7 +34,6 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [ ] `Engine.Reload()` — trigger re-baseline for a specific table (spec §4.1.2 forced re-baseline)
 - [ ] `Engine.Pause()` / `Engine.Resume()` — per-source pause/resume
 - [ ] `Engine.CreateSnapshot()` — on-demand snapshot with user metadata
-- [ ] `GetTarget[T]()` generic accessor — retrieve a typed target from the engine for direct querying
 
 ### 1.3 Replay Engine (spec §15)
 

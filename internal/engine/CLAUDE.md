@@ -1,6 +1,8 @@
 # internal/engine
 
-Private engine implementation. Nothing in this package is exported outside the module.
+Internal engine sub-components. The main engine orchestrator (`coreEngine`) lives in
+the root `laredo` package to avoid import cycles with the public API types. This package
+holds sub-components that the engine delegates to.
 
 ## Design Rules
 
@@ -23,7 +25,7 @@ Private engine implementation. Nothing in this package is exported outside the m
 
 | File | Owns |
 |---|---|
-| `engine.go` | `Engine` struct, `NewEngine` constructor, `Start`/`Stop` lifecycle |
+| `engine.go` | Package doc only; main engine struct is in root `laredo` package |
 | `pipeline.go` | Per-pipeline goroutine: baseline → stream → dispatch to target |
 | `buffer.go` | Bounded change buffer with block/drop_oldest/error policies |
 | `ack.go` | ACK coordinator: minimum confirmed position across pipelines |

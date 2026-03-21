@@ -67,9 +67,12 @@ engine, errs := laredo.NewEngine(
     laredo.WithPipeline("pg_main", laredo.Table("public", "config_document"), memTarget),
     laredo.WithObserver(myObserver),
 )
-engine.Start()
+if len(errs) > 0 {
+    log.Fatalf("config errors: %v", errs)
+}
+engine.Start(ctx)
 engine.AwaitReady(30 * time.Second)
-defer engine.Stop()
+defer engine.Stop(ctx)
 ```
 
 See [docs/spec.md](docs/spec.md) for the full design specification.
