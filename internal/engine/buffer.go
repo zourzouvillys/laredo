@@ -29,6 +29,33 @@ func (b *ChangeBuffer[T]) Send(item T) bool {
 	return true
 }
 
+// TrySend attempts a non-blocking send. Returns false if the buffer is full
+// or closed (Error policy: caller marks pipeline as ERROR).
+func (b *ChangeBuffer[T]) TrySend(item T) bool {
+	select {
+	case b.ch <- item:
+		return true
+	default:
+		return false
+	}
+}
+
+// SendDropOldest adds an item to the buffer. If the buffer is full, it drops
+// the oldest item to make room (DropOldest policy — ring buffer semantics).
+// Returns the dropped item and true if an item was dropped, or zero value and
+// false if no drop was needed.
+func (b *ChangeBuffer[T]) SendDropOldest(item T) (dropped T, didDrop bool) {
+	select {
+	case b.ch <- item:
+		return dropped, false
+	default:
+		// Buffer full — drain oldest, then send.
+		dropped = <-b.ch
+		b.ch <- item
+		return dropped, true
+	}
+}
+
 // Receive returns the channel for reading items.
 func (b *ChangeBuffer[T]) Receive() <-chan T {
 	return b.ch

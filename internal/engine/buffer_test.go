@@ -136,3 +136,62 @@ func TestChangeBuffer_ConcurrentSendReceive(t *testing.T) {
 		t.Errorf("expected %d received, got %d", n, received)
 	}
 }
+
+func TestChangeBuffer_TrySend_Success(t *testing.T) {
+	buf := NewChangeBuffer[int](2)
+
+	if !buf.TrySend(1) {
+		t.Error("expected TrySend to succeed on empty buffer")
+	}
+	if !buf.TrySend(2) {
+		t.Error("expected TrySend to succeed on non-full buffer")
+	}
+}
+
+func TestChangeBuffer_TrySend_Full(t *testing.T) {
+	buf := NewChangeBuffer[int](1)
+	buf.Send(1) // fill it
+
+	if buf.TrySend(2) {
+		t.Error("expected TrySend to return false when buffer is full")
+	}
+
+	// Original item should still be there.
+	got := <-buf.Receive()
+	if got != 1 {
+		t.Errorf("expected 1, got %d", got)
+	}
+}
+
+func TestChangeBuffer_SendDropOldest_NoDropNeeded(t *testing.T) {
+	buf := NewChangeBuffer[int](2)
+
+	_, didDrop := buf.SendDropOldest(1)
+	if didDrop {
+		t.Error("expected no drop on empty buffer")
+	}
+	if buf.Len() != 1 {
+		t.Errorf("expected len 1, got %d", buf.Len())
+	}
+}
+
+func TestChangeBuffer_SendDropOldest_DropsOldest(t *testing.T) {
+	buf := NewChangeBuffer[int](2)
+	buf.Send(10)
+	buf.Send(20) // full
+
+	dropped, didDrop := buf.SendDropOldest(30)
+	if !didDrop {
+		t.Error("expected drop when buffer is full")
+	}
+	if dropped != 10 {
+		t.Errorf("expected oldest (10) to be dropped, got %d", dropped)
+	}
+
+	// Buffer should contain [20, 30].
+	got1 := <-buf.Receive()
+	got2 := <-buf.Receive()
+	if got1 != 20 || got2 != 30 {
+		t.Errorf("expected [20, 30], got [%d, %d]", got1, got2)
+	}
+}

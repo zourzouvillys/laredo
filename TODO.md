@@ -68,9 +68,10 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Bounded channel between source dispatcher and target (`ChangeBuffer[T]` generic)
 - [x] Configurable size per pipeline
 - [x] `Block` policy — backpressure to source (default Go channel blocking)
-- [ ] `DropOldest` policy — ring buffer semantics
-- [ ] `Error` policy — mark pipeline as ERROR when full
+- [x] `DropOldest` policy — `SendDropOldest()` drops oldest item when full
+- [x] `Error` policy — `TrySend()` returns false when full (caller marks ERROR)
 - [ ] Observer notifications on depth changes and policy triggers
+- [ ] Wire ChangeBuffer into engine dispatch path (per-pipeline consumer goroutines)
 
 ### 2.4 ACK Coordination
 
