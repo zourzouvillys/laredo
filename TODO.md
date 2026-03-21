@@ -524,8 +524,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 13.3 GitHub Actions
 
-- [ ] CI: lint + test + build (already scaffolded)
-- [ ] Release: GoReleaser on tag push (already scaffolded)
+- [x] CI: lint + test + build (GitHub Actions)
+- [x] Release: GoReleaser on tag push (GitHub Actions)
 - [ ] Add integration test job (requires PostgreSQL service container)
 - [ ] Add documentation build/deploy job (GitHub Pages)
 - [ ] Code coverage reporting
@@ -548,13 +548,13 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `internal/engine/readiness_test.go` — state transitions, await with timeout, OnReady callbacks
 - [x] `target/memory/memory_test.go` — IndexedTarget + CompiledTarget: full coverage
 - [x] `deadletter/memory_test.go` + `deadletter/local_test.go` — write/read/replay/purge
-- [ ] `target/httpsync/httpsync_test.go` — batching, flush interval, retry, durability tracking (use httptest)
+- [x] `target/httpsync/httpsync_test.go` — batching, flush interval, retry, durability tracking (use httptest)
 - [ ] `target/fanout/journal_test.go` — circular buffer, pruning, sequence tracking
 - [ ] `target/fanout/fanout_test.go` — full lifecycle, client protocol
-- [ ] `config/config_test.go` — parse HOCON, env var override, validation errors
+- [x] `config/config_test.go` — parse HOCON, env var override, validation errors
 - [x] `deadletter/memory_test.go` + `deadletter/local_test.go` — write/read/replay/purge
-- [ ] `service/oam/oam_test.go` — gRPC service handlers (mock engine)
-- [ ] `service/query/query_test.go` — gRPC service handlers (mock engine)
+- [x] `service/oam/oam_test.go` — gRPC service handlers
+- [x] `service/query/query_test.go` — gRPC service handlers
 - [ ] `client/fanout/client_test.go` — connect, snapshot/delta, reconnect
 
 ### 14.2 Integration Tests (Tier 2 — `test/integration/`)
@@ -606,73 +606,73 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 15.1 Site Infrastructure
 
-- [ ] Choose static site generator (Hugo, Docusaurus, or mkdocs-material)
-- [ ] `docs/` directory structure for documentation source
+- [x] Choose static site generator (Docusaurus 3.9.2)
+- [x] `docs/` directory structure for documentation source
 - [ ] GitHub Actions workflow: build docs on push to main, deploy to GitHub Pages
 - [ ] Custom domain setup (optional)
-- [ ] Site navigation: sidebar, search, versioning
+- [x] Site navigation: sidebar, search, versioning (sidebars.ts)
 
 ### 15.2 Getting Started
 
-- [ ] Landing page: what is Laredo, key features, architecture diagram
-- [ ] Quick start guide: install binary, start with PG + in-memory target in under 5 minutes
-- [ ] Docker quick start: docker-compose with PG + laredo-server
-- [ ] Library quick start: embed in a Go application
+- [x] Landing page: what is Laredo, key features, architecture diagram (intro.md)
+- [x] Quick start guide (quick-start.md)
+- [x] Docker quick start (docker.md)
+- [x] Library quick start (library-usage.md)
 
 ### 15.3 Concepts
 
-- [ ] Architecture overview: core library vs modules vs pre-built service
-- [ ] Pipeline model: source → filter → transform → target
-- [ ] Sources: what they do, how they connect
-- [ ] Targets: what they do, when to use each type
-- [ ] Snapshots: what they are, startup paths, scheduling
-- [ ] ACK coordination: how positions are tracked across fan-out pipelines
-- [ ] Ordering guarantees: total order vs per-partition vs best-effort
-- [ ] Delivery guarantees: at-least-once semantics, idempotency requirements
+- [x] Architecture overview (architecture.md)
+- [x] Pipeline model (pipelines.md)
+- [x] Sources (sources.md)
+- [x] Targets (targets.md)
+- [x] Snapshots (snapshots.md)
+- [x] ACK coordination (ordering-and-delivery.md)
+- [x] Ordering guarantees (ordering-and-delivery.md)
+- [x] Delivery guarantees (ordering-and-delivery.md)
 
 ### 15.4 Guides
 
-- [ ] Configuring PostgreSQL logical replication (ephemeral vs stateful mode)
+- [x] Configuring PostgreSQL logical replication (postgresql.md)
 - [ ] Setting up publication management (auto-create, row filters, column lists)
-- [ ] Using indexed in-memory targets with secondary indexes
+- [x] Using indexed in-memory targets with secondary indexes (in-memory-targets.md)
 - [ ] Using compiled in-memory targets with custom compilers
-- [ ] Setting up HTTP sync targets (batching, retry, durability)
-- [ ] Setting up replication fan-out (server + client)
+- [x] Setting up HTTP sync targets (http-sync.md)
+- [x] Setting up replication fan-out (fan-out.md)
 - [ ] Fan-out client library usage (Go)
-- [ ] Pipeline filters and transforms
-- [ ] Error handling and dead letter queues
+- [x] Pipeline filters and transforms (filters-and-transforms.md)
+- [x] Error handling and dead letter queues (error-handling.md)
 - [ ] TTL / expiry configuration
-- [ ] Snapshot management (scheduling, retention, restore)
-- [ ] Monitoring with Prometheus / Grafana dashboards
+- [x] Snapshot management (snapshots.md)
+- [x] Monitoring with Prometheus / Grafana dashboards (monitoring.md)
 - [ ] Monitoring with OpenTelemetry
-- [ ] Deploying with Docker
-- [ ] Deploying on Kubernetes (Deployment + ConfigMap + Secrets + health probes)
+- [x] Deploying with Docker (docker.md)
+- [x] Deploying on Kubernetes (kubernetes.md)
 - [ ] Custom source implementation guide
 - [ ] Custom target implementation guide
 
 ### 15.5 Reference
 
-- [ ] Full HOCON configuration reference (every key, type, default, description)
-- [ ] CLI reference: every command, flag, env var, example
-- [ ] gRPC API reference: OAM service (every RPC, request/response)
-- [ ] gRPC API reference: Query service
+- [x] Full HOCON configuration reference (configuration.md)
+- [x] CLI reference (cli.md)
+- [x] gRPC API reference: OAM service (grpc-api.md)
+- [x] gRPC API reference: Query service (grpc-api.md)
 - [ ] gRPC API reference: Replication service
 - [ ] Go library API reference (godoc-generated or hand-written)
-- [ ] HTTP health endpoints reference
-- [ ] Metrics reference: every metric name, type, labels, description
+- [x] HTTP health endpoints reference (health-endpoints.md)
+- [x] Metrics reference (metrics.md)
 - [ ] Environment variables reference
 - [ ] Error codes reference (validation errors, gRPC status codes)
 
 ### 15.6 Operations
 
-- [ ] Runbook: handling slot lag warnings
+- [x] Runbook: handling slot lag warnings (slot-lag.md)
 - [ ] Runbook: recovering from slot invalidation
-- [ ] Runbook: dealing with dead letters
-- [ ] Runbook: forcing a re-baseline
+- [x] Runbook: dealing with dead letters (dead-letters.md)
+- [x] Runbook: forcing a re-baseline (re-baseline.md)
 - [ ] Runbook: resetting a source (decommissioning)
 - [ ] Runbook: restoring from a snapshot after data loss
 - [ ] Runbook: scaling fan-out clients
-- [ ] Troubleshooting guide: common error messages and resolutions
+- [x] Troubleshooting guide (troubleshooting.md)
 
 ### 15.7 Design & Internals
 
@@ -695,10 +695,10 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 ### 16.2 Security
 
 - [ ] Audit for credential leakage in logs/metrics/error messages
-- [ ] TLS support for gRPC server and client connections
-- [ ] Connection string handling: never log full connection strings
-- [ ] Auth header handling: never log auth tokens
-- [ ] Dependency audit: run `govulncheck`
+- [x] TLS support for gRPC server and client connections
+- [x] Connection string handling: never log full connection strings (config masking)
+- [x] Auth header handling: never log auth tokens (config masking)
+- [x] Dependency audit: run `govulncheck` (no vulnerabilities found)
 
 ### 16.3 Performance
 
@@ -710,7 +710,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 16.4 Packaging
 
-- [ ] `go.sum` — populated once dependencies are added
+- [x] `go.sum` — populated with all dependencies
 - [ ] License file (choose license)
 - [ ] `CONTRIBUTING.md`
 - [ ] `CHANGELOG.md` — start tracking changes
