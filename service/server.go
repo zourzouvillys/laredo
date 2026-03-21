@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ type Server struct {
 	httpServer *http.Server
 	mux        *http.ServeMux
 	addr       string
+	tlsConfig  *tls.Config
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -30,6 +32,8 @@ type serverConfig struct {
 	addr         string
 	oamHandler   laredov1connect.LaredoOAMServiceHandler
 	queryHandler laredov1connect.LaredoQueryServiceHandler
+	tlsCertFile  string
+	tlsKeyFile   string
 }
 
 // WithAddress sets the listen address (default ":4001").
@@ -50,6 +54,14 @@ func EnableOAM(handler laredov1connect.LaredoOAMServiceHandler) Option {
 func EnableQuery(handler laredov1connect.LaredoQueryServiceHandler) Option {
 	return func(c *serverConfig) {
 		c.queryHandler = handler
+	}
+}
+
+// WithTLS enables TLS with the given certificate and key files.
+func WithTLS(certFile, keyFile string) Option {
+	return func(c *serverConfig) {
+		c.tlsCertFile = certFile
+		c.tlsKeyFile = keyFile
 	}
 }
 
@@ -74,7 +86,7 @@ func New(opts ...Option) *Server {
 		mux.Handle(path, handler)
 	}
 
-	return &Server{
+	srv := &Server{
 		mux:  mux,
 		addr: cfg.addr,
 		httpServer: &http.Server{
@@ -82,6 +94,20 @@ func New(opts ...Option) *Server {
 			ReadHeaderTimeout: 10 * time.Second,
 		},
 	}
+
+	// Configure TLS if cert and key are provided.
+	if cfg.tlsCertFile != "" && cfg.tlsKeyFile != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.tlsCertFile, cfg.tlsKeyFile)
+		if err == nil {
+			srv.tlsConfig = &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				MinVersion:   tls.VersionTLS12,
+			}
+			srv.httpServer.TLSConfig = srv.tlsConfig
+		}
+	}
+
+	return srv
 }
 
 // Start begins listening and serving. It blocks until the server is stopped
@@ -91,6 +117,11 @@ func (s *Server) Start() error {
 	ln, err := lc.Listen(context.Background(), "tcp", s.addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", s.addr, err)
+	}
+
+	// Wrap listener with TLS if configured.
+	if s.tlsConfig != nil {
+		ln = tls.NewListener(ln, s.tlsConfig)
 	}
 
 	s.mu.Lock()
@@ -113,6 +144,11 @@ func (s *Server) Addr() string {
 		return s.listener.Addr().String()
 	}
 	return ""
+}
+
+// IsTLS reports whether TLS is configured.
+func (s *Server) IsTLS() bool {
+	return s.tlsConfig != nil
 }
 
 // Stop performs a graceful shutdown: stops accepting new connections and

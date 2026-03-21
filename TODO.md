@@ -261,7 +261,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [ ] `ListSnapshots` RPC — list available snapshots for client bootstrapping
 - [ ] `FetchSnapshot` RPC — streaming download of a specific snapshot
 - [ ] `GetReplicationStatus` RPC — current sequence, journal bounds, client count, per-client state
-- [ ] TLS configuration
+- [x] TLS configuration
 - [ ] Max clients limit
 
 ---
@@ -391,7 +391,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 8.4 Server Setup (`service/server.go`)
 
-- [ ] TLS configuration
+- [x] TLS configuration
 - [x] Register OAM + Query services
 - [x] Optional service enabling (`EnableOAM`, `EnableQuery`)
 - [x] Port configuration
