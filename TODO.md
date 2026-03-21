@@ -139,7 +139,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Ephemeral mode: temporary replication slot, full baseline every startup
 - [x] Stateful mode: persistent named slot, resume from last ACKed LSN
 - [x] Publication management (auto-create with table list):
-  - [ ] `create = false` — use existing publication, fail if not found
+  - [x] `create = false` — use existing publication, fail if not found
   - [x] `create = true` — auto-create publication from configured tables
   - [ ] Sync publication on startup (add/remove tables, update publish operations)
   - [ ] Row filters and column lists (PostgreSQL 15+)
@@ -549,8 +549,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `target/memory/memory_test.go` — IndexedTarget + CompiledTarget: full coverage
 - [x] `deadletter/memory_test.go` + `deadletter/local_test.go` — write/read/replay/purge
 - [x] `target/httpsync/httpsync_test.go` — batching, flush interval, retry, durability tracking (use httptest)
-- [ ] `target/fanout/journal_test.go` — circular buffer, pruning, sequence tracking
-- [ ] `target/fanout/fanout_test.go` — full lifecycle, client protocol
+- [x] `target/fanout/journal_test.go` — circular buffer, pruning, sequence tracking
+- [x] `target/fanout/fanout_test.go` — full lifecycle
 - [x] `config/config_test.go` — parse HOCON, env var override, validation errors
 - [x] `deadletter/memory_test.go` + `deadletter/local_test.go` — write/read/replay/purge
 - [x] `service/oam/oam_test.go` — gRPC service handlers
@@ -565,7 +565,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [ ] PostgreSQL source: reconnect — simulate connection loss, verify reconnect and resume
 - [ ] PostgreSQL source: slot invalidation — exceed `max_slot_wal_keep_size`, verify re-baseline
 - [x] Engine + PG source + indexed memory target: end-to-end pipeline
-- [ ] Engine + PG source + HTTP target: end-to-end with httptest server
+- [x] Engine + PG source + HTTP target: end-to-end with httptest server
 - [ ] Engine + PG source + fan-out target + fan-out client: full replication chain
 - [x] Snapshot create + restore cycle with real engine (local disk store, full round-trip)
 - [x] Multi-pipeline ACK coordination: verify minimum position across targets (TestEngine_AckCoordination)

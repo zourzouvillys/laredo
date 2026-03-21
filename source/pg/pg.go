@@ -86,11 +86,21 @@ func (s *Source) Init(ctx context.Context, config laredo.SourceConfig) (map[lare
 		pubName = s.cfg.publication.Name
 	}
 
-	// Create publication if configured.
+	// Create or verify publication.
 	if s.cfg.publication.Create {
 		if err := s.ensurePublication(ctx, pubName, config.Tables); err != nil {
 			s.setState(laredo.SourceError)
 			return nil, fmt.Errorf("pg source: %w", err)
+		}
+	} else {
+		// Verify publication exists.
+		var exists bool
+		_ = s.conn.queryConn.QueryRow(ctx,
+			"SELECT EXISTS(SELECT 1 FROM pg_publication WHERE pubname = $1)", pubName,
+		).Scan(&exists)
+		if !exists {
+			s.setState(laredo.SourceError)
+			return nil, fmt.Errorf("pg source: publication %q not found (create=false)", pubName)
 		}
 	}
 
