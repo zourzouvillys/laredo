@@ -328,11 +328,11 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 - [x] In-memory dead letter store (for testing) — `deadletter.NewMemoryStore()`
 - [ ] S3 dead letter store
-- [ ] Local disk dead letter store
-- [ ] `Write` — persist failed change with error context
-- [ ] `Read` — list dead letters for a pipeline (paginated)
-- [ ] `Replay` — re-deliver dead letters to a target
-- [ ] `Purge` — remove dead letters for a pipeline
+- [x] Local disk dead letter store — `deadletter.NewLocalStore(basePath)`
+- [x] `Write` — append JSONL entries to `{pipelineID}.jsonl`
+- [x] `Read` — read entries with optional limit
+- [x] `Replay` — re-deliver dead letters to a target
+- [x] `Purge` — remove pipeline's JSONL file
 
 ---
 
