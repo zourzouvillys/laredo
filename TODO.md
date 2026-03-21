@@ -377,7 +377,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [ ] `ResetSource` — drop/recreate slot and optionally publication
 - [ ] `ListTables` / `GetTableSchema` — read-only config inspection
 - [ ] `CreateSnapshot` / `ListSnapshots` / `InspectSnapshot` / `RestoreSnapshot` / `DeleteSnapshot` / `PruneSnapshots` (`CreateSnapshot` implemented)
-- [ ] `ListDeadLetters` / `ReplayDeadLetters` / `PurgeDeadLetters`
+- [x] `ListDeadLetters` / `ReplayDeadLetters` / `PurgeDeadLetters` (`ListDeadLetters` + `PurgeDeadLetters` implemented; `ReplayDeadLetters` deferred — needs target lookup by pipeline ID)
 - [x] `StartReplay` / `GetReplayStatus` / `StopReplay`
 
 ### 8.3 Query Service (`service/query/`)

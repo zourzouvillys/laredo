@@ -10,8 +10,11 @@ import (
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/zourzouvillys/laredo"
+	"github.com/zourzouvillys/laredo/deadletter"
 	v1 "github.com/zourzouvillys/laredo/gen/laredo/v1"
 	"github.com/zourzouvillys/laredo/gen/laredo/v1/laredov1connect"
 )
@@ -21,8 +24,9 @@ import (
 type Service struct {
 	laredov1connect.UnimplementedLaredoOAMServiceHandler
 
-	engine        laredo.Engine
-	snapshotStore laredo.SnapshotStore
+	engine          laredo.Engine
+	snapshotStore   laredo.SnapshotStore
+	deadLetterStore deadletter.Store
 
 	mu      sync.Mutex
 	replays map[string]*replayState
@@ -44,6 +48,13 @@ type Option func(*Service)
 func WithSnapshotStore(store laredo.SnapshotStore) Option {
 	return func(s *Service) {
 		s.snapshotStore = store
+	}
+}
+
+// WithDeadLetterStore sets the dead letter store for list/replay/purge operations.
+func WithDeadLetterStore(store deadletter.Store) Option {
+	return func(s *Service) {
+		s.deadLetterStore = store
 	}
 }
 
@@ -295,5 +306,73 @@ func (s *Service) StopReplay(_ context.Context, req *connect.Request[v1.StopRepl
 
 	return connect.NewResponse(&v1.StopReplayResponse{
 		Stopped: true,
+	}), nil
+}
+
+// --- Dead Letter Management ---
+
+// ListDeadLetters returns dead letter entries for a pipeline.
+func (s *Service) ListDeadLetters(_ context.Context, req *connect.Request[v1.ListDeadLettersRequest]) (*connect.Response[v1.ListDeadLettersResponse], error) {
+	if s.deadLetterStore == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no dead letter store configured"))
+	}
+
+	pipelineID := req.Msg.GetPipelineId()
+	if pipelineID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("pipeline_id is required"))
+	}
+
+	entries, err := s.deadLetterStore.Read(pipelineID, int(req.Msg.GetLimit()))
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("read dead letters: %w", err))
+	}
+
+	protoEntries := make([]*v1.DeadLetterEntry, 0, len(entries))
+	for _, e := range entries {
+		dle := &v1.DeadLetterEntry{
+			Timestamp:    timestamppb.New(e.Change.Timestamp),
+			Action:       e.Change.Action.String(),
+			ErrorMessage: e.Error.Message,
+		}
+		if e.Change.Position != nil {
+			dle.Position = fmt.Sprintf("%v", e.Change.Position)
+		}
+		changeData, err := structpb.NewStruct(map[string]any{
+			"new_values": map[string]any(e.Change.NewValues),
+			"old_values": map[string]any(e.Change.OldValues),
+		})
+		if err == nil {
+			dle.ChangeData = changeData
+		}
+		protoEntries = append(protoEntries, dle)
+	}
+
+	return connect.NewResponse(&v1.ListDeadLettersResponse{
+		Entries:    protoEntries,
+		TotalCount: int32(len(entries)), //nolint:gosec // entry count won't overflow int32
+	}), nil
+}
+
+// PurgeDeadLetters removes all dead letter entries for a pipeline.
+func (s *Service) PurgeDeadLetters(_ context.Context, req *connect.Request[v1.PurgeDeadLettersRequest]) (*connect.Response[v1.PurgeDeadLettersResponse], error) {
+	if s.deadLetterStore == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no dead letter store configured"))
+	}
+
+	pipelineID := req.Msg.GetPipelineId()
+	if pipelineID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("pipeline_id is required"))
+	}
+
+	// Read count before purge for the response.
+	entries, _ := s.deadLetterStore.Read(pipelineID, 0)
+	count := int32(len(entries)) //nolint:gosec // entry count won't overflow int32
+
+	if err := s.deadLetterStore.Purge(pipelineID); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("purge dead letters: %w", err))
+	}
+
+	return connect.NewResponse(&v1.PurgeDeadLettersResponse{
+		Purged: count,
 	}), nil
 }

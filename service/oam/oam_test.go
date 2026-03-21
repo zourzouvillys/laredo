@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/zourzouvillys/laredo"
+	"github.com/zourzouvillys/laredo/deadletter"
 	v1 "github.com/zourzouvillys/laredo/gen/laredo/v1"
 	"github.com/zourzouvillys/laredo/gen/laredo/v1/laredov1connect"
 	"github.com/zourzouvillys/laredo/service"
@@ -20,10 +21,13 @@ import (
 	"github.com/zourzouvillys/laredo/test/testutil"
 )
 
-func startTestServer(t *testing.T, engine laredo.Engine, store laredo.SnapshotStore) laredov1connect.LaredoOAMServiceClient {
+func startTestServer(t *testing.T, engine laredo.Engine, store laredo.SnapshotStore, opts ...oam.Option) laredov1connect.LaredoOAMServiceClient {
 	t.Helper()
 
-	oamSvc := oam.New(engine, oam.WithSnapshotStore(store))
+	allOpts := make([]oam.Option, 0, 1+len(opts))
+	allOpts = append(allOpts, oam.WithSnapshotStore(store))
+	allOpts = append(allOpts, opts...)
+	oamSvc := oam.New(engine, allOpts...)
 	srv := service.New(
 		service.WithAddress("127.0.0.1:0"),
 		service.EnableOAM(oamSvc),
@@ -431,5 +435,136 @@ func TestOAM_UnimplementedRPCs(t *testing.T) {
 	_, err = client.GetSourceInfo(context.Background(), connect.NewRequest(&v1.GetSourceInfoRequest{}))
 	if connect.CodeOf(err) != connect.CodeUnimplemented {
 		t.Errorf("GetSourceInfo: expected CodeUnimplemented, got %v", connect.CodeOf(err))
+	}
+}
+
+// --- Dead Letter RPC tests ---
+
+func TestOAM_ListDeadLetters(t *testing.T) {
+	eng, _, _ := startedEngine(t)
+	dlStore := deadletter.NewMemoryStore()
+
+	// Write some dead letters.
+	_ = dlStore.Write("pipe-1", testutil.SampleChangeEvent(laredo.ActionInsert, 1, "alice"), laredo.ErrorInfo{Message: "target error"})
+	_ = dlStore.Write("pipe-1", testutil.SampleChangeEvent(laredo.ActionUpdate, 2, "bob"), laredo.ErrorInfo{Message: "timeout"})
+
+	client := startTestServer(t, eng, nil, oam.WithDeadLetterStore(dlStore))
+
+	resp, err := client.ListDeadLetters(context.Background(), connect.NewRequest(&v1.ListDeadLettersRequest{
+		PipelineId: "pipe-1",
+	}))
+	if err != nil {
+		t.Fatalf("ListDeadLetters: %v", err)
+	}
+	if resp.Msg.GetTotalCount() != 2 {
+		t.Errorf("expected total_count=2, got %d", resp.Msg.GetTotalCount())
+	}
+	if len(resp.Msg.GetEntries()) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(resp.Msg.GetEntries()))
+	}
+	if resp.Msg.GetEntries()[0].GetAction() != "INSERT" {
+		t.Errorf("expected INSERT, got %s", resp.Msg.GetEntries()[0].GetAction())
+	}
+	if resp.Msg.GetEntries()[0].GetErrorMessage() != "target error" {
+		t.Errorf("expected 'target error', got %q", resp.Msg.GetEntries()[0].GetErrorMessage())
+	}
+}
+
+func TestOAM_ListDeadLetters_WithLimit(t *testing.T) {
+	eng, _, _ := startedEngine(t)
+	dlStore := deadletter.NewMemoryStore()
+
+	for i := range 5 {
+		_ = dlStore.Write("pipe-1", testutil.SampleChangeEvent(laredo.ActionInsert, i+1, "row"), laredo.ErrorInfo{Message: "error"})
+	}
+
+	client := startTestServer(t, eng, nil, oam.WithDeadLetterStore(dlStore))
+
+	resp, err := client.ListDeadLetters(context.Background(), connect.NewRequest(&v1.ListDeadLettersRequest{
+		PipelineId: "pipe-1",
+		Limit:      3,
+	}))
+	if err != nil {
+		t.Fatalf("ListDeadLetters: %v", err)
+	}
+	if len(resp.Msg.GetEntries()) != 3 {
+		t.Errorf("expected 3 entries with limit=3, got %d", len(resp.Msg.GetEntries()))
+	}
+}
+
+func TestOAM_ListDeadLetters_Empty(t *testing.T) {
+	eng, _, _ := startedEngine(t)
+	dlStore := deadletter.NewMemoryStore()
+
+	client := startTestServer(t, eng, nil, oam.WithDeadLetterStore(dlStore))
+
+	resp, err := client.ListDeadLetters(context.Background(), connect.NewRequest(&v1.ListDeadLettersRequest{
+		PipelineId: "nonexistent",
+	}))
+	if err != nil {
+		t.Fatalf("ListDeadLetters: %v", err)
+	}
+	if len(resp.Msg.GetEntries()) != 0 {
+		t.Errorf("expected 0 entries, got %d", len(resp.Msg.GetEntries()))
+	}
+}
+
+func TestOAM_PurgeDeadLetters(t *testing.T) {
+	eng, _, _ := startedEngine(t)
+	dlStore := deadletter.NewMemoryStore()
+
+	_ = dlStore.Write("pipe-1", testutil.SampleChangeEvent(laredo.ActionInsert, 1, "alice"), laredo.ErrorInfo{Message: "error"})
+	_ = dlStore.Write("pipe-1", testutil.SampleChangeEvent(laredo.ActionInsert, 2, "bob"), laredo.ErrorInfo{Message: "error"})
+
+	client := startTestServer(t, eng, nil, oam.WithDeadLetterStore(dlStore))
+
+	resp, err := client.PurgeDeadLetters(context.Background(), connect.NewRequest(&v1.PurgeDeadLettersRequest{
+		PipelineId: "pipe-1",
+	}))
+	if err != nil {
+		t.Fatalf("PurgeDeadLetters: %v", err)
+	}
+	if resp.Msg.GetPurged() != 2 {
+		t.Errorf("expected purged=2, got %d", resp.Msg.GetPurged())
+	}
+
+	// Verify entries are gone.
+	listResp, err := client.ListDeadLetters(context.Background(), connect.NewRequest(&v1.ListDeadLettersRequest{
+		PipelineId: "pipe-1",
+	}))
+	if err != nil {
+		t.Fatalf("ListDeadLetters after purge: %v", err)
+	}
+	if len(listResp.Msg.GetEntries()) != 0 {
+		t.Errorf("expected 0 entries after purge, got %d", len(listResp.Msg.GetEntries()))
+	}
+}
+
+func TestOAM_ListDeadLetters_NoStore(t *testing.T) {
+	eng, _, _ := startedEngine(t)
+	client := startTestServer(t, eng, nil)
+
+	_, err := client.ListDeadLetters(context.Background(), connect.NewRequest(&v1.ListDeadLettersRequest{
+		PipelineId: "pipe-1",
+	}))
+	if err == nil {
+		t.Fatal("expected error without dead letter store")
+	}
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Errorf("expected CodeFailedPrecondition, got %v", connect.CodeOf(err))
+	}
+}
+
+func TestOAM_ListDeadLetters_MissingPipelineID(t *testing.T) {
+	eng, _, _ := startedEngine(t)
+	dlStore := deadletter.NewMemoryStore()
+	client := startTestServer(t, eng, nil, oam.WithDeadLetterStore(dlStore))
+
+	_, err := client.ListDeadLetters(context.Background(), connect.NewRequest(&v1.ListDeadLettersRequest{}))
+	if err == nil {
+		t.Fatal("expected error without pipeline_id")
+	}
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Errorf("expected CodeInvalidArgument, got %v", connect.CodeOf(err))
 	}
 }
