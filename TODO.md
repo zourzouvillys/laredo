@@ -412,8 +412,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 9.2 OpenTelemetry (`metrics/otel/`)
 
-- [ ] Implement full `EngineObserver` interface
-- [ ] Map same metrics to OTel meter API
+- [x] Implement full `EngineObserver` interface
+- [x] Map same metrics to OTel meter API
 - [ ] Configurable exporter (OTLP, stdout, etc.)
 
 ---
