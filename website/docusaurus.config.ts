@@ -11,7 +11,7 @@ const config: Config = {
     v4: true,
   },
 
-  url: 'https://zourzouvillys.github.io',
+  url: 'https://zrz.io',
   baseUrl: '/laredo/',
 
   organizationName: 'zourzouvillys',
