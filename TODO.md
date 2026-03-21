@@ -561,7 +561,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 - [x] PostgreSQL source: ephemeral mode — baseline against real PG (testcontainers)
 - [x] PostgreSQL source: stateful mode — baseline, stream, restart, resume from LSN
-- [ ] PostgreSQL source: publication management — auto-create, add/remove tables, row filters (PG 15+)
+- [x] PostgreSQL source: publication management — auto-create (row filters deferred to PG 15+ feature)
 - [ ] PostgreSQL source: reconnect — simulate connection loss, verify reconnect and resume
 - [ ] PostgreSQL source: slot invalidation — exceed `max_slot_wal_keep_size`, verify re-baseline
 - [x] Engine + PG source + indexed memory target: end-to-end pipeline
@@ -596,8 +596,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `test/testutil/observer.go` — TestObserver records all 21 observer callbacks
 - [x] `test/testutil/helpers.go` — SampleTable, SampleColumns, SampleRow, SampleChangeEvent, AssertEventually
 - [x] `test/testutil/pg.go` — PostgreSQL testcontainer setup/teardown helper
-- [ ] `test/testutil/grpc.go` — in-process gRPC server/client for service tests
-- [ ] `test/testutil/httpserver.go` — configurable mock HTTP server for target tests
+- [x] `test/testutil/grpc.go` — in-process gRPC server/client for service tests
+- [x] `test/testutil/httpserver.go` — configurable mock HTTP server for target tests
 - [ ] Test data generators: random rows, schemas, change events
 
 ---
