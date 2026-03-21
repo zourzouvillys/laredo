@@ -97,11 +97,11 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 ### 2.7 TTL / Expiry (spec §10)
 
 - [ ] Field-based mode: read expiry timestamp from a configured column
-- [ ] Computed mode: user-provided function calculates expiry from row
+- [x] Computed mode: `WithTTL(func(Row) time.Time)` pipeline option
 - [ ] Periodic scanner on configurable interval
 - [ ] On scan: remove expired rows from target, update indexes, fire `OnRowExpired` observer
-- [ ] Skip insertion of already-expired rows on `INSERT`
-- [ ] Treat update-to-expired as delete
+- [x] Skip insertion of already-expired rows on `INSERT` and baseline
+- [x] Treat update-to-expired as delete
 
 ### 2.8 Readiness Tracking
 

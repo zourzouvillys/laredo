@@ -1803,6 +1803,150 @@ func (s *testDeadLetterStore) Write(pipelineID string, change laredo.ChangeEvent
 	return nil
 }
 
+func TestEngine_TTLSkipExpiredOnBaseline(t *testing.T) {
+	src := configuredSource()
+	// Row with past expiry should be skipped.
+	src.AddRow(testutil.SampleTable(), laredo.Row{"id": 1, "name": "fresh", "expires_at": time.Now().Add(1 * time.Hour).Format(time.RFC3339)})
+	src.AddRow(testutil.SampleTable(), laredo.Row{"id": 2, "name": "expired", "expires_at": time.Now().Add(-1 * time.Hour).Format(time.RFC3339)})
+
+	target := memory.NewIndexedTarget()
+
+	ttlFunc := func(row laredo.Row) time.Time {
+		s, _ := row["expires_at"].(string)
+		t, _ := time.Parse(time.RFC3339, s)
+		return t
+	}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target,
+			laredo.WithTTL(ttlFunc),
+		),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Only the fresh row should be in the target.
+	if target.Count() != 1 {
+		t.Fatalf("expected 1 row (expired skipped), got %d", target.Count())
+	}
+
+	row, ok := target.Get(1)
+	if !ok {
+		t.Fatal("expected row with id=1")
+	}
+	if row["name"] != "fresh" {
+		t.Errorf("expected fresh, got %v", row["name"])
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+func TestEngine_TTLSkipExpiredOnInsert(t *testing.T) {
+	src := configuredSource()
+	target := memory.NewIndexedTarget()
+
+	ttlFunc := func(row laredo.Row) time.Time {
+		s, _ := row["expires_at"].(string)
+		t, _ := time.Parse(time.RFC3339, s)
+		return t
+	}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target,
+			laredo.WithTTL(ttlFunc),
+		),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Insert a fresh row — should appear.
+	src.EmitInsert(testutil.SampleTable(), laredo.Row{"id": 1, "name": "fresh", "expires_at": time.Now().Add(1 * time.Hour).Format(time.RFC3339)})
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return target.Count() == 1
+	}, "expected 1 row after fresh insert")
+
+	// Insert an expired row — should be skipped.
+	src.EmitInsert(testutil.SampleTable(), laredo.Row{"id": 2, "name": "expired", "expires_at": time.Now().Add(-1 * time.Hour).Format(time.RFC3339)})
+	time.Sleep(100 * time.Millisecond)
+	if target.Count() != 1 {
+		t.Errorf("expected 1 row (expired insert skipped), got %d", target.Count())
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+func TestEngine_TTLUpdateToExpiredTreatedAsDelete(t *testing.T) {
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), laredo.Row{"id": 1, "name": "alive", "expires_at": time.Now().Add(1 * time.Hour).Format(time.RFC3339)})
+
+	target := memory.NewIndexedTarget()
+
+	ttlFunc := func(row laredo.Row) time.Time {
+		s, _ := row["expires_at"].(string)
+		t, _ := time.Parse(time.RFC3339, s)
+		return t
+	}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target,
+			laredo.WithTTL(ttlFunc),
+		),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	if target.Count() != 1 {
+		t.Fatalf("expected 1 row after baseline, got %d", target.Count())
+	}
+
+	// Update the row to have an expired timestamp — should be treated as delete.
+	src.EmitUpdate(testutil.SampleTable(),
+		laredo.Row{"id": 1, "name": "now-expired", "expires_at": time.Now().Add(-1 * time.Hour).Format(time.RFC3339)},
+		laredo.Row{"id": 1},
+	)
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return target.Count() == 0
+	}, "expected 0 rows (update-to-expired treated as delete)")
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
 // contains checks if s contains substr.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)

@@ -76,6 +76,7 @@ type pipelineConfig struct {
 	bufferPolicy BufferPolicy
 	errorPolicy  ErrorPolicyKind
 	maxRetries   int
+	ttlFunc      func(Row) time.Time // returns expiry time; zero = no expiry
 }
 
 // WithSource registers a named source.
@@ -149,6 +150,15 @@ func ErrorPolicyOpt(p ErrorPolicyKind) PipelineOption {
 func MaxRetries(n int) PipelineOption {
 	return func(c *pipelineConfig) {
 		c.maxRetries = n
+	}
+}
+
+// WithTTL configures a TTL function for the pipeline. The function receives
+// each row and returns its expiry time. Rows that are already expired at
+// insertion time are skipped. A zero time means the row never expires.
+func WithTTL(fn func(Row) time.Time) PipelineOption {
+	return func(c *pipelineConfig) {
+		c.ttlFunc = fn
 	}
 }
 
@@ -245,6 +255,7 @@ func NewEngine(opts ...Option) (Engine, []error) {
 			bufferPolicy: pc.bufferPolicy,
 			errorPolicy:  pc.errorPolicy,
 			maxRetries:   pc.maxRetries,
+			ttlFunc:      pc.ttlFunc,
 			state:        PipelineInitializing,
 		}
 		pipelineIDs[i] = id
@@ -364,6 +375,7 @@ type resolvedPipeline struct {
 	bufferPolicy BufferPolicy
 	errorPolicy  ErrorPolicyKind
 	maxRetries   int
+	ttlFunc      func(Row) time.Time
 	state        PipelineState
 }
 
@@ -700,6 +712,9 @@ func (e *coreEngine) dispatchBaselineRow(ctx context.Context, pipelineIdxs []int
 		if r == nil {
 			continue
 		}
+		if isRowExpired(p, r) {
+			continue
+		}
 		if err := p.target.OnBaselineRow(ctx, table, r); err != nil {
 			e.transitionPipeline(idx, PipelineError)
 		}
@@ -766,11 +781,18 @@ func (e *coreEngine) applyChangeToTarget(ctx context.Context, p *resolvedPipelin
 		if row == nil {
 			return nil
 		}
+		if isRowExpired(p, row) {
+			return nil
+		}
 		return p.target.OnInsert(ctx, event.Table, row)
 	case ActionUpdate:
 		row := applyFiltersAndTransforms(p, event.Table, event.NewValues)
 		if row == nil {
 			return nil
+		}
+		// Treat update-to-expired as delete.
+		if isRowExpired(p, row) {
+			return p.target.OnDelete(ctx, event.Table, event.OldValues)
 		}
 		return p.target.OnUpdate(ctx, event.Table, row, event.OldValues)
 	case ActionDelete:
@@ -882,6 +904,16 @@ func applyFiltersAndTransforms(p *resolvedPipeline, table TableIdentifier, row R
 		}
 	}
 	return r
+}
+
+// isRowExpired checks whether a row has expired according to the pipeline's TTL function.
+// Returns false if no TTL is configured or the row hasn't expired yet.
+func isRowExpired(p *resolvedPipeline, row Row) bool {
+	if p.ttlFunc == nil {
+		return false
+	}
+	expiry := p.ttlFunc(row)
+	return !expiry.IsZero() && time.Now().After(expiry)
 }
 
 // transitionPipeline transitions a single pipeline to a new state and fires the observer.
