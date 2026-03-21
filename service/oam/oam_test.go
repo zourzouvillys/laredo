@@ -411,6 +411,105 @@ func TestOAM_CreateSnapshot_NoStore(t *testing.T) {
 	}
 }
 
+// --- Status RPC tests ---
+
+func TestOAM_GetStatus(t *testing.T) {
+	eng, _, _ := startedEngine(t)
+	client := startTestServer(t, eng, nil)
+
+	resp, err := client.GetStatus(context.Background(), connect.NewRequest(&v1.GetStatusRequest{}))
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+
+	if resp.Msg.GetState() != v1.ServiceState_SERVICE_STATE_STREAMING {
+		t.Errorf("expected STREAMING state, got %v", resp.Msg.GetState())
+	}
+	if len(resp.Msg.GetPipelines()) != 1 {
+		t.Errorf("expected 1 pipeline, got %d", len(resp.Msg.GetPipelines()))
+	}
+	if len(resp.Msg.GetSources()) != 1 {
+		t.Errorf("expected 1 source, got %d", len(resp.Msg.GetSources()))
+	}
+
+	p := resp.Msg.GetPipelines()[0]
+	if p.GetState() != v1.PipelineState_PIPELINE_STATE_STREAMING {
+		t.Errorf("expected pipeline STREAMING, got %v", p.GetState())
+	}
+	if p.GetSourceId() != "pg" {
+		t.Errorf("expected source_id=pg, got %s", p.GetSourceId())
+	}
+	if p.GetRowCount() != 1 {
+		t.Errorf("expected row_count=1 (baseline), got %d", p.GetRowCount())
+	}
+}
+
+func TestOAM_GetTableStatus(t *testing.T) {
+	eng, _, _ := startedEngine(t)
+	client := startTestServer(t, eng, nil)
+
+	resp, err := client.GetTableStatus(context.Background(), connect.NewRequest(&v1.GetTableStatusRequest{
+		Schema: "public",
+		Table:  "test_table",
+	}))
+	if err != nil {
+		t.Fatalf("GetTableStatus: %v", err)
+	}
+	if len(resp.Msg.GetPipelines()) != 1 {
+		t.Errorf("expected 1 pipeline, got %d", len(resp.Msg.GetPipelines()))
+	}
+}
+
+func TestOAM_GetTableStatus_NotFound(t *testing.T) {
+	eng, _, _ := startedEngine(t)
+	client := startTestServer(t, eng, nil)
+
+	resp, err := client.GetTableStatus(context.Background(), connect.NewRequest(&v1.GetTableStatusRequest{
+		Schema: "public",
+		Table:  "nonexistent",
+	}))
+	if err != nil {
+		t.Fatalf("GetTableStatus: %v", err)
+	}
+	if len(resp.Msg.GetPipelines()) != 0 {
+		t.Errorf("expected 0 pipelines for nonexistent table, got %d", len(resp.Msg.GetPipelines()))
+	}
+}
+
+func TestOAM_GetPipelineStatus(t *testing.T) {
+	eng, _, _ := startedEngine(t)
+	client := startTestServer(t, eng, nil)
+
+	// First get pipeline ID from GetStatus.
+	statusResp, _ := client.GetStatus(context.Background(), connect.NewRequest(&v1.GetStatusRequest{}))
+	pipelineID := statusResp.Msg.GetPipelines()[0].GetPipelineId()
+
+	resp, err := client.GetPipelineStatus(context.Background(), connect.NewRequest(&v1.GetPipelineStatusRequest{
+		PipelineId: pipelineID,
+	}))
+	if err != nil {
+		t.Fatalf("GetPipelineStatus: %v", err)
+	}
+	if resp.Msg.GetStatus().GetPipelineId() != pipelineID {
+		t.Errorf("expected pipeline_id=%s, got %s", pipelineID, resp.Msg.GetStatus().GetPipelineId())
+	}
+}
+
+func TestOAM_GetPipelineStatus_NotFound(t *testing.T) {
+	eng, _, _ := startedEngine(t)
+	client := startTestServer(t, eng, nil)
+
+	_, err := client.GetPipelineStatus(context.Background(), connect.NewRequest(&v1.GetPipelineStatusRequest{
+		PipelineId: "nonexistent",
+	}))
+	if err == nil {
+		t.Fatal("expected error for nonexistent pipeline")
+	}
+	if connect.CodeOf(err) != connect.CodeNotFound {
+		t.Errorf("expected CodeNotFound, got %v", connect.CodeOf(err))
+	}
+}
+
 func TestOAM_UnimplementedRPCs(t *testing.T) {
 	src := testsource.New()
 	src.SetSchema(testutil.SampleTable(), testutil.SampleColumns())
@@ -427,12 +526,7 @@ func TestOAM_UnimplementedRPCs(t *testing.T) {
 	client := startTestServer(t, eng, nil)
 
 	// RPCs that are still unimplemented should return CodeUnimplemented.
-	_, err := client.GetStatus(context.Background(), connect.NewRequest(&v1.GetStatusRequest{}))
-	if connect.CodeOf(err) != connect.CodeUnimplemented {
-		t.Errorf("GetStatus: expected CodeUnimplemented, got %v", connect.CodeOf(err))
-	}
-
-	_, err = client.GetSourceInfo(context.Background(), connect.NewRequest(&v1.GetSourceInfoRequest{}))
+	_, err := client.GetSourceInfo(context.Background(), connect.NewRequest(&v1.GetSourceInfoRequest{}))
 	if connect.CodeOf(err) != connect.CodeUnimplemented {
 		t.Errorf("GetSourceInfo: expected CodeUnimplemented, got %v", connect.CodeOf(err))
 	}

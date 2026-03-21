@@ -70,6 +70,119 @@ func New(engine laredo.Engine, opts ...Option) *Service {
 	return s
 }
 
+// --- Status & Monitoring ---
+
+// GetStatus returns the aggregate engine state with source and pipeline statuses.
+func (s *Service) GetStatus(_ context.Context, _ *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error) {
+	pipelines := s.engine.Pipelines()
+
+	// Determine aggregate service state.
+	state := v1.ServiceState_SERVICE_STATE_STREAMING
+	if !s.engine.IsReady() {
+		state = v1.ServiceState_SERVICE_STATE_BASELINING
+	}
+	for _, p := range pipelines {
+		if p.State == laredo.PipelineError {
+			state = v1.ServiceState_SERVICE_STATE_ERROR
+			break
+		}
+		if p.State == laredo.PipelinePaused {
+			state = v1.ServiceState_SERVICE_STATE_PAUSED
+		}
+	}
+
+	// Build pipeline statuses.
+	pipelineStatuses := make([]*v1.PipelineStatus, 0, len(pipelines))
+	for _, p := range pipelines {
+		pipelineStatuses = append(pipelineStatuses, pipelineInfoToProto(p))
+	}
+
+	// Build source statuses.
+	sourceIDs := s.engine.SourceIDs()
+	sourceStatuses := make([]*v1.SourceStatus, 0, len(sourceIDs))
+	for _, sid := range sourceIDs {
+		sourceStatuses = append(sourceStatuses, &v1.SourceStatus{
+			SourceId: sid,
+		})
+	}
+
+	return connect.NewResponse(&v1.GetStatusResponse{
+		State:     state,
+		Pipelines: pipelineStatuses,
+		Sources:   sourceStatuses,
+	}), nil
+}
+
+// GetTableStatus returns pipelines for a specific table.
+func (s *Service) GetTableStatus(_ context.Context, req *connect.Request[v1.GetTableStatusRequest]) (*connect.Response[v1.GetTableStatusResponse], error) {
+	schema := req.Msg.GetSchema()
+	table := req.Msg.GetTable()
+	if schema == "" || table == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("schema and table are required"))
+	}
+
+	tid := laredo.Table(schema, table)
+	var statuses []*v1.PipelineStatus
+	for _, p := range s.engine.Pipelines() {
+		if p.Table == tid {
+			statuses = append(statuses, pipelineInfoToProto(p))
+		}
+	}
+
+	return connect.NewResponse(&v1.GetTableStatusResponse{
+		Pipelines: statuses,
+	}), nil
+}
+
+// GetPipelineStatus returns the status of a single pipeline.
+func (s *Service) GetPipelineStatus(_ context.Context, req *connect.Request[v1.GetPipelineStatusRequest]) (*connect.Response[v1.GetPipelineStatusResponse], error) {
+	pipelineID := req.Msg.GetPipelineId()
+	if pipelineID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("pipeline_id is required"))
+	}
+
+	for _, p := range s.engine.Pipelines() {
+		if p.ID == pipelineID {
+			return connect.NewResponse(&v1.GetPipelineStatusResponse{
+				Status: pipelineInfoToProto(p),
+			}), nil
+		}
+	}
+
+	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("pipeline %s not found", pipelineID))
+}
+
+func pipelineInfoToProto(p laredo.PipelineInfo) *v1.PipelineStatus {
+	return &v1.PipelineStatus{
+		PipelineId: p.ID,
+		SourceId:   p.SourceID,
+		Schema:     p.Table.Schema,
+		Table:      p.Table.Table,
+		TargetType: p.TargetType,
+		State:      pipelineStateToProto(p.State),
+		RowCount:   p.RowCount,
+	}
+}
+
+func pipelineStateToProto(s laredo.PipelineState) v1.PipelineState {
+	switch s {
+	case laredo.PipelineInitializing:
+		return v1.PipelineState_PIPELINE_STATE_INITIALIZING
+	case laredo.PipelineBaselining:
+		return v1.PipelineState_PIPELINE_STATE_BASELINING
+	case laredo.PipelineStreaming:
+		return v1.PipelineState_PIPELINE_STATE_STREAMING
+	case laredo.PipelinePaused:
+		return v1.PipelineState_PIPELINE_STATE_PAUSED
+	case laredo.PipelineError:
+		return v1.PipelineState_PIPELINE_STATE_ERROR
+	case laredo.PipelineStopped:
+		return v1.PipelineState_PIPELINE_STATE_STOPPED
+	default:
+		return v1.PipelineState_PIPELINE_STATE_UNSPECIFIED
+	}
+}
+
 // CheckReady reports whether the engine (or a specific source/pipeline) is ready.
 func (s *Service) CheckReady(_ context.Context, req *connect.Request[v1.CheckReadyRequest]) (*connect.Response[v1.CheckReadyResponse], error) {
 	var ready bool

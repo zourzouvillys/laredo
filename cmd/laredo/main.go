@@ -18,6 +18,8 @@ import (
 	"github.com/zourzouvillys/laredo/gen/laredo/v1/laredov1connect"
 )
 
+const outputJSON = "json"
+
 var (
 	address = "localhost:4001"
 	timeout = 10 * time.Second
@@ -41,6 +43,8 @@ func main() {
 	switch cmd {
 	case "version":
 		fmt.Printf("laredo %s\n", laredo.Version)
+	case "status":
+		statusCmd(args)
 	case "ready":
 		readyCmd(args)
 	case "snapshot":
@@ -70,6 +74,7 @@ func usage() {
 Usage: laredo <command> [flags]
 
 Commands:
+  status             Show service status (pipelines, sources)
   ready              Check if the server is ready (exit 0/1)
   reload             Trigger re-baseline for a table
   pause              Pause a source
@@ -116,6 +121,75 @@ func ctx() context.Context {
 	c, cancel := context.WithTimeout(context.Background(), timeout) //nolint:gosec // cancel deferred; short-lived CLI process
 	defer cancel()
 	return c
+}
+
+// --- status ---
+
+func statusCmd(args []string) {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	table := fs.String("table", "", "filter by table (schema.table)")
+	parseGlobalFlags(fs, args)
+
+	if *table != "" {
+		// Table-specific status.
+		schema, tbl, ok := strings.Cut(*table, ".")
+		if !ok {
+			fmt.Fprintln(os.Stderr, "table must be in schema.table format")
+			os.Exit(1)
+		}
+		resp, err := oamClient().GetTableStatus(ctx(), connect.NewRequest(&v1.GetTableStatusRequest{
+			Schema: schema,
+			Table:  tbl,
+		}))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		if output == outputJSON {
+			printJSON(resp.Msg)
+			return
+		}
+		printPipelineTable(resp.Msg.GetPipelines())
+		return
+	}
+
+	// Global status.
+	resp, err := oamClient().GetStatus(ctx(), connect.NewRequest(&v1.GetStatusRequest{}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if output == outputJSON {
+		printJSON(resp.Msg)
+		return
+	}
+
+	fmt.Printf("Service State: %s\n\n", resp.Msg.GetState())
+
+	if len(resp.Msg.GetSources()) > 0 {
+		fmt.Println("SOURCES:")
+		for _, s := range resp.Msg.GetSources() {
+			fmt.Printf("  %s\n", s.GetSourceId())
+		}
+		fmt.Println()
+	}
+
+	if len(resp.Msg.GetPipelines()) > 0 {
+		fmt.Println("PIPELINES:")
+		printPipelineTable(resp.Msg.GetPipelines())
+	}
+}
+
+func printPipelineTable(pipelines []*v1.PipelineStatus) {
+	fmt.Printf("  %-50s  %-12s  %s\n", "PIPELINE", "STATE", "ROWS")
+	for _, p := range pipelines {
+		fmt.Printf("  %-50s  %-12s  %d\n",
+			p.GetPipelineId(),
+			p.GetState().String(),
+			p.GetRowCount(),
+		)
+	}
 }
 
 // --- ready ---
@@ -186,7 +260,7 @@ func snapshotListCmd(args []string) {
 	}
 
 	snaps := resp.Msg.GetSnapshots()
-	if output == "json" {
+	if output == outputJSON {
 		printJSON(snaps)
 		return
 	}
@@ -485,7 +559,7 @@ func deadLettersCmd(args []string) {
 	}
 
 	entries := resp.Msg.GetEntries()
-	if output == "json" {
+	if output == outputJSON {
 		printJSON(entries)
 		return
 	}

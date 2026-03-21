@@ -49,6 +49,22 @@ type Engine interface {
 
 	// Targets returns all targets bound to the given source and table.
 	Targets(sourceID string, table TableIdentifier) []SyncTarget
+
+	// Pipelines returns the current state of all pipelines.
+	Pipelines() []PipelineInfo
+
+	// SourceIDs returns the IDs of all registered sources.
+	SourceIDs() []string
+}
+
+// PipelineInfo describes the runtime state of a pipeline.
+type PipelineInfo struct {
+	ID         string
+	SourceID   string
+	Table      TableIdentifier
+	TargetType string
+	State      PipelineState
+	RowCount   int64 // expected row count (from engine tracking)
 }
 
 // Option configures the engine.
@@ -1684,6 +1700,36 @@ func (e *coreEngine) Targets(sourceID string, table TableIdentifier) []SyncTarge
 		}
 	}
 	return result
+}
+
+//nolint:revive // Engine interface implementation.
+func (e *coreEngine) Pipelines() []PipelineInfo {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	result := make([]PipelineInfo, len(e.pipelines))
+	for i := range e.pipelines {
+		p := &e.pipelines[i]
+		result[i] = PipelineInfo{
+			ID:         p.id,
+			SourceID:   p.sourceID,
+			Table:      p.table,
+			TargetType: targetTypeName(p.target),
+			State:      p.loadState(),
+			RowCount:   p.expectedRows.Load(),
+		}
+	}
+	return result
+}
+
+//nolint:revive // Engine interface implementation.
+func (e *coreEngine) SourceIDs() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	ids := make([]string, 0, len(e.sources))
+	for id := range e.sources {
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // GetTarget retrieves a typed target from the engine for direct querying.
