@@ -126,7 +126,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Post-baseline row count verification (dispatched count vs target.Count())
 - [ ] Periodic row count drift detection on configurable interval
 - [x] `OnValidationResult` observer callback (fires after baseline with match/mismatch)
-- [ ] Configurable action on mismatch: `warn`, `re_baseline`, `error`
+- [x] Configurable action on mismatch: `WithValidationAction` (Warn/ReBaseline/Fail)
 
 ---
 

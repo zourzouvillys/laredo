@@ -35,6 +35,16 @@ const (
 	ErrorStopAll                           // Halt the engine.
 )
 
+// ValidationAction controls what happens when a validation check detects a mismatch.
+type ValidationAction int
+
+// Validation mismatch actions.
+const (
+	ValidationWarn       ValidationAction = iota // Log via observer, continue streaming.
+	ValidationReBaseline                         // Trigger re-baseline for the table.
+	ValidationFail                               // Mark pipeline as ERROR.
+)
+
 // DeadLetterStore persists failed changes for later inspection or replay.
 type DeadLetterStore interface {
 	// Write persists a failed change with error context.

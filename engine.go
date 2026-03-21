@@ -68,17 +68,18 @@ type engineConfig struct {
 }
 
 type pipelineConfig struct {
-	sourceID        string
-	table           TableIdentifier
-	target          SyncTarget
-	filters         []PipelineFilter
-	transforms      []PipelineTransform
-	bufferSize      int
-	bufferPolicy    BufferPolicy
-	errorPolicy     ErrorPolicyKind
-	maxRetries      int
-	ttlFunc         func(Row) time.Time
-	ttlScanInterval time.Duration
+	sourceID         string
+	table            TableIdentifier
+	target           SyncTarget
+	filters          []PipelineFilter
+	transforms       []PipelineTransform
+	bufferSize       int
+	bufferPolicy     BufferPolicy
+	errorPolicy      ErrorPolicyKind
+	maxRetries       int
+	ttlFunc          func(Row) time.Time
+	ttlScanInterval  time.Duration
+	validationAction ValidationAction
 }
 
 // WithSource registers a named source.
@@ -197,6 +198,14 @@ func WithTTLScanInterval(d time.Duration) PipelineOption {
 	}
 }
 
+// WithValidationAction sets the action to take when post-baseline validation
+// detects a row count mismatch. Default is ValidationWarn (log only).
+func WithValidationAction(action ValidationAction) PipelineOption {
+	return func(c *pipelineConfig) {
+		c.validationAction = action
+	}
+}
+
 // WithObserver sets the engine observer.
 func WithObserver(o EngineObserver) Option {
 	return func(c *engineConfig) {
@@ -280,19 +289,20 @@ func NewEngine(opts ...Option) (Engine, []error) {
 	for i, pc := range cfg.pipelines {
 		id := generatePipelineID(pc.sourceID, pc.table, pc.target)
 		pipelines[i] = resolvedPipeline{
-			id:              id,
-			sourceID:        pc.sourceID,
-			table:           pc.table,
-			target:          pc.target,
-			filters:         pc.filters,
-			transforms:      pc.transforms,
-			bufferSize:      pc.bufferSize,
-			bufferPolicy:    pc.bufferPolicy,
-			errorPolicy:     pc.errorPolicy,
-			maxRetries:      pc.maxRetries,
-			ttlFunc:         pc.ttlFunc,
-			ttlScanInterval: pc.ttlScanInterval,
-			state:           PipelineInitializing,
+			id:               id,
+			sourceID:         pc.sourceID,
+			table:            pc.table,
+			target:           pc.target,
+			filters:          pc.filters,
+			transforms:       pc.transforms,
+			bufferSize:       pc.bufferSize,
+			bufferPolicy:     pc.bufferPolicy,
+			errorPolicy:      pc.errorPolicy,
+			maxRetries:       pc.maxRetries,
+			ttlFunc:          pc.ttlFunc,
+			ttlScanInterval:  pc.ttlScanInterval,
+			validationAction: pc.validationAction,
+			state:            PipelineInitializing,
 		}
 		pipelineIDs[i] = id
 	}
@@ -401,19 +411,20 @@ func targetTypeName(target SyncTarget) string {
 
 // resolvedPipeline holds the fully resolved configuration and runtime state for a pipeline.
 type resolvedPipeline struct {
-	id              string
-	sourceID        string
-	table           TableIdentifier
-	target          SyncTarget
-	filters         []PipelineFilter
-	transforms      []PipelineTransform
-	bufferSize      int
-	bufferPolicy    BufferPolicy
-	errorPolicy     ErrorPolicyKind
-	maxRetries      int
-	ttlFunc         func(Row) time.Time
-	ttlScanInterval time.Duration
-	state           PipelineState
+	id               string
+	sourceID         string
+	table            TableIdentifier
+	target           SyncTarget
+	filters          []PipelineFilter
+	transforms       []PipelineTransform
+	bufferSize       int
+	bufferPolicy     BufferPolicy
+	errorPolicy      ErrorPolicyKind
+	maxRetries       int
+	ttlFunc          func(Row) time.Time
+	ttlScanInterval  time.Duration
+	validationAction ValidationAction
+	state            PipelineState
 }
 
 var (
@@ -790,6 +801,18 @@ func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source Sy
 			targetCount := int64(counter.Count())
 			match := sourceCount == targetCount
 			e.observer.OnValidationResult(p.id, p.table, sourceCount, targetCount, match)
+
+			if !match {
+				switch p.validationAction {
+				case ValidationWarn:
+					// Observer already notified; continue normally.
+				case ValidationReBaseline:
+					// Will be handled after transition to streaming via Reload.
+					e.transitionPipeline(idx, PipelineError)
+				case ValidationFail:
+					e.transitionPipeline(idx, PipelineError)
+				}
+			}
 		}
 	}
 
