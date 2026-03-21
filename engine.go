@@ -450,6 +450,15 @@ func (e *coreEngine) runSource(ctx context.Context, sourceID string, pipelineIdx
 		}
 	}
 
+	// Try snapshot restore: load latest snapshot, restore targets, resume from
+	// the snapshot's source position.
+	if e.snapshotStore != nil {
+		if pos := e.trySnapshotRestore(ctx, sourceID, source, pipelineIdxs); pos != nil {
+			e.streamFromPosition(ctx, sourceID, source, pipelineIdxs, pos)
+			return
+		}
+	}
+
 	// Full baseline path.
 	position = e.runBaseline(ctx, sourceID, source, tables, pipelineIdxs)
 	if position == nil {
@@ -462,6 +471,84 @@ func (e *coreEngine) runSource(ctx context.Context, sourceID string, pipelineIdx
 // runBaseline performs the full baseline flow: transition to BASELINING, read all
 // rows from the source, dispatch to targets, complete. Returns the baseline position
 // or nil if the baseline failed.
+// trySnapshotRestore attempts to restore targets from the latest snapshot.
+// Returns the source position to resume from, or nil if restore failed or
+// no usable snapshot exists (caller should fall through to full baseline).
+func (e *coreEngine) trySnapshotRestore(ctx context.Context, sourceID string, _ SyncSource, pipelineIdxs []int) Position {
+	// List snapshots (newest first).
+	snapshots, err := e.snapshotStore.List(ctx, nil)
+	if err != nil || len(snapshots) == 0 {
+		return nil
+	}
+
+	// Load the latest snapshot.
+	snapshotID := snapshots[0].SnapshotID
+	e.observer.OnSnapshotRestoreStarted(snapshotID)
+	restoreStart := time.Now()
+
+	metadata, entries, err := e.snapshotStore.Load(ctx, snapshotID)
+	if err != nil {
+		e.observer.OnSnapshotFailed(snapshotID, ErrorInfo{Err: err, Message: fmt.Sprintf("load snapshot: %v", err)})
+		return nil
+	}
+
+	// Check for a source position to resume from.
+	var resumePos Position
+	if metadata.SourcePositions != nil {
+		resumePos = metadata.SourcePositions[sourceID]
+	}
+	if resumePos == nil {
+		// No position for this source — snapshot unusable, fall through to baseline.
+		e.observer.OnSnapshotFailed(snapshotID, ErrorInfo{
+			Message: fmt.Sprintf("snapshot has no position for source %s", sourceID),
+		})
+		return nil
+	}
+
+	// Restore each target from snapshot data.
+	for _, idx := range pipelineIdxs {
+		p := &e.pipelines[idx]
+		if p.state != PipelineInitializing {
+			continue
+		}
+
+		tableEntries := entries[p.table]
+		tableInfo := findSnapshotTableInfo(metadata.Tables, p.table)
+
+		if err := p.target.RestoreSnapshot(ctx, tableInfo, tableEntries); err != nil {
+			// Snapshot unusable for this target — fall through to baseline.
+			e.observer.OnSnapshotFailed(snapshotID, ErrorInfo{
+				Err:     err,
+				Message: fmt.Sprintf("restore target %s: %v", p.id, err),
+			})
+			return nil
+		}
+	}
+
+	// All targets restored — transition to STREAMING.
+	for _, idx := range pipelineIdxs {
+		p := &e.pipelines[idx]
+		if p.state == PipelineInitializing {
+			e.transitionPipeline(idx, PipelineStreaming)
+			e.readiness.SetReady(p.id)
+		}
+	}
+
+	e.observer.OnSnapshotRestoreCompleted(snapshotID, time.Since(restoreStart))
+	return resumePos
+}
+
+// findSnapshotTableInfo finds the TableSnapshotInfo for a table in the metadata,
+// or returns a zero value if not found.
+func findSnapshotTableInfo(tables []TableSnapshotInfo, table TableIdentifier) TableSnapshotInfo {
+	for _, t := range tables {
+		if t.Table == table {
+			return t
+		}
+	}
+	return TableSnapshotInfo{Table: table}
+}
+
 func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source SyncSource, tables []TableIdentifier, pipelineIdxs []int) Position {
 	e.transitionPipelines(pipelineIdxs, PipelineBaselining)
 

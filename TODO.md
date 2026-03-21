@@ -59,8 +59,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 - [x] Cold start — no snapshot, no resume: full baseline from source
 - [x] Resume — source `SupportsResume()` + has last ACKed position: skip baseline, resume stream
-- [ ] Snapshot restore — load from snapshot store, validate positions, call `target.RestoreSnapshot()`, then resume stream
-- [ ] Snapshot unusable fallback — log warning, fall through to full baseline
+- [x] Snapshot restore — load latest snapshot, restore targets via `RestoreSnapshot()`, resume from snapshot's source position
+- [x] Snapshot unusable fallback — no source position or restore error → fall through to full baseline
 - [x] Re-baseline flow (spec §4.1.2) — pause stream, `OnTruncate`, re-baseline rows, resume stream
 
 ### 2.3 Change Buffer

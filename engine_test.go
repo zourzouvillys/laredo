@@ -1569,6 +1569,159 @@ func TestEngine_ErrorPolicyStopSource(t *testing.T) {
 	}
 }
 
+func TestEngine_SnapshotRestore(t *testing.T) {
+	src := configuredSource()
+	// Don't add any baseline rows — data will come from snapshot.
+
+	target := memory.NewIndexedTarget()
+	obs := &testutil.TestObserver{}
+
+	// Pre-populate the snapshot store with data.
+	store := &fakeSnapshotStore{}
+	store.saved = append(store.saved, savedSnapshot{
+		id: "snap-restore-test",
+		metadata: laredo.SnapshotMetadata{
+			SnapshotID: "snap-restore-test",
+			CreatedAt:  time.Now(),
+			Tables: []laredo.TableSnapshotInfo{
+				{Table: testutil.SampleTable(), RowCount: 2},
+			},
+			SourcePositions: map[string]laredo.Position{
+				"pg": uint64(42),
+			},
+		},
+		entries: map[laredo.TableIdentifier][]laredo.SnapshotEntry{
+			testutil.SampleTable(): {
+				{Row: testutil.SampleRow(1, "snapshot-alice")},
+				{Row: testutil.SampleRow(2, "snapshot-bob")},
+			},
+		},
+	})
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithObserver(obs),
+		laredo.WithSnapshotStore(store),
+		laredo.WithSnapshotSerializer(fakeSnapshotSerializer{}),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Data should come from the snapshot, not baseline.
+	if target.Count() != 2 {
+		t.Fatalf("expected 2 rows from snapshot restore, got %d", target.Count())
+	}
+
+	row, ok := target.Get(1)
+	if !ok {
+		t.Fatal("expected row with id=1")
+	}
+	if row["name"] != "snapshot-alice" {
+		t.Errorf("expected snapshot-alice, got %v", row["name"])
+	}
+
+	// No BaselineStarted events — baseline was skipped.
+	if obs.EventCount("BaselineStarted") != 0 {
+		t.Errorf("expected 0 BaselineStarted (snapshot restore), got %d", obs.EventCount("BaselineStarted"))
+	}
+
+	// SnapshotRestoreStarted and SnapshotRestoreCompleted should fire.
+	if obs.EventCount("SnapshotRestoreStarted") != 1 {
+		t.Errorf("expected 1 SnapshotRestoreStarted, got %d", obs.EventCount("SnapshotRestoreStarted"))
+	}
+	if obs.EventCount("SnapshotRestoreCompleted") != 1 {
+		t.Errorf("expected 1 SnapshotRestoreCompleted, got %d", obs.EventCount("SnapshotRestoreCompleted"))
+	}
+
+	// Streaming should still work after restore.
+	src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(3, "charlie"))
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return target.Count() == 3
+	}, "expected 3 rows after snapshot restore + insert")
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+func TestEngine_SnapshotRestoreFallback(t *testing.T) {
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "baseline-alice"))
+
+	target := memory.NewIndexedTarget()
+	obs := &testutil.TestObserver{}
+
+	// Snapshot store with no source position — should fall through to baseline.
+	store := &fakeSnapshotStore{}
+	store.saved = append(store.saved, savedSnapshot{
+		id: "snap-no-position",
+		metadata: laredo.SnapshotMetadata{
+			SnapshotID: "snap-no-position",
+			CreatedAt:  time.Now(),
+			Tables: []laredo.TableSnapshotInfo{
+				{Table: testutil.SampleTable(), RowCount: 1},
+			},
+			// No SourcePositions — snapshot unusable.
+		},
+		entries: map[laredo.TableIdentifier][]laredo.SnapshotEntry{
+			testutil.SampleTable(): {
+				{Row: testutil.SampleRow(99, "should-not-appear")},
+			},
+		},
+	})
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithObserver(obs),
+		laredo.WithSnapshotStore(store),
+		laredo.WithSnapshotSerializer(fakeSnapshotSerializer{}),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Should have fallen back to baseline — data from source, not snapshot.
+	if target.Count() != 1 {
+		t.Fatalf("expected 1 row from baseline fallback, got %d", target.Count())
+	}
+
+	row, ok := target.Get(1)
+	if !ok {
+		t.Fatal("expected row with id=1")
+	}
+	if row["name"] != "baseline-alice" {
+		t.Errorf("expected baseline-alice, got %v", row["name"])
+	}
+
+	// BaselineStarted should fire (fell back to baseline).
+	if obs.EventCount("BaselineStarted") != 1 {
+		t.Errorf("expected 1 BaselineStarted (fallback), got %d", obs.EventCount("BaselineStarted"))
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
 // contains checks if s contains substr.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
@@ -1606,8 +1759,15 @@ func (s *fakeSnapshotStore) Save(_ context.Context, id string, meta laredo.Snaps
 	return laredo.SnapshotDescriptor{SnapshotID: id}, nil
 }
 
-func (s *fakeSnapshotStore) Load(_ context.Context, _ string) (laredo.SnapshotMetadata, map[laredo.TableIdentifier][]laredo.SnapshotEntry, error) {
-	return laredo.SnapshotMetadata{}, nil, nil
+func (s *fakeSnapshotStore) Load(_ context.Context, id string) (laredo.SnapshotMetadata, map[laredo.TableIdentifier][]laredo.SnapshotEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, snap := range s.saved {
+		if snap.id == id {
+			return snap.metadata, snap.entries, nil
+		}
+	}
+	return laredo.SnapshotMetadata{}, nil, fmt.Errorf("snapshot %s not found", id)
 }
 
 func (s *fakeSnapshotStore) Describe(_ context.Context, _ string) (laredo.SnapshotDescriptor, error) {
@@ -1615,7 +1775,16 @@ func (s *fakeSnapshotStore) Describe(_ context.Context, _ string) (laredo.Snapsh
 }
 
 func (s *fakeSnapshotStore) List(_ context.Context, _ *laredo.SnapshotFilter) ([]laredo.SnapshotDescriptor, error) {
-	return nil, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	descriptors := make([]laredo.SnapshotDescriptor, 0, len(s.saved))
+	for _, snap := range s.saved {
+		descriptors = append(descriptors, laredo.SnapshotDescriptor{
+			SnapshotID: snap.id,
+			CreatedAt:  snap.metadata.CreatedAt,
+		})
+	}
+	return descriptors, nil
 }
 
 func (s *fakeSnapshotStore) Delete(_ context.Context, _ string) error { return nil }
