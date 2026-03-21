@@ -84,7 +84,7 @@ laredo.WithPipeline("pg_main",
     laredo.Table("public", "config_document"),
     memory.NewIndexedTarget(
         memory.LookupFields("instance_id", "key"),
-        memory.AddIndex("by_instance", []string{"instance_id"}, false),
+        memory.AddIndex(laredo.IndexDefinition{Name: "by_instance", Fields: []string{"instance_id"}}),
     ),
     // Only sync active rows
     laredo.PipelineFilterOpt(laredo.PipelineFilterFunc(

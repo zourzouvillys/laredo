@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zourzouvillys/laredo/internal/engine"
 )
 
 // Engine orchestrates pipelines binding sources to targets.
@@ -193,9 +195,11 @@ func NewEngine(opts ...Option) (Engine, []error) {
 	}
 
 	pipelines := make([]resolvedPipeline, len(cfg.pipelines))
+	pipelineIDs := make([]string, len(cfg.pipelines))
 	for i, pc := range cfg.pipelines {
+		id := generatePipelineID(pc.sourceID, pc.table, pc.target)
 		pipelines[i] = resolvedPipeline{
-			id:           generatePipelineID(pc.sourceID, pc.table, pc.target),
+			id:           id,
 			sourceID:     pc.sourceID,
 			table:        pc.table,
 			target:       pc.target,
@@ -207,12 +211,14 @@ func NewEngine(opts ...Option) (Engine, []error) {
 			maxRetries:   pc.maxRetries,
 			state:        PipelineInitializing,
 		}
+		pipelineIDs[i] = id
 	}
 
 	return &coreEngine{
 		sources:            cfg.sources,
 		pipelines:          pipelines,
 		observer:           observer,
+		readiness:          engine.NewReadinessTracker(pipelineIDs),
 		snapshotStore:      cfg.snapshotStore,
 		snapshotSerializer: cfg.snapshotSerializer,
 		snapshotSchedule:   cfg.snapshotSchedule,
@@ -324,6 +330,7 @@ type coreEngine struct {
 	sources   map[string]SyncSource
 	pipelines []resolvedPipeline
 	observer  EngineObserver
+	readiness *engine.ReadinessTracker
 
 	snapshotStore      SnapshotStore
 	snapshotSerializer SnapshotSerializer
@@ -333,12 +340,14 @@ type coreEngine struct {
 	mu      sync.RWMutex
 	started bool
 	stopped bool
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
 }
 
 var _ Engine = (*coreEngine)(nil)
 
 //nolint:revive // Engine interface implementation; docs are on the interface.
-func (e *coreEngine) Start(_ context.Context) error {
+func (e *coreEngine) Start(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.stopped {
@@ -348,35 +357,281 @@ func (e *coreEngine) Start(_ context.Context) error {
 		return errAlreadyStarted
 	}
 	e.started = true
-	// TODO: implement pipeline startup
+
+	runCtx, cancel := context.WithCancel(ctx)
+	e.cancel = cancel
+
+	// Group pipelines by source for initialization.
+	sourceGroups := e.groupPipelinesBySource()
+
+	for sourceID, pipelineIdxs := range sourceGroups {
+		e.wg.Add(1)
+		go e.runSource(runCtx, sourceID, pipelineIdxs)
+	}
+
 	return nil
 }
 
+// groupPipelinesBySource returns a map from source ID to pipeline indices.
+func (e *coreEngine) groupPipelinesBySource() map[string][]int {
+	groups := make(map[string][]int)
+	for i := range e.pipelines {
+		sid := e.pipelines[i].sourceID
+		groups[sid] = append(groups[sid], i)
+	}
+	return groups
+}
+
+// runSource runs the lifecycle for a single source: init → baseline → stream.
+func (e *coreEngine) runSource(ctx context.Context, sourceID string, pipelineIdxs []int) {
+	defer e.wg.Done()
+
+	source := e.sources[sourceID]
+
+	// Collect unique tables for this source.
+	tables := e.tablesForPipelines(pipelineIdxs)
+
+	// Init the source.
+	schemas, err := source.Init(ctx, SourceConfig{Tables: tables})
+	if err != nil {
+		e.transitionPipelines(pipelineIdxs, PipelineError)
+		e.observer.OnSourceDisconnected(sourceID, fmt.Sprintf("init failed: %v", err))
+		return
+	}
+
+	e.observer.OnSourceConnected(sourceID, reflect.TypeOf(source).String())
+
+	// Init each target with the column schema.
+	for _, idx := range pipelineIdxs {
+		p := &e.pipelines[idx]
+		cols := schemas[p.table]
+		if err := p.target.OnInit(ctx, p.table, cols); err != nil {
+			e.transitionPipeline(idx, PipelineError)
+			continue
+		}
+	}
+
+	// Baseline.
+	e.transitionPipelines(pipelineIdxs, PipelineBaselining)
+
+	rowCounts := make(map[TableIdentifier]int64, len(tables))
+	baselineStart := time.Now()
+
+	for _, idx := range pipelineIdxs {
+		p := &e.pipelines[idx]
+		if p.state == PipelineBaselining {
+			e.observer.OnBaselineStarted(p.id, p.table)
+		}
+	}
+
+	position, err := source.Baseline(ctx, tables, func(table TableIdentifier, row Row) {
+		rowCounts[table]++
+		e.dispatchBaselineRow(ctx, pipelineIdxs, table, row)
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		e.transitionPipelines(pipelineIdxs, PipelineError)
+		e.observer.OnSourceDisconnected(sourceID, fmt.Sprintf("baseline failed: %v", err))
+		return
+	}
+
+	baselineDuration := time.Since(baselineStart)
+
+	// Notify baseline complete for each pipeline.
+	for _, idx := range pipelineIdxs {
+		p := &e.pipelines[idx]
+		if p.state != PipelineBaselining {
+			continue
+		}
+		if err := p.target.OnBaselineComplete(ctx, p.table); err != nil {
+			e.transitionPipeline(idx, PipelineError)
+			continue
+		}
+		e.observer.OnBaselineCompleted(p.id, p.table, rowCounts[p.table], baselineDuration)
+	}
+
+	// Transition to streaming.
+	for _, idx := range pipelineIdxs {
+		p := &e.pipelines[idx]
+		if p.state != PipelineBaselining {
+			continue
+		}
+		e.transitionPipeline(idx, PipelineStreaming)
+		e.readiness.SetReady(p.id)
+	}
+
+	// Stream changes.
+	err = source.Stream(ctx, position, ChangeHandlerFunc(func(event ChangeEvent) error {
+		return e.dispatchChange(ctx, pipelineIdxs, event)
+	}))
+	if err != nil && ctx.Err() == nil {
+		e.observer.OnSourceDisconnected(sourceID, fmt.Sprintf("stream error: %v", err))
+		e.transitionPipelines(pipelineIdxs, PipelineError)
+	}
+}
+
+// tablesForPipelines returns the unique tables referenced by the given pipeline indices.
+func (e *coreEngine) tablesForPipelines(pipelineIdxs []int) []TableIdentifier {
+	seen := make(map[TableIdentifier]bool)
+	var tables []TableIdentifier
+	for _, idx := range pipelineIdxs {
+		t := e.pipelines[idx].table
+		if !seen[t] {
+			seen[t] = true
+			tables = append(tables, t)
+		}
+	}
+	return tables
+}
+
+// dispatchBaselineRow delivers a baseline row to all matching pipelines, applying
+// filters and transforms.
+func (e *coreEngine) dispatchBaselineRow(ctx context.Context, pipelineIdxs []int, table TableIdentifier, row Row) {
+	for _, idx := range pipelineIdxs {
+		p := &e.pipelines[idx]
+		if p.table != table || p.state != PipelineBaselining {
+			continue
+		}
+		r := applyFiltersAndTransforms(p, table, row)
+		if r == nil {
+			continue
+		}
+		if err := p.target.OnBaselineRow(ctx, table, r); err != nil {
+			e.transitionPipeline(idx, PipelineError)
+		}
+	}
+}
+
+// dispatchChange delivers a change event to all matching pipelines, applying
+// filters and transforms.
+func (e *coreEngine) dispatchChange(ctx context.Context, pipelineIdxs []int, event ChangeEvent) error {
+	for _, idx := range pipelineIdxs {
+		p := &e.pipelines[idx]
+		if p.table != event.Table || p.state != PipelineStreaming {
+			continue
+		}
+
+		start := time.Now()
+		e.observer.OnChangeReceived(p.id, event.Table, event.Action, event.Position)
+
+		var err error
+		switch event.Action {
+		case ActionInsert:
+			row := applyFiltersAndTransforms(p, event.Table, event.NewValues)
+			if row == nil {
+				continue
+			}
+			err = p.target.OnInsert(ctx, event.Table, row)
+		case ActionUpdate:
+			row := applyFiltersAndTransforms(p, event.Table, event.NewValues)
+			if row == nil {
+				continue
+			}
+			err = p.target.OnUpdate(ctx, event.Table, row, event.OldValues)
+		case ActionDelete:
+			err = p.target.OnDelete(ctx, event.Table, event.OldValues)
+		case ActionTruncate:
+			err = p.target.OnTruncate(ctx, event.Table)
+		}
+
+		if err != nil {
+			e.observer.OnChangeError(p.id, event.Table, event.Action, ErrorInfo{Err: err, Message: err.Error()})
+			e.transitionPipeline(idx, PipelineError)
+			continue
+		}
+		e.observer.OnChangeApplied(p.id, event.Table, event.Action, time.Since(start))
+	}
+	return nil
+}
+
+// applyFiltersAndTransforms runs the pipeline's filter and transform chains on a row.
+// Returns nil if the row is filtered out.
+func applyFiltersAndTransforms(p *resolvedPipeline, table TableIdentifier, row Row) Row {
+	for _, f := range p.filters {
+		if !f.Include(table, row) {
+			return nil
+		}
+	}
+	r := row
+	for _, t := range p.transforms {
+		r = t.Transform(table, r)
+		if r == nil {
+			return nil
+		}
+	}
+	return r
+}
+
+// transitionPipeline transitions a single pipeline to a new state and fires the observer.
+func (e *coreEngine) transitionPipeline(idx int, newState PipelineState) {
+	p := &e.pipelines[idx]
+	old := p.state
+	if old == newState {
+		return
+	}
+	p.state = newState
+	e.observer.OnPipelineStateChanged(p.id, old, newState)
+}
+
+// transitionPipelines transitions all pipelines that are not already in ERROR state.
+func (e *coreEngine) transitionPipelines(idxs []int, newState PipelineState) {
+	for _, idx := range idxs {
+		p := &e.pipelines[idx]
+		if p.state == PipelineError || p.state == PipelineStopped {
+			continue
+		}
+		e.transitionPipeline(idx, newState)
+	}
+}
+
 //nolint:revive // Engine interface implementation.
-func (e *coreEngine) Stop(_ context.Context) error {
+func (e *coreEngine) Stop(ctx context.Context) error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if e.stopped {
+		e.mu.Unlock()
 		return errStopped
 	}
 	if !e.started {
+		e.mu.Unlock()
 		return errNotStarted
 	}
 	e.stopped = true
-	// TODO: implement graceful shutdown
+	cancel := e.cancel
+	e.mu.Unlock()
+
+	// Cancel all source goroutines and wait for them to finish.
+	cancel()
+	e.wg.Wait()
+
+	// Close all targets.
+	for i := range e.pipelines {
+		p := &e.pipelines[i]
+		if p.state != PipelineStopped {
+			_ = p.target.OnClose(ctx, p.table)
+			e.transitionPipeline(i, PipelineStopped)
+		}
+	}
+
+	// Close all sources.
+	for sourceID, source := range e.sources {
+		if err := source.Close(ctx); err != nil {
+			e.observer.OnSourceDisconnected(sourceID, fmt.Sprintf("close error: %v", err))
+		}
+	}
+
 	return nil
 }
 
 //nolint:revive // Engine interface implementation.
-func (e *coreEngine) AwaitReady(_ time.Duration) bool {
-	// TODO: implement readiness tracking
-	return false
+func (e *coreEngine) AwaitReady(timeout time.Duration) bool {
+	return e.readiness.AwaitReady(timeout)
 }
 
 //nolint:revive // Engine interface implementation.
 func (e *coreEngine) IsReady() bool {
-	// TODO: implement readiness tracking
-	return false
+	return e.readiness.IsReady()
 }
 
 //nolint:revive // Engine interface implementation.

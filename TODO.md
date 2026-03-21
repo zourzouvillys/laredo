@@ -26,10 +26,10 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Pipeline ID generation: `"{sourceID}:{schema}.{table}:{targetType}"`
 - [x] `Engine.Targets()` — lookup targets by source and table (supports `GetTarget[T]`)
 - [x] Lifecycle stubs: `Start`/`Stop` with state tracking (started/stopped guards)
-- [ ] `Engine.Start()` — launch goroutines for each source, begin baseline or restore
-- [ ] `Engine.Stop()` — graceful shutdown: snapshot-on-shutdown, drain buffers, close sources/targets
-- [ ] `Engine.AwaitReady()` — block until all pipelines reach `STREAMING` or timeout
-- [ ] `Engine.IsReady()` — global and per-source/per-table/per-pipeline variants (spec §14.1)
+- [x] `Engine.Start()` — launch goroutines for each source, begin baseline or restore
+- [x] `Engine.Stop()` — graceful shutdown: drain buffers, close sources/targets (snapshot-on-shutdown deferred to §5.4)
+- [x] `Engine.AwaitReady()` — block until all pipelines reach `STREAMING` or timeout
+- [x] `Engine.IsReady()` — global readiness (per-source/per-table/per-pipeline variants deferred)
 - [ ] `Engine.OnReady(callback)` — callback-style readiness notification
 - [ ] `Engine.Reload()` — trigger re-baseline for a specific table (spec §4.1.2 forced re-baseline)
 - [ ] `Engine.Pause()` / `Engine.Resume()` — per-source pause/resume
@@ -48,16 +48,16 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 2.1 Pipeline Orchestrator
 
-- [ ] Source registration and lifecycle management (init, connect, close)
-- [ ] Pipeline construction: bind (source, table, filters, transforms, target)
-- [ ] Pipeline ID generation: `"{sourceID}:{schema}.{table}:{targetType}"`
-- [ ] Pipeline state machine: `INITIALIZING → BASELINING → STREAMING → PAUSED/ERROR/STOPPED`
-- [ ] Source demux: dispatch changes from one source stream to correct per-table pipelines
-- [ ] Multi-target fan-out: deliver each change to all targets for a table
+- [x] Source registration and lifecycle management (init, connect, close)
+- [x] Pipeline construction: bind (source, table, filters, transforms, target)
+- [x] Pipeline ID generation: `"{sourceID}:{schema}.{table}:{targetType}"`
+- [x] Pipeline state machine: `INITIALIZING → BASELINING → STREAMING → PAUSED/ERROR/STOPPED`
+- [x] Source demux: dispatch changes from one source stream to correct per-table pipelines
+- [x] Multi-target fan-out: deliver each change to all targets for a table (same table, different target types)
 
 ### 2.2 Baseline & Startup Paths
 
-- [ ] Cold start — no snapshot, no resume: full baseline from source
+- [x] Cold start — no snapshot, no resume: full baseline from source
 - [ ] Resume — source `SupportsResume()` + has last ACKed position: skip baseline, resume stream
 - [ ] Snapshot restore — load from snapshot store, validate positions, call `target.RestoreSnapshot()`, then resume stream
 - [ ] Snapshot unusable fallback — log warning, fall through to full baseline
@@ -89,8 +89,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 2.6 Filter & Transform Chain
 
-- [ ] Apply `PipelineFilter` chain before target dispatch (baseline rows + change events)
-- [ ] Apply `PipelineTransform` chain (mutate row, nil = drop)
+- [x] Apply `PipelineFilter` chain before target dispatch (baseline rows + change events)
+- [x] Apply `PipelineTransform` chain (mutate row, nil = drop)
 - [ ] Handle filter/transform on `DELETE` events (apply to identity/old values)
 
 ### 2.7 TTL / Expiry (spec §10)
@@ -104,20 +104,20 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 2.8 Readiness Tracking
 
-- [ ] Per-pipeline readiness: `true` when baseline complete and streaming
+- [x] Per-pipeline readiness: `true` when baseline complete and streaming
 - [ ] Per-source readiness: all pipelines on source are ready
-- [ ] Global readiness: all pipelines are ready
-- [ ] `AwaitReady` with timeout (channel + timer)
+- [x] Global readiness: all pipelines are ready
+- [x] `AwaitReady` with timeout (channel + timer)
 - [ ] Callback registration (`OnReady`)
 
 ### 2.9 Graceful Shutdown
 
-- [ ] Stop accepting new work
+- [x] Stop accepting new work
 - [ ] Flush all pipeline buffers
 - [ ] Take snapshot if `snapshotOnShutdown` is configured
-- [ ] Close all targets
+- [x] Close all targets
 - [ ] ACK final positions
-- [ ] Close all sources
+- [x] Close all sources
 - [ ] Configurable shutdown timeout
 
 ### 2.10 Validation (spec §12)
@@ -173,11 +173,12 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 3.3 Test Source (`source/testsource/`)
 
-- [ ] In-memory table data store
-- [ ] Programmable baseline: `AddRow()`, `SetSchema()`
-- [ ] Programmable stream: `EmitInsert()`, `EmitUpdate()`, `EmitDelete()`, `EmitTruncate()`
-- [ ] Position tracking: simple monotonic sequence
-- [ ] Configurable delays and error injection for testing edge cases
+- [x] In-memory table data store
+- [x] Programmable baseline: `AddRow()`, `SetSchema()`
+- [x] Programmable stream: `EmitInsert()`, `EmitUpdate()`, `EmitDelete()`, `EmitTruncate()`
+- [x] Position tracking: simple monotonic sequence
+- [x] Error injection: `SetInitError()`, `SetBaselineError()`
+- [ ] Configurable delays for testing edge cases
 
 ---
 
@@ -215,20 +216,20 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 4.3 Indexed In-Memory (`target/memory/` — `IndexedTarget`)
 
-- [ ] Primary row store: `map[primaryKey]Row`
-- [ ] Primary lookup index: unique composite key from `lookup_fields`
-- [ ] Additional indexes: unique (BiMap) and non-unique (multimap)
-- [ ] `OnInit` — validate all index fields exist in column schema, allocate data structures
-- [ ] `OnBaselineRow` / `OnInsert` — insert into store + all indexes, notify listeners `(nil, row)`
-- [ ] `OnUpdate` — lookup old row, replace in store, update all indexes, notify `(oldRow, newRow)`
-- [ ] `OnDelete` — remove from store + all indexes, notify `(oldRow, nil)`
-- [ ] `OnTruncate` — clear store + all indexes, notify
-- [ ] `IsDurable()` — always `true`
-- [ ] `OnSchemaChange` — new column: `CONTINUE`; dropped indexed column: `RE_BASELINE`/`ERROR`; type change on indexed field: `RE_BASELINE`
-- [ ] Query API: `Lookup(keyValues...) (Row, bool)`, `LookupAll(indexName, keyValues...) []Row`, `Get(pk) (Row, bool)`, `All() []Row`, `Count() int`, `Listen(func(old, new Row)) func()`
-- [ ] Export/restore snapshot
-- [ ] Thread safety: `sync.RWMutex` or equivalent for concurrent reads during streaming
-- [ ] Option builder: `LookupFields()`, `AddIndex()`
+- [x] Primary row store: `map[primaryKey]Row`
+- [x] Primary lookup index: unique composite key from `lookup_fields`
+- [x] Additional indexes: unique (BiMap) and non-unique (multimap)
+- [x] `OnInit` — validate all index fields exist in column schema, allocate data structures
+- [x] `OnBaselineRow` / `OnInsert` — insert into store + all indexes, notify listeners `(nil, row)`
+- [x] `OnUpdate` — lookup old row, replace in store, update all indexes, notify `(oldRow, newRow)`
+- [x] `OnDelete` — remove from store + all indexes, notify `(oldRow, nil)`
+- [x] `OnTruncate` — clear store + all indexes, notify
+- [x] `IsDurable()` — always `true`
+- [x] `OnSchemaChange` — new column: `CONTINUE`; dropped indexed column: `RE_BASELINE`
+- [x] Query API: `Lookup(keyValues...) (Row, bool)`, `LookupAll(indexName, keyValues...) []Row`, `Get(pk) (Row, bool)`, `All() iter.Seq2`, `Count() int`, `Listen(func(old, new Row)) func()`
+- [x] Export/restore snapshot
+- [x] Thread safety: `sync.RWMutex` for concurrent reads during streaming
+- [x] Option builder: `LookupFields()`, `AddIndex()`
 
 ### 4.4 Replication Fan-Out (`target/fanout/`)
 

@@ -29,7 +29,7 @@ targets = [{
 ```go
 target := memory.NewIndexedTarget(
     memory.LookupFields("instance_id", "key"),
-    memory.AddIndex("by_instance", []string{"instance_id"}, false),
+    memory.AddIndex(laredo.IndexDefinition{Name: "by_instance", Fields: []string{"instance_id"}}),
 )
 ```
 
@@ -45,8 +45,10 @@ rows := target.LookupAll("by_instance", "inst_abc")
 // Get by primary key
 row, ok := target.Get(42)
 
-// All rows
-allRows := target.All()
+// All rows (returns iter.Seq2[string, Row])
+for key, row := range target.All() {
+    fmt.Printf("pk=%s: %v\n", key, row)
+}
 
 // Row count
 count := target.Count()

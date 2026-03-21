@@ -2,12 +2,16 @@ package laredo_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/zourzouvillys/laredo"
+	"github.com/zourzouvillys/laredo/filter"
 	"github.com/zourzouvillys/laredo/source/testsource"
 	"github.com/zourzouvillys/laredo/target/memory"
 	"github.com/zourzouvillys/laredo/test/testutil"
+	"github.com/zourzouvillys/laredo/transform"
 )
 
 func validOpts() []laredo.Option {
@@ -373,18 +377,378 @@ func TestEngine_CreateSnapshotWithoutStore(t *testing.T) {
 	}
 }
 
-func TestEngine_ReadinessStubs(t *testing.T) {
+func TestEngine_ReadinessBeforeStart(t *testing.T) {
 	e, errs := laredo.NewEngine(validOpts()...)
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
 
-	// Readiness stubs return false until implemented.
+	// Readiness returns false before baselines complete.
 	if e.IsReady() {
-		t.Error("expected IsReady to return false (stub)")
+		t.Error("expected IsReady to return false before start")
 	}
 	if e.AwaitReady(0) {
-		t.Error("expected AwaitReady to return false (stub)")
+		t.Error("expected AwaitReady to return false before start")
+	}
+}
+
+// configuredSource creates a test source with schemas and baseline rows configured.
+func configuredSource() *testsource.Source {
+	src := testsource.New()
+	src.SetSchema(testutil.SampleTable(), testutil.SampleColumns())
+	return src
+}
+
+func TestEngine_BaselineAndReady(t *testing.T) {
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(2, "bob"))
+
+	target := memory.NewIndexedTarget()
+	obs := &testutil.TestObserver{}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// Wait for readiness (baseline completes → streaming).
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Verify baseline rows arrived at target.
+	if target.Count() != 2 {
+		t.Fatalf("expected 2 rows, got %d", target.Count())
+	}
+
+	row, ok := target.Get(1)
+	if !ok {
+		t.Fatal("expected to find row with id=1")
+	}
+	if row["name"] != "alice" { //nolint:goconst // test literal
+		t.Errorf("expected name=alice, got %v", row["name"])
+	}
+
+	// Verify observer events.
+	if obs.EventCount("SourceConnected") != 1 {
+		t.Errorf("expected 1 SourceConnected, got %d", obs.EventCount("SourceConnected"))
+	}
+	if obs.EventCount("BaselineStarted") != 1 {
+		t.Errorf("expected 1 BaselineStarted, got %d", obs.EventCount("BaselineStarted"))
+	}
+	if obs.EventCount("BaselineCompleted") != 1 {
+		t.Errorf("expected 1 BaselineCompleted, got %d", obs.EventCount("BaselineCompleted"))
+	}
+
+	// Verify state transitions: INITIALIZING → BASELINING → STREAMING.
+	stateChanges := obs.EventsByType("PipelineStateChanged")
+	if len(stateChanges) < 2 {
+		t.Fatalf("expected at least 2 state changes, got %d", len(stateChanges))
+	}
+	if stateChanges[0].Data["newState"] != laredo.PipelineBaselining {
+		t.Errorf("expected first transition to BASELINING, got %v", stateChanges[0].Data["newState"])
+	}
+	if stateChanges[1].Data["newState"] != laredo.PipelineStreaming {
+		t.Errorf("expected second transition to STREAMING, got %v", stateChanges[1].Data["newState"])
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+func TestEngine_StreamingChanges(t *testing.T) {
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+
+	target := memory.NewIndexedTarget()
+	obs := &testutil.TestObserver{}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Emit insert.
+	src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(2, "bob"))
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return target.Count() == 2
+	}, "expected 2 rows after insert")
+
+	// Emit update.
+	src.EmitUpdate(testutil.SampleTable(),
+		testutil.SampleRow(1, "alice-updated"),
+		laredo.Row{"id": 1},
+	)
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		row, ok := target.Get(1)
+		return ok && row["name"] == "alice-updated"
+	}, "expected name to be updated")
+
+	// Emit delete.
+	src.EmitDelete(testutil.SampleTable(), laredo.Row{"id": 2})
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return target.Count() == 1
+	}, "expected 1 row after delete")
+
+	// Verify observer received change events.
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return obs.EventCount("ChangeApplied") >= 3
+	}, "expected at least 3 ChangeApplied events")
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+func TestEngine_FilterChain(t *testing.T) {
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(2, "bob"))
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(3, "charlie"))
+
+	target := memory.NewIndexedTarget()
+
+	// Filter: only rows where name starts with "a".
+	nameFilter := &filter.FieldPrefix{Field: "name", Prefix: "a"}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target,
+			laredo.PipelineFilterOpt(nameFilter),
+		),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Only "alice" passes the filter (name starts with "a").
+	if target.Count() != 1 {
+		t.Fatalf("expected 1 row after filter, got %d", target.Count())
+	}
+
+	row, ok := target.Get(1)
+	if !ok {
+		t.Fatal("expected row with id=1")
+	}
+	if row["name"] != "alice" {
+		t.Errorf("expected alice, got %v", row["name"])
+	}
+
+	// Streaming insert that passes filter.
+	src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(4, "anna"))
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return target.Count() == 2
+	}, "expected 2 rows after filtered insert")
+
+	// Streaming insert that doesn't pass filter.
+	src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(5, "zoe"))
+	// Give it time to process, then verify it wasn't added.
+	time.Sleep(100 * time.Millisecond)
+	if target.Count() != 2 {
+		t.Errorf("expected 2 rows (filtered insert should be skipped), got %d", target.Count())
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+func TestEngine_TransformChain(t *testing.T) {
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), laredo.Row{"id": 1, "name": "alice", "value": "secret"})
+
+	target := memory.NewIndexedTarget()
+
+	// Transform: drop the "value" field.
+	dropValue := &transform.DropFields{Fields: []string{"value"}}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target,
+			laredo.PipelineTransformOpt(dropValue),
+		),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	row, ok := target.Get(1)
+	if !ok {
+		t.Fatal("expected row with id=1")
+	}
+	if _, hasValue := row["value"]; hasValue {
+		t.Error("expected 'value' field to be dropped by transform")
+	}
+	if row["name"] != "alice" {
+		t.Errorf("expected name=alice, got %v", row["name"])
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+func TestEngine_MultiplePipelinesDifferentTables(t *testing.T) {
+	table1 := testutil.SampleTable()
+	table2 := laredo.Table("public", "other_table")
+
+	src := testsource.New()
+	src.SetSchema(table1, testutil.SampleColumns())
+	src.SetSchema(table2, testutil.SampleColumns())
+	src.AddRow(table1, testutil.SampleRow(1, "alice"))
+	src.AddRow(table2, testutil.SampleRow(10, "xavier"))
+	src.AddRow(table2, testutil.SampleRow(11, "yolanda"))
+
+	target1 := memory.NewIndexedTarget()
+	target2 := memory.NewIndexedTarget()
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", table1, target1),
+		laredo.WithPipeline("pg", table2, target2),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// target1 should get table1 rows, target2 should get table2 rows.
+	if target1.Count() != 1 {
+		t.Errorf("target1: expected 1 row, got %d", target1.Count())
+	}
+	if target2.Count() != 2 {
+		t.Errorf("target2: expected 2 rows, got %d", target2.Count())
+	}
+
+	// Emit a change to table1 — only target1 should receive it.
+	src.EmitInsert(table1, testutil.SampleRow(2, "bob"))
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return target1.Count() == 2
+	}, "expected target1 to have 2 rows")
+
+	// target2 should still have 2 rows.
+	if target2.Count() != 2 {
+		t.Errorf("target2: expected still 2 rows, got %d", target2.Count())
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+func TestEngine_GracefulStop(t *testing.T) {
+	src := configuredSource()
+	obs := &testutil.TestObserver{}
+	target := memory.NewIndexedTarget()
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	// Verify pipelines transitioned to STOPPED.
+	stateChanges := obs.EventsByType("PipelineStateChanged")
+	lastChange := stateChanges[len(stateChanges)-1]
+	if lastChange.Data["newState"] != laredo.PipelineStopped {
+		t.Errorf("expected final state STOPPED, got %v", lastChange.Data["newState"])
+	}
+}
+
+func TestEngine_SourceInitError(t *testing.T) {
+	src := configuredSource()
+	src.SetInitError(fmt.Errorf("connection refused"))
+
+	obs := &testutil.TestObserver{}
+	target := memory.NewIndexedTarget()
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// Engine should not become ready when source init fails.
+	if e.AwaitReady(500 * time.Millisecond) {
+		t.Error("expected engine to not become ready on init error")
+	}
+
+	// Source disconnected event should have been fired.
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return obs.EventCount("SourceDisconnected") == 1
+	}, "expected SourceDisconnected event")
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
 	}
 }
 
