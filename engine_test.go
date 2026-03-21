@@ -1947,6 +1947,43 @@ func TestEngine_TTLUpdateToExpiredTreatedAsDelete(t *testing.T) {
 	}
 }
 
+func TestEngine_TTLFieldBased(t *testing.T) {
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), laredo.Row{"id": 1, "name": "fresh", "expires_at": time.Now().Add(1 * time.Hour).Format(time.RFC3339)})
+	src.AddRow(testutil.SampleTable(), laredo.Row{"id": 2, "name": "expired", "expires_at": time.Now().Add(-1 * time.Hour).Format(time.RFC3339)})
+	src.AddRow(testutil.SampleTable(), laredo.Row{"id": 3, "name": "no-expiry"}) // no field = never expires
+
+	target := memory.NewIndexedTarget()
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target,
+			laredo.WithTTLField("expires_at"),
+		),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// fresh (not expired) + no-expiry (no field = never expires) = 2 rows.
+	// expired (past) should be skipped.
+	if target.Count() != 2 {
+		t.Fatalf("expected 2 rows, got %d", target.Count())
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
 // contains checks if s contains substr.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)

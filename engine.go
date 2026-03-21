@@ -162,6 +162,30 @@ func WithTTL(fn func(Row) time.Time) PipelineOption {
 	}
 }
 
+// WithTTLField configures field-based TTL. The named column must contain a
+// time.Time value or an RFC 3339 string. Rows whose field value is in the
+// past are considered expired.
+func WithTTLField(fieldName string) PipelineOption {
+	return WithTTL(func(row Row) time.Time {
+		v, ok := row[fieldName]
+		if !ok {
+			return time.Time{}
+		}
+		switch t := v.(type) {
+		case time.Time:
+			return t
+		case string:
+			parsed, err := time.Parse(time.RFC3339, t)
+			if err != nil {
+				return time.Time{}
+			}
+			return parsed
+		default:
+			return time.Time{}
+		}
+	})
+}
+
 // WithObserver sets the engine observer.
 func WithObserver(o EngineObserver) Option {
 	return func(c *engineConfig) {

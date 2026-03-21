@@ -96,7 +96,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 2.7 TTL / Expiry (spec §10)
 
-- [ ] Field-based mode: read expiry timestamp from a configured column
+- [x] Field-based mode: `WithTTLField(fieldName)` reads time.Time or RFC 3339 string
 - [x] Computed mode: `WithTTL(func(Row) time.Time)` pipeline option
 - [ ] Periodic scanner on configurable interval
 - [ ] On scan: remove expired rows from target, update indexes, fire `OnRowExpired` observer
