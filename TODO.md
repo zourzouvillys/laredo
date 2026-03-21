@@ -134,7 +134,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 3.1 PostgreSQL (`source/pg/`)
 
-- [ ] Connection management — replication connection + query connection
+- [x] Connection management — query connection with schema discovery (replication connection deferred to streaming)
 - [ ] `pgoutput` logical decoding (built-in plugin, no extensions needed)
 - [ ] Ephemeral mode: temporary replication slot, full baseline every startup
 - [ ] Stateful mode: persistent named slot, resume from last ACKed LSN

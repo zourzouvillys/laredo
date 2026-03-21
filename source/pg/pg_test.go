@@ -1,6 +1,11 @@
 package pg
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"github.com/zourzouvillys/laredo"
+)
 
 func TestNew_Defaults(t *testing.T) {
 	src := New()
@@ -72,5 +77,65 @@ func TestSource_ComparePositions(t *testing.T) {
 	}
 	if src.ComparePositions(LSN(5), LSN(5)) != 0 {
 		t.Error("expected 5 == 5")
+	}
+}
+
+func TestSource_Init_NoConnectionString(t *testing.T) {
+	src := New() // no Connection() option
+
+	_, err := src.Init(context.Background(), laredo.SourceConfig{
+		Tables: []laredo.TableIdentifier{laredo.Table("public", "test")},
+	})
+	if err == nil {
+		t.Fatal("expected error without connection string")
+	}
+	if src.State() != laredo.SourceError {
+		t.Errorf("expected SourceError state, got %v", src.State())
+	}
+}
+
+func TestSource_Init_InvalidConnectionString(t *testing.T) {
+	// pgx.ParseConfig should fail on a completely invalid connection string.
+	src := New(Connection("not a valid connection string"))
+
+	_, err := src.Init(context.Background(), laredo.SourceConfig{
+		Tables: []laredo.TableIdentifier{laredo.Table("public", "test")},
+	})
+	if err == nil {
+		t.Fatal("expected error with invalid connection string")
+	}
+	if src.State() != laredo.SourceError {
+		t.Errorf("expected SourceError state, got %v", src.State())
+	}
+}
+
+func TestSource_Init_ConnectionRefused(t *testing.T) {
+	// Valid connection string but nothing listening.
+	src := New(Connection("postgres://localhost:59999/nonexistent"))
+
+	_, err := src.Init(context.Background(), laredo.SourceConfig{
+		Tables: []laredo.TableIdentifier{laredo.Table("public", "test")},
+	})
+	if err == nil {
+		t.Fatal("expected error connecting to non-existent server")
+	}
+	if src.State() != laredo.SourceError {
+		t.Errorf("expected SourceError state, got %v", src.State())
+	}
+}
+
+func TestSource_StateTransitions(t *testing.T) {
+	src := New()
+
+	if src.State() != laredo.SourceClosed {
+		t.Errorf("expected initial state SourceClosed, got %v", src.State())
+	}
+
+	// Close should be safe to call on an uninitialized source.
+	if err := src.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if src.State() != laredo.SourceClosed {
+		t.Errorf("expected SourceClosed after Close, got %v", src.State())
 	}
 }
