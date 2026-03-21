@@ -187,17 +187,17 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 4.1 HTTP Sync (`target/httpsync/`)
 
-- [ ] HTTP client with configurable base URL, timeout, auth header, custom headers
-- [ ] Batched baseline: buffer `OnBaselineRow`, flush at `batch_size` as `POST {base_url}/baseline/batch`
-- [ ] `POST {base_url}/baseline/start` on init, `POST {base_url}/baseline/complete` on complete
-- [ ] Change batching: buffer inserts/updates/deletes, flush at `batch_size` or `flush_interval` (whichever first)
-- [ ] `POST {base_url}/changes` with batched change payload
-- [ ] Retry with exponential backoff on HTTP failure
-- [ ] `IsDurable()` — `true` only after batch flush with 2xx response
-- [ ] `OnSchemaChange` — return `CONTINUE`, forward new schema shape
-- [ ] `OnClose` — best-effort flush remaining buffer
-- [ ] Export/restore snapshot (stateless target — may return empty/error)
-- [ ] Option builder: `BaseURL()`, `BatchSize()`, `FlushInterval()`, `Timeout()`, `RetryCount()`, `AuthHeader()`, `Headers()`
+- [x] HTTP client with configurable base URL, timeout, auth header, custom headers
+- [x] Batched baseline: buffer `OnBaselineRow`, flush at `batch_size` as `POST {base_url}/baseline/batch`
+- [x] `POST {base_url}/baseline/start` on init, `POST {base_url}/baseline/complete` on complete
+- [x] Change batching: buffer inserts/updates/deletes, flush at `batch_size` or `flush_interval` (whichever first)
+- [x] `POST {base_url}/changes` with batched change payload
+- [x] Retry with exponential backoff on HTTP failure
+- [x] `IsDurable()` — `true` only after batch flush with 2xx response
+- [x] `OnSchemaChange` — return `CONTINUE`, forward new schema shape
+- [x] `OnClose` — best-effort flush remaining buffer
+- [x] Export/restore snapshot (stateless target — may return empty/error)
+- [x] Option builder: `BaseURL()`, `BatchSize()`, `FlushInterval()`, `Timeout()`, `RetryCount()`, `AuthHeader()`, `Headers()`
 
 ### 4.2 Compiled In-Memory (`target/memory/` — `CompiledTarget`)
 
