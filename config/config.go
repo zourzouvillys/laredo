@@ -98,13 +98,19 @@ type GRPCConfig struct {
 	Port int
 }
 
-// Load parses a HOCON configuration file and returns a Config.
+// Load parses a HOCON configuration file, applies environment variable
+// overrides, and returns a Config.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // config file path is from CLI flag, not user input
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	return Parse(string(data))
+	cfg, err := Parse(string(data))
+	if err != nil {
+		return nil, err
+	}
+	cfg.ApplyEnvOverrides()
+	return cfg, nil
 }
 
 // Parse parses a HOCON string and returns a Config.
@@ -188,6 +194,66 @@ func Parse(input string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// ApplyEnvOverrides applies environment variable overrides to the parsed config.
+// HOCON paths map to env vars with dots replaced by underscores and uppercased.
+// Both bare names and LAREDO_ prefix are checked (LAREDO_ takes precedence).
+// E.g. sources.pg_main.connection → SOURCES_PG_MAIN_CONNECTION or LAREDO_SOURCES_PG_MAIN_CONNECTION
+func (c *Config) ApplyEnvOverrides() {
+	// Override source fields.
+	for id, src := range c.Sources {
+		prefix := "sources." + id
+		src.Connection = envOverride(prefix+".connection", src.Connection)
+		src.Type = envOverride(prefix+".type", src.Type)
+		src.SlotMode = envOverride(prefix+".slot_mode", src.SlotMode)
+		src.SlotName = envOverride(prefix+".slot_name", src.SlotName)
+		c.Sources[id] = src
+	}
+
+	// Override target fields within each table.
+	for i, tc := range c.Tables {
+		for j, tgt := range tc.Targets {
+			prefix := fmt.Sprintf("tables.%d.targets.%d", i, j)
+			tgt.BaseURL = envOverride(prefix+".base_url", tgt.BaseURL)
+			tgt.AuthHeader = envOverride(prefix+".auth_header", tgt.AuthHeader)
+			c.Tables[i].Targets[j] = tgt
+		}
+	}
+
+	// Override gRPC port.
+	if c.GRPC != nil {
+		if v := envLookup("grpc.port"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				c.GRPC.Port = n
+			}
+		}
+	}
+}
+
+// envOverride returns the env var value for the given HOCON path if set,
+// otherwise returns the current value.
+func envOverride(hoconPath, current string) string {
+	if v := envLookup(hoconPath); v != "" {
+		return v
+	}
+	return current
+}
+
+// envLookup checks for an env var matching the HOCON path.
+// Checks LAREDO_ prefix first, then bare name.
+func envLookup(hoconPath string) string {
+	envKey := strings.ToUpper(strings.ReplaceAll(hoconPath, ".", "_"))
+
+	// Check LAREDO_ prefix first.
+	if v, ok := os.LookupEnv("LAREDO_" + envKey); ok {
+		return v
+	}
+	// Check bare name.
+	if v, ok := os.LookupEnv(envKey); ok {
+		return v
+	}
+	return ""
 }
 
 // Validate checks the config for errors.

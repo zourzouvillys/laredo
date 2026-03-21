@@ -269,6 +269,84 @@ func TestToEngineOptions_UnknownTargetType(t *testing.T) {
 	}
 }
 
+func TestApplyEnvOverrides_SourceConnection(t *testing.T) {
+	cfg, err := Parse(basicConfig)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Set env var with LAREDO_ prefix.
+	t.Setenv("LAREDO_SOURCES_PG_MAIN_CONNECTION", "postgresql://override:5432/newdb")
+	cfg.ApplyEnvOverrides()
+
+	src := cfg.Sources["pg_main"]
+	if src.Connection != "postgresql://override:5432/newdb" {
+		t.Errorf("expected overridden connection, got %q", src.Connection)
+	}
+}
+
+func TestApplyEnvOverrides_BareEnvVar(t *testing.T) {
+	cfg, err := Parse(basicConfig)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Set env var without prefix.
+	t.Setenv("SOURCES_PG_MAIN_SLOT_NAME", "overridden_slot")
+	cfg.ApplyEnvOverrides()
+
+	src := cfg.Sources["pg_main"]
+	if src.SlotName != "overridden_slot" {
+		t.Errorf("expected overridden slot name, got %q", src.SlotName)
+	}
+}
+
+func TestApplyEnvOverrides_PrefixTakesPrecedence(t *testing.T) {
+	cfg, err := Parse(basicConfig)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Set both bare and prefixed — LAREDO_ should win.
+	t.Setenv("SOURCES_PG_MAIN_SLOT_MODE", "bare_value")
+	t.Setenv("LAREDO_SOURCES_PG_MAIN_SLOT_MODE", "prefixed_value")
+	cfg.ApplyEnvOverrides()
+
+	src := cfg.Sources["pg_main"]
+	if src.SlotMode != "prefixed_value" {
+		t.Errorf("expected LAREDO_ prefix to win, got %q", src.SlotMode)
+	}
+}
+
+func TestApplyEnvOverrides_GRPCPort(t *testing.T) {
+	cfg, err := Parse(basicConfig)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	t.Setenv("LAREDO_GRPC_PORT", "9999")
+	cfg.ApplyEnvOverrides()
+
+	if cfg.GRPC.Port != 9999 {
+		t.Errorf("expected port=9999, got %d", cfg.GRPC.Port)
+	}
+}
+
+func TestApplyEnvOverrides_NoOverride(t *testing.T) {
+	cfg, err := Parse(basicConfig)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// No env vars set — values should be unchanged.
+	cfg.ApplyEnvOverrides()
+
+	src := cfg.Sources["pg_main"]
+	if src.SlotName != "laredo_slot_01" {
+		t.Errorf("expected original slot name, got %q", src.SlotName)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStr(s, substr))
 }
