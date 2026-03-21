@@ -71,12 +71,12 @@ func TestChangeBuffer_Close(t *testing.T) {
 	buf.Close()
 
 	// Should be able to drain remaining items.
-	var items []int
-	for item := range buf.Receive() {
-		items = append(items, item)
+	count := 0
+	for range buf.Receive() {
+		count++
 	}
-	if len(items) != 2 {
-		t.Errorf("expected 2 items after close, got %d", len(items))
+	if count != 2 {
+		t.Errorf("expected 2 items after close, got %d", count)
 	}
 }
 
