@@ -62,6 +62,8 @@ func main() {
 		pauseCmd(args)
 	case "resume":
 		resumeCmd(args)
+	case "source":
+		sourceCmd(args)
 	case "dead-letters":
 		deadLettersCmd(args)
 	case "help", "--help", "-h":
@@ -95,6 +97,7 @@ Commands:
   query get          Get a row by primary key
   query list         List rows (paginated)
   query lookup       Lookup by index values
+  source             Show source details
   dead-letters       List dead letters for a pipeline
   dead-letters purge Purge dead letters
   version            Print version
@@ -718,6 +721,49 @@ func resumeCmd(args []string) {
 		os.Exit(1)
 	}
 	fmt.Println("resumed")
+}
+
+// --- source ---
+
+func sourceCmd(args []string) {
+	fs := flag.NewFlagSet("source", flag.ExitOnError)
+	parseGlobalFlags(fs, args)
+
+	remaining := fs.Args()
+	sourceID := ""
+	if len(remaining) > 0 {
+		sourceID = remaining[0]
+	}
+
+	resp, err := oamClient().GetSourceInfo(ctx(), connect.NewRequest(&v1.GetSourceInfoRequest{
+		SourceId: sourceID,
+	}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	sources := resp.Msg.GetSources()
+	if output == outputJSON {
+		printJSON(sources)
+		return
+	}
+
+	if len(sources) == 0 {
+		fmt.Println("no sources")
+		return
+	}
+
+	for _, s := range sources {
+		fmt.Printf("Source: %s\n", s.GetSourceId())
+		fmt.Printf("  Type:     %s\n", s.GetSourceType())
+		fmt.Printf("  Resume:   %v\n", s.GetSupportsResume())
+		fmt.Printf("  Ordering: %s\n", s.GetOrderingGuarantee())
+		if s.GetLagBytes() > 0 {
+			fmt.Printf("  Lag:      %d bytes\n", s.GetLagBytes())
+		}
+		fmt.Println()
+	}
 }
 
 // --- dead-letters ---

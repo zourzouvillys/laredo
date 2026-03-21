@@ -371,7 +371,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `GetPipelineStatus` — single pipeline status + indexes
 - [ ] `WatchStatus` — server-streaming status events (state changes, row changes, source events)
 - [x] `CheckReady` — readiness check (global, per-source, per-table, per-pipeline)
-- [ ] `GetSourceInfo` — source details including source-specific metadata
+- [x] `GetSourceInfo` — source details including source-specific metadata
 - [x] `ReloadTable` / `ReloadAll` — trigger re-baseline
 - [x] `PauseSync` / `ResumeSync`
 - [ ] `ResetSource` — drop/recreate slot and optionally publication
@@ -428,7 +428,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 - [x] `laredo status` — overall service status (sources, pipelines, buffers)
 - [x] `laredo status --table <schema.table>` — per-table detail with indexes
-- [ ] `laredo source [source_id]` — source detail including source-specific metadata (slot info, shard info)
+- [x] `laredo source [source_id]` — source detail including source-specific metadata
 - [x] `laredo pipelines` — tabular list of all pipelines
 - [x] `laredo tables` — tabular list of configured tables
 - [ ] `laredo schema <schema.table>` — column definitions

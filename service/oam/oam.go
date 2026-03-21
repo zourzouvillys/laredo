@@ -265,6 +265,56 @@ func (s *Service) ResumeSync(ctx context.Context, req *connect.Request[v1.Resume
 	}), nil
 }
 
+// GetSourceInfo returns details about sources.
+func (s *Service) GetSourceInfo(_ context.Context, req *connect.Request[v1.GetSourceInfoRequest]) (*connect.Response[v1.GetSourceInfoResponse], error) {
+	var sources []*v1.SourceInfo
+
+	if id := req.Msg.GetSourceId(); id != "" {
+		// Specific source.
+		info, ok := s.engine.SourceInfo(id)
+		if !ok {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("source %s not found", id))
+		}
+		sources = append(sources, sourceRunInfoToProto(info))
+	} else {
+		// All sources.
+		for _, id := range s.engine.SourceIDs() {
+			if info, ok := s.engine.SourceInfo(id); ok {
+				sources = append(sources, sourceRunInfoToProto(info))
+			}
+		}
+	}
+
+	return connect.NewResponse(&v1.GetSourceInfoResponse{Sources: sources}), nil
+}
+
+func sourceRunInfoToProto(info laredo.SourceRunInfo) *v1.SourceInfo {
+	si := &v1.SourceInfo{
+		SourceId:          info.ID,
+		SourceType:        info.SourceType,
+		SupportsResume:    info.SupportsResume,
+		OrderingGuarantee: orderingGuaranteeStr(info.OrderingGuarantee),
+		LagBytes:          info.Lag.LagBytes,
+	}
+	if info.Lag.LagTime != nil {
+		si.LagTime = durationpb.New(*info.Lag.LagTime)
+	}
+	return si
+}
+
+func orderingGuaranteeStr(g laredo.OrderingGuarantee) string {
+	switch g {
+	case laredo.TotalOrder:
+		return "total"
+	case laredo.PerPartitionOrder:
+		return "per-partition"
+	case laredo.BestEffort:
+		return "best-effort"
+	default:
+		return "unknown"
+	}
+}
+
 // ListTables returns the configured tables derived from pipeline information.
 func (s *Service) ListTables(_ context.Context, _ *connect.Request[v1.ListTablesRequest]) (*connect.Response[v1.ListTablesResponse], error) {
 	pipelines := s.engine.Pipelines()

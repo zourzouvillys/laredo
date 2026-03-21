@@ -55,6 +55,19 @@ type Engine interface {
 
 	// SourceIDs returns the IDs of all registered sources.
 	SourceIDs() []string
+
+	// SourceInfo returns runtime information about a source.
+	SourceInfo(sourceID string) (SourceRunInfo, bool)
+}
+
+// SourceRunInfo describes the runtime state of a source.
+type SourceRunInfo struct {
+	ID                string
+	SourceType        string
+	SupportsResume    bool
+	OrderingGuarantee OrderingGuarantee
+	State             SourceState
+	Lag               LagInfo
 }
 
 // PipelineInfo describes the runtime state of a pipeline.
@@ -1730,6 +1743,26 @@ func (e *coreEngine) SourceIDs() []string {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+//nolint:revive // Engine interface implementation.
+func (e *coreEngine) SourceInfo(sourceID string) (SourceRunInfo, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	src, ok := e.sources[sourceID]
+	if !ok {
+		return SourceRunInfo{}, false
+	}
+
+	return SourceRunInfo{
+		ID:                sourceID,
+		SourceType:        strings.TrimPrefix(reflect.TypeOf(src).String(), "*"),
+		SupportsResume:    src.SupportsResume(),
+		OrderingGuarantee: src.OrderingGuarantee(),
+		State:             src.State(),
+		Lag:               src.GetLag(),
+	}, true
 }
 
 // GetTarget retrieves a typed target from the engine for direct querying.
