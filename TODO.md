@@ -536,24 +536,23 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 14.1 Unit Tests (Tier 1 — per package `_test.go`)
 
-- [ ] `types_test.go` — Row.GetString, Row.Without, TableIdentifier.String, ChangeAction.String
-- [ ] `pipeline_test.go` — PipelineFilterFunc, PipelineTransformFunc, PipelineState.String
-- [ ] `errors_test.go` — ValidationError.Error
-- [ ] `filter/filter_test.go` — FieldEquals, FieldPrefix, FieldRegex
-- [ ] `transform/transform_test.go` — DropFields, RenameFields, AddTimestamp
-- [ ] `snapshot/jsonl/jsonl_test.go` — round-trip serialize/deserialize
-- [ ] `snapshot/local/local_test.go` — save/load/list/delete/prune with temp directory
-- [ ] `internal/engine/buffer_test.go` — all three policies, concurrent access
-- [ ] `internal/engine/ack_test.go` — minimum position tracking across pipelines
-- [ ] `internal/engine/ttl_test.go` — expiry scanning, edge cases
-- [ ] `internal/engine/readiness_test.go` — state transitions, await with timeout
-- [ ] `target/memory/memory_test.go` — IndexedTarget: insert/update/delete/truncate, index maintenance, concurrent reads
-- [ ] `target/memory/compiled_test.go` — CompiledTarget: compiler function, filter, key extraction
+- [x] `types_test.go` — Row.GetString, Row.Without, TableIdentifier.String, ChangeAction.String
+- [x] `pipeline_test.go` — PipelineFilterFunc, PipelineTransformFunc, PipelineState.String
+- [x] `errors_test.go` — ValidationError.Error
+- [x] `filter/filter_test.go` — FieldEquals, FieldPrefix, FieldRegex
+- [x] `transform/transform_test.go` — DropFields, RenameFields, AddTimestamp
+- [x] `snapshot/jsonl/jsonl_test.go` — round-trip serialize/deserialize
+- [x] `snapshot/local/local_test.go` — save/load/list/delete/prune with temp directory
+- [x] `internal/engine/buffer_test.go` — all three policies, concurrent access
+- [x] `internal/engine/ack_test.go` — minimum position tracking across pipelines
+- [x] `internal/engine/readiness_test.go` — state transitions, await with timeout, OnReady callbacks
+- [x] `target/memory/memory_test.go` — IndexedTarget + CompiledTarget: full coverage
+- [x] `deadletter/memory_test.go` + `deadletter/local_test.go` — write/read/replay/purge
 - [ ] `target/httpsync/httpsync_test.go` — batching, flush interval, retry, durability tracking (use httptest)
 - [ ] `target/fanout/journal_test.go` — circular buffer, pruning, sequence tracking
 - [ ] `target/fanout/fanout_test.go` — full lifecycle, client protocol
 - [ ] `config/config_test.go` — parse HOCON, env var override, validation errors
-- [ ] `deadletter/deadletter_test.go` — write/read/replay/purge
+- [x] `deadletter/memory_test.go` + `deadletter/local_test.go` — write/read/replay/purge
 - [ ] `service/oam/oam_test.go` — gRPC service handlers (mock engine)
 - [ ] `service/query/query_test.go` — gRPC service handlers (mock engine)
 - [ ] `client/fanout/client_test.go` — connect, snapshot/delta, reconnect
@@ -594,8 +593,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 14.5 Test Infrastructure
 
-- [ ] `test/testutil/observer.go` *(done in scaffolding)* — verify completeness
-- [ ] `test/testutil/helpers.go` *(done in scaffolding)* — add more helpers as needed
+- [x] `test/testutil/observer.go` — TestObserver records all 21 observer callbacks
+- [x] `test/testutil/helpers.go` — SampleTable, SampleColumns, SampleRow, SampleChangeEvent, AssertEventually
 - [ ] `test/testutil/pg.go` — PostgreSQL testcontainer setup/teardown helper
 - [ ] `test/testutil/grpc.go` — in-process gRPC server/client for service tests
 - [ ] `test/testutil/httpserver.go` — configurable mock HTTP server for target tests
