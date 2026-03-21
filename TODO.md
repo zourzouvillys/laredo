@@ -124,7 +124,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 ### 2.10 Validation (spec §12)
 
 - [x] Post-baseline row count verification (dispatched count vs target.Count())
-- [ ] Periodic row count drift detection on configurable interval
+- [x] Periodic row count drift detection on configurable interval
 - [x] `OnValidationResult` observer callback (fires after baseline with match/mismatch)
 - [x] Configurable action on mismatch: `WithValidationAction` (Warn/ReBaseline/Fail)
 

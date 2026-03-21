@@ -2037,6 +2037,153 @@ func TestEngine_PostBaselineValidation(t *testing.T) {
 	}
 }
 
+func TestEngine_PeriodicValidation_Match(t *testing.T) {
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(2, "bob"))
+
+	target := memory.NewIndexedTarget()
+	obs := &testutil.TestObserver{}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target,
+			laredo.WithValidationInterval(100*time.Millisecond),
+		),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Wait for at least 2 periodic validations (1 baseline + 2 periodic = 3 total).
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return obs.EventCount("ValidationResult") >= 3
+	}, "expected at least 3 ValidationResult events (1 baseline + periodic)")
+
+	// All periodic validations should match (no changes since baseline).
+	for _, v := range obs.EventsByType("ValidationResult") {
+		if v.Data["match"] != true {
+			t.Errorf("expected all validations to match, got sourceCount=%v targetCount=%v",
+				v.Data["sourceCount"], v.Data["targetCount"])
+		}
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+func TestEngine_PeriodicValidation_TracksDrift(t *testing.T) {
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+
+	target := memory.NewIndexedTarget()
+	obs := &testutil.TestObserver{}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target,
+			laredo.WithValidationInterval(100*time.Millisecond),
+		),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Emit changes and wait for them to be applied.
+	src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(2, "bob"))
+	src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(3, "charlie"))
+
+	testutil.AssertEventually(t, 5*time.Second, func() bool {
+		return target.Count() == 3
+	}, "expected 3 rows after inserts")
+
+	// Wait for a periodic validation after the inserts.
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		for _, v := range obs.EventsByType("ValidationResult") {
+			if v.Data["sourceCount"] == int64(3) && v.Data["targetCount"] == int64(3) && v.Data["match"] == true {
+				return true
+			}
+		}
+		return false
+	}, "expected periodic validation with 3 rows")
+
+	// Emit a delete.
+	src.EmitDelete(testutil.SampleTable(), laredo.Row{"id": 2})
+	testutil.AssertEventually(t, 5*time.Second, func() bool {
+		return target.Count() == 2
+	}, "expected 2 rows after delete")
+
+	// Wait for a periodic validation after the delete.
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		for _, v := range obs.EventsByType("ValidationResult") {
+			if v.Data["sourceCount"] == int64(2) && v.Data["targetCount"] == int64(2) && v.Data["match"] == true {
+				return true
+			}
+		}
+		return false
+	}, "expected periodic validation with 2 rows")
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+func TestEngine_PeriodicValidation_DisabledByDefault(t *testing.T) {
+	// Without WithValidationInterval, no periodic validation should run.
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+
+	target := memory.NewIndexedTarget()
+	obs := &testutil.TestObserver{}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Wait a bit, then verify only the baseline validation fired (no periodic ones).
+	time.Sleep(300 * time.Millisecond)
+	if obs.EventCount("ValidationResult") != 1 {
+		t.Errorf("expected exactly 1 ValidationResult (baseline only), got %d",
+			obs.EventCount("ValidationResult"))
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
 func TestEngine_TTLPeriodicScanner(t *testing.T) {
 	src := configuredSource()
 	// Add a row that will expire very soon.

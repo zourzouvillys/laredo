@@ -69,18 +69,19 @@ type engineConfig struct {
 }
 
 type pipelineConfig struct {
-	sourceID         string
-	table            TableIdentifier
-	target           SyncTarget
-	filters          []PipelineFilter
-	transforms       []PipelineTransform
-	bufferSize       int
-	bufferPolicy     BufferPolicy
-	errorPolicy      ErrorPolicyKind
-	maxRetries       int
-	ttlFunc          func(Row) time.Time
-	ttlScanInterval  time.Duration
-	validationAction ValidationAction
+	sourceID           string
+	table              TableIdentifier
+	target             SyncTarget
+	filters            []PipelineFilter
+	transforms         []PipelineTransform
+	bufferSize         int
+	bufferPolicy       BufferPolicy
+	errorPolicy        ErrorPolicyKind
+	maxRetries         int
+	ttlFunc            func(Row) time.Time
+	ttlScanInterval    time.Duration
+	validationAction   ValidationAction
+	validationInterval time.Duration
 }
 
 // WithSource registers a named source.
@@ -199,11 +200,22 @@ func WithTTLScanInterval(d time.Duration) PipelineOption {
 	}
 }
 
-// WithValidationAction sets the action to take when post-baseline validation
-// detects a row count mismatch. Default is ValidationWarn (log only).
+// WithValidationAction sets the action to take when validation detects a row
+// count mismatch (both post-baseline and periodic). Default is ValidationWarn.
 func WithValidationAction(action ValidationAction) PipelineOption {
 	return func(c *pipelineConfig) {
 		c.validationAction = action
+	}
+}
+
+// WithValidationInterval sets the interval for periodic row count drift
+// detection. When configured, the engine periodically compares its expected
+// row count with the target's actual count and fires OnValidationResult.
+// The validation action (WithValidationAction) controls the response to
+// mismatches. Zero (default) disables periodic validation.
+func WithValidationInterval(d time.Duration) PipelineOption {
+	return func(c *pipelineConfig) {
+		c.validationInterval = d
 	}
 }
 
@@ -290,19 +302,20 @@ func NewEngine(opts ...Option) (Engine, []error) {
 	for i, pc := range cfg.pipelines {
 		id := generatePipelineID(pc.sourceID, pc.table, pc.target)
 		pipelines[i] = resolvedPipeline{
-			id:               id,
-			sourceID:         pc.sourceID,
-			table:            pc.table,
-			target:           pc.target,
-			filters:          pc.filters,
-			transforms:       pc.transforms,
-			bufferSize:       pc.bufferSize,
-			bufferPolicy:     pc.bufferPolicy,
-			errorPolicy:      pc.errorPolicy,
-			maxRetries:       pc.maxRetries,
-			ttlFunc:          pc.ttlFunc,
-			ttlScanInterval:  pc.ttlScanInterval,
-			validationAction: pc.validationAction,
+			id:                 id,
+			sourceID:           pc.sourceID,
+			table:              pc.table,
+			target:             pc.target,
+			filters:            pc.filters,
+			transforms:         pc.transforms,
+			bufferSize:         pc.bufferSize,
+			bufferPolicy:       pc.bufferPolicy,
+			errorPolicy:        pc.errorPolicy,
+			maxRetries:         pc.maxRetries,
+			ttlFunc:            pc.ttlFunc,
+			ttlScanInterval:    pc.ttlScanInterval,
+			validationAction:   pc.validationAction,
+			validationInterval: pc.validationInterval,
 		}
 		pipelines[i].storeState(PipelineInitializing)
 		pipelineIDs[i] = id
@@ -412,20 +425,22 @@ func targetTypeName(target SyncTarget) string {
 
 // resolvedPipeline holds the fully resolved configuration and runtime state for a pipeline.
 type resolvedPipeline struct {
-	id               string
-	sourceID         string
-	table            TableIdentifier
-	target           SyncTarget
-	filters          []PipelineFilter
-	transforms       []PipelineTransform
-	bufferSize       int
-	bufferPolicy     BufferPolicy
-	errorPolicy      ErrorPolicyKind
-	maxRetries       int
-	ttlFunc          func(Row) time.Time
-	ttlScanInterval  time.Duration
-	validationAction ValidationAction
-	state            atomic.Int32 // stores PipelineState atomically
+	id                 string
+	sourceID           string
+	table              TableIdentifier
+	target             SyncTarget
+	filters            []PipelineFilter
+	transforms         []PipelineTransform
+	bufferSize         int
+	bufferPolicy       BufferPolicy
+	errorPolicy        ErrorPolicyKind
+	maxRetries         int
+	ttlFunc            func(Row) time.Time
+	ttlScanInterval    time.Duration
+	validationAction   ValidationAction
+	validationInterval time.Duration
+	state              atomic.Int32 // stores PipelineState atomically
+	expectedRows       atomic.Int64 // engine's view of how many rows the target should have
 }
 
 // loadState returns the pipeline's current state.
@@ -507,6 +522,14 @@ func (e *coreEngine) Start(ctx context.Context) error {
 		}
 	}
 
+	// Start validation scanner goroutines for pipelines with validation intervals.
+	for i := range e.pipelines {
+		if e.pipelines[i].validationInterval > 0 {
+			e.wg.Add(1)
+			go e.runValidationScanner(runCtx, i)
+		}
+	}
+
 	return nil
 }
 
@@ -577,9 +600,67 @@ func (e *coreEngine) scanExpiredRows(ctx context.Context, p *resolvedPipeline, s
 		if err := p.target.OnDelete(ctx, p.table, row); err != nil {
 			continue
 		}
+		p.expectedRows.Add(-1)
 		// Build a key string for the observer from the row's "id" field if present.
 		keyStr := fmt.Sprintf("%v", row["id"])
 		e.observer.OnRowExpired(p.id, p.table, keyStr)
+	}
+}
+
+// runValidationScanner periodically compares the engine's expected row count
+// with the target's actual count, firing OnValidationResult on each check.
+// Waits until the pipeline is ready before starting to validate.
+func (e *coreEngine) runValidationScanner(ctx context.Context, pipelineIdx int) {
+	defer e.wg.Done()
+
+	p := &e.pipelines[pipelineIdx]
+	counter, ok := p.target.(interface{ Count() int })
+	if !ok {
+		return // target doesn't support counting
+	}
+
+	// Wait until the pipeline is ready before validating.
+	if !e.readiness.AwaitReady(0) {
+		select {
+		case <-ctx.Done():
+			return
+		case <-func() <-chan struct{} {
+			ch := make(chan struct{})
+			e.readiness.OnReady(func() { close(ch) })
+			return ch
+		}():
+		}
+	}
+
+	ticker := time.NewTicker(p.validationInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if p.loadState() != PipelineStreaming {
+				continue
+			}
+			expected := p.expectedRows.Load()
+			actual := int64(counter.Count())
+			match := expected == actual
+			e.observer.OnValidationResult(p.id, p.table, expected, actual, match)
+
+			if !match {
+				switch p.validationAction {
+				case ValidationWarn:
+					// Observer already notified.
+				case ValidationReBaseline:
+					e.transitionPipeline(pipelineIdx, PipelineError)
+					return
+				case ValidationFail:
+					e.transitionPipeline(pipelineIdx, PipelineError)
+					return
+				}
+			}
+		}
 	}
 }
 
@@ -769,6 +850,7 @@ func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source Sy
 	for _, idx := range pipelineIdxs {
 		p := &e.pipelines[idx]
 		if p.loadState() == PipelineBaselining {
+			p.expectedRows.Store(0) // reset before baseline
 			e.observer.OnBaselineStarted(p.id, p.table)
 		}
 	}
@@ -920,6 +1002,8 @@ func (e *coreEngine) dispatchBaselineRow(ctx context.Context, pipelineIdxs []int
 		}
 		if err := p.target.OnBaselineRow(ctx, table, r); err != nil {
 			e.transitionPipeline(idx, PipelineError)
+		} else {
+			p.expectedRows.Add(1)
 		}
 	}
 }
@@ -1030,6 +1114,7 @@ func (e *coreEngine) runPipelineConsumer(
 }
 
 // applyChangeToTarget applies a single change event to a pipeline's target.
+// On success, it updates the pipeline's expectedRows counter to track drift.
 func (e *coreEngine) applyChangeToTarget(ctx context.Context, p *resolvedPipeline, event ChangeEvent) error {
 	switch event.Action {
 	case ActionInsert:
@@ -1040,7 +1125,11 @@ func (e *coreEngine) applyChangeToTarget(ctx context.Context, p *resolvedPipelin
 		if isRowExpired(p, row) {
 			return nil
 		}
-		return p.target.OnInsert(ctx, event.Table, row)
+		if err := p.target.OnInsert(ctx, event.Table, row); err != nil {
+			return err
+		}
+		p.expectedRows.Add(1)
+		return nil
 	case ActionUpdate:
 		row := applyFiltersAndTransforms(p, event.Table, event.NewValues)
 		if row == nil {
@@ -1048,16 +1137,28 @@ func (e *coreEngine) applyChangeToTarget(ctx context.Context, p *resolvedPipelin
 		}
 		// Treat update-to-expired as delete.
 		if isRowExpired(p, row) {
-			return p.target.OnDelete(ctx, event.Table, event.OldValues)
+			if err := p.target.OnDelete(ctx, event.Table, event.OldValues); err != nil {
+				return err
+			}
+			p.expectedRows.Add(-1)
+			return nil
 		}
 		return p.target.OnUpdate(ctx, event.Table, row, event.OldValues)
 	case ActionDelete:
 		if !applyFilters(p, event.Table, event.OldValues) {
 			return nil
 		}
-		return p.target.OnDelete(ctx, event.Table, event.OldValues)
+		if err := p.target.OnDelete(ctx, event.Table, event.OldValues); err != nil {
+			return err
+		}
+		p.expectedRows.Add(-1)
+		return nil
 	case ActionTruncate:
-		return p.target.OnTruncate(ctx, event.Table)
+		if err := p.target.OnTruncate(ctx, event.Table); err != nil {
+			return err
+		}
+		p.expectedRows.Store(0)
+		return nil
 	default:
 		return nil
 	}
@@ -1345,10 +1446,11 @@ func (e *coreEngine) Reload(ctx context.Context, sourceID string, table TableIde
 		}
 	}
 
-	// Fire baseline started observer events.
+	// Fire baseline started observer events and reset expected row counts.
 	for _, idx := range affectedIdxs {
 		p := &e.pipelines[idx]
 		if p.loadState() == PipelineBaselining {
+			p.expectedRows.Store(0)
 			e.observer.OnBaselineStarted(p.id, p.table)
 		}
 	}
