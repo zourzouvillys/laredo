@@ -109,6 +109,7 @@ type Position = any
 // ChangeAction describes the type of a row change.
 type ChangeAction int
 
+// Change action types.
 const (
 	ActionInsert   ChangeAction = iota // Row inserted.
 	ActionUpdate                       // Row updated.

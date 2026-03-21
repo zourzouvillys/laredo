@@ -8,10 +8,11 @@ import (
 // SourceState represents the connection/streaming state of a source.
 type SourceState int
 
+// Source connection states.
 const (
 	SourceConnecting   SourceState = iota // Initial connection or reconnecting after failure.
 	SourceConnected                       // Connected, not yet streaming.
-	SourceStreaming                        // Actively streaming changes.
+	SourceStreaming                       // Actively streaming changes.
 	SourceReconnecting                    // Lost connection, attempting to reconnect.
 	SourcePaused                          // Paused by engine request.
 	SourceError                           // Unrecoverable error.
@@ -21,6 +22,7 @@ const (
 // OrderingGuarantee describes the ordering semantics a source provides.
 type OrderingGuarantee int
 
+// Source ordering guarantees.
 const (
 	TotalOrder        OrderingGuarantee = iota // All changes in commit order (PostgreSQL).
 	PerTableOrder                              // Ordered within a table, no cross-table guarantee.

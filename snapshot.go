@@ -17,7 +17,7 @@ type SnapshotMetadata struct {
 	CreatedAt       time.Time
 	SourcePositions map[string]Position // keyed by source ID
 	Tables          []TableSnapshotInfo
-	Format          string            // e.g. "jsonl"
+	Format          string // e.g. "jsonl"
 	UserMeta        map[string]Value
 }
 

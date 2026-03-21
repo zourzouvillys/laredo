@@ -5,6 +5,7 @@ import "context"
 // SchemaChangeAction describes how a target responds to a schema change.
 type SchemaChangeAction int
 
+// Schema change response actions.
 const (
 	SchemaContinue   SchemaChangeAction = iota // Target adapted, keep streaming.
 	SchemaReBaseline                           // Target needs full reload.

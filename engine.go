@@ -47,12 +47,12 @@ type engineConfig struct {
 }
 
 type pipelineConfig struct {
-	sourceID   string
-	table      TableIdentifier
-	target     SyncTarget
-	filters    []PipelineFilter
-	transforms []PipelineTransform
-	bufferSize int
+	sourceID     string
+	table        TableIdentifier
+	target       SyncTarget
+	filters      []PipelineFilter
+	transforms   []PipelineTransform
+	bufferSize   int
 	bufferPolicy BufferPolicy
 	errorPolicy  ErrorPolicyKind
 	maxRetries   int
@@ -75,10 +75,10 @@ type PipelineOption func(*pipelineConfig)
 func WithPipeline(sourceID string, table TableIdentifier, target SyncTarget, opts ...PipelineOption) Option {
 	return func(c *engineConfig) {
 		pc := pipelineConfig{
-			sourceID:   sourceID,
-			table:      table,
-			target:     target,
-			bufferSize: 10000,
+			sourceID:     sourceID,
+			table:        table,
+			target:       target,
+			bufferSize:   10000,
 			bufferPolicy: BufferBlock,
 			errorPolicy:  ErrorIsolate,
 			maxRetries:   5,

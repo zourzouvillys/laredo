@@ -31,6 +31,7 @@ func (f PipelineTransformFunc) Transform(table TableIdentifier, row Row) Row {
 // PipelineState represents the lifecycle state of a pipeline.
 type PipelineState int
 
+// Pipeline lifecycle states.
 const (
 	PipelineInitializing PipelineState = iota
 	PipelineBaselining

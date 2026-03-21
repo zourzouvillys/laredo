@@ -18,6 +18,7 @@ func (e ValidationError) Error() string {
 // BufferPolicy controls behavior when a pipeline's change buffer is full.
 type BufferPolicy int
 
+// Buffer overflow policies.
 const (
 	BufferBlock      BufferPolicy = iota // Block the source dispatcher.
 	BufferDropOldest                     // Drop the oldest undelivered change.
@@ -27,8 +28,9 @@ const (
 // ErrorPolicyKind controls behavior on persistent pipeline failure.
 type ErrorPolicyKind int
 
+// Error handling policies.
 const (
-	ErrorIsolate   ErrorPolicyKind = iota // Isolate the failed pipeline, continue others.
-	ErrorStopSource                       // Stop all pipelines on the source.
-	ErrorStopAll                          // Halt the engine.
+	ErrorIsolate    ErrorPolicyKind = iota // Isolate the failed pipeline, continue others.
+	ErrorStopSource                        // Stop all pipelines on the source.
+	ErrorStopAll                           // Halt the engine.
 )

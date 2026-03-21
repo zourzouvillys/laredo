@@ -12,6 +12,7 @@ type DropFields struct {
 	Fields []string
 }
 
+//nolint:revive // implements PipelineTransform.
 func (t *DropFields) Transform(table laredo.TableIdentifier, row laredo.Row) laredo.Row {
 	return row.Without(t.Fields...)
 }
@@ -21,6 +22,7 @@ type RenameFields struct {
 	Mapping map[string]string // old name -> new name
 }
 
+//nolint:revive // implements PipelineTransform.
 func (t *RenameFields) Transform(table laredo.TableIdentifier, row laredo.Row) laredo.Row {
 	out := make(laredo.Row, len(row))
 	for k, v := range row {
@@ -38,6 +40,7 @@ type AddTimestamp struct {
 	Field string
 }
 
+//nolint:revive // implements PipelineTransform.
 func (t *AddTimestamp) Transform(table laredo.TableIdentifier, row laredo.Row) laredo.Row {
 	out := make(laredo.Row, len(row)+1)
 	for k, v := range row {

@@ -17,12 +17,15 @@ func New() *Serializer {
 
 var _ laredo.SnapshotSerializer = (*Serializer)(nil)
 
+//nolint:revive // implements SnapshotSerializer.
 func (s *Serializer) FormatID() string { return "jsonl" }
 
+//nolint:revive // implements SnapshotSerializer.
 func (s *Serializer) Write(info laredo.TableSnapshotInfo, rows []laredo.Row, w io.Writer) error {
 	panic("not implemented")
 }
 
+//nolint:revive // implements SnapshotSerializer.
 func (s *Serializer) Read(r io.Reader) (laredo.TableSnapshotInfo, []laredo.Row, error) {
 	panic("not implemented")
 }

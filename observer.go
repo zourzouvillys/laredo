@@ -17,6 +17,7 @@ type SchemaChangeEvent struct {
 // SyncMode describes the mode a fan-out client connected with.
 type SyncMode int
 
+// Fan-out client sync modes.
 const (
 	SyncModeFullSnapshot      SyncMode = iota // Server sends full snapshot.
 	SyncModeDelta                             // Server sends journal delta.

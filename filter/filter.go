@@ -10,9 +10,10 @@ import (
 // FieldEquals matches rows where a field equals a value.
 type FieldEquals struct {
 	Field string
-	Value interface{}
+	Value any
 }
 
+//nolint:revive // implements PipelineFilter.
 func (f *FieldEquals) Include(table laredo.TableIdentifier, row laredo.Row) bool {
 	return row[f.Field] == f.Value
 }
@@ -23,6 +24,7 @@ type FieldPrefix struct {
 	Prefix string
 }
 
+//nolint:revive // implements PipelineFilter.
 func (f *FieldPrefix) Include(table laredo.TableIdentifier, row laredo.Row) bool {
 	if s, ok := row[f.Field].(string); ok {
 		return len(s) >= len(f.Prefix) && s[:len(f.Prefix)] == f.Prefix
@@ -36,6 +38,7 @@ type FieldRegex struct {
 	Pattern *regexp.Regexp
 }
 
+//nolint:revive // implements PipelineFilter.
 func (f *FieldRegex) Include(table laredo.TableIdentifier, row laredo.Row) bool {
 	if s, ok := row[f.Field].(string); ok {
 		return f.Pattern.MatchString(s)
