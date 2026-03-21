@@ -34,3 +34,9 @@ const (
 	ErrorStopSource                        // Stop all pipelines on the source.
 	ErrorStopAll                           // Halt the engine.
 )
+
+// DeadLetterStore persists failed changes for later inspection or replay.
+type DeadLetterStore interface {
+	// Write persists a failed change with error context.
+	Write(pipelineID string, change ChangeEvent, err ErrorInfo) error
+}

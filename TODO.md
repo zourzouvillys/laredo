@@ -85,7 +85,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `Isolate` policy — mark pipeline ERROR, continue others
 - [x] `StopSource` policy — stop all pipelines on the source
 - [x] `StopAll` policy — halt entire engine (cancels engine context)
-- [ ] Dead letter integration — write failed changes to dead letter store if enabled
+- [x] Dead letter integration — write failed changes to dead letter store if enabled (`WithDeadLetterStore`)
 
 ### 2.6 Filter & Transform Chain
 
@@ -325,7 +325,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 6.3 Dead Letter Store (`deadletter/`)
 
-- [ ] In-memory dead letter store (for testing)
+- [x] In-memory dead letter store (for testing) — `deadletter.NewMemoryStore()`
 - [ ] S3 dead letter store
 - [ ] Local disk dead letter store
 - [ ] `Write` — persist failed change with error context

@@ -1722,6 +1722,87 @@ func TestEngine_SnapshotRestoreFallback(t *testing.T) {
 	}
 }
 
+func TestEngine_DeadLetterIntegration(t *testing.T) {
+	src := configuredSource()
+
+	// Target fails permanently.
+	target := newFailingTarget(100)
+	obs := &testutil.TestObserver{}
+	dlStore := &testDeadLetterStore{}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target,
+			laredo.MaxRetries(1),
+			laredo.ErrorPolicyOpt(laredo.ErrorIsolate),
+		),
+		laredo.WithObserver(obs),
+		laredo.WithDeadLetterStore(dlStore),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Emit insert that will fail permanently.
+	src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(1, "will-fail"))
+
+	// Wait for the pipeline to go to ERROR.
+	testutil.AssertEventually(t, 5*time.Second, func() bool {
+		for _, c := range obs.EventsByType("PipelineStateChanged") {
+			if c.Data["newState"] == laredo.PipelineError {
+				return true
+			}
+		}
+		return false
+	}, "expected pipeline ERROR")
+
+	// Verify dead letter was written.
+	dlStore.mu.Lock()
+	defer dlStore.mu.Unlock()
+	if len(dlStore.entries) != 1 {
+		t.Fatalf("expected 1 dead letter entry, got %d", len(dlStore.entries))
+	}
+	if dlStore.entries[0].change.Action != laredo.ActionInsert {
+		t.Errorf("expected INSERT action in dead letter, got %v", dlStore.entries[0].change.Action)
+	}
+
+	// Verify observer event.
+	if obs.EventCount("DeadLetterWritten") != 1 {
+		t.Errorf("expected 1 DeadLetterWritten, got %d", obs.EventCount("DeadLetterWritten"))
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+// testDeadLetterStore records dead letter writes for assertions.
+type testDeadLetterStore struct {
+	mu      sync.Mutex
+	entries []dlEntry
+}
+
+type dlEntry struct {
+	pipelineID string
+	change     laredo.ChangeEvent
+	errInfo    laredo.ErrorInfo
+}
+
+func (s *testDeadLetterStore) Write(pipelineID string, change laredo.ChangeEvent, err laredo.ErrorInfo) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entries = append(s.entries, dlEntry{pipelineID: pipelineID, change: change, errInfo: err})
+	return nil
+}
+
 // contains checks if s contains substr.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)

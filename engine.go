@@ -62,6 +62,7 @@ type engineConfig struct {
 	snapshotSchedule   time.Duration
 	snapshotOnShutdown bool
 	shutdownTimeout    time.Duration
+	deadLetterStore    DeadLetterStore
 }
 
 type pipelineConfig struct {
@@ -194,6 +195,15 @@ func WithShutdownTimeout(d time.Duration) Option {
 	}
 }
 
+// WithDeadLetterStore sets the dead letter store for failed changes.
+// When configured, changes that fail after all retries are written to the
+// store before the error policy is applied.
+func WithDeadLetterStore(store DeadLetterStore) Option {
+	return func(c *engineConfig) {
+		c.deadLetterStore = store
+	}
+}
+
 // NewEngine creates an engine with the given options.
 // Returns the engine and any configuration validation errors.
 func NewEngine(opts ...Option) (Engine, []error) {
@@ -250,6 +260,7 @@ func NewEngine(opts ...Option) (Engine, []error) {
 		snapshotSchedule:   cfg.snapshotSchedule,
 		snapshotOnShutdown: cfg.snapshotOnShutdown,
 		shutdownTimeout:    cfg.shutdownTimeout,
+		deadLetterStore:    cfg.deadLetterStore,
 	}, nil
 }
 
@@ -365,6 +376,7 @@ type coreEngine struct {
 	snapshotSchedule   time.Duration
 	snapshotOnShutdown bool
 	shutdownTimeout    time.Duration
+	deadLetterStore    DeadLetterStore
 
 	mu      sync.RWMutex
 	started bool
@@ -680,6 +692,13 @@ func (e *coreEngine) dispatchChange(ctx context.Context, sourceID string, source
 		}
 
 		if err != nil {
+			// Write to dead letter store if configured.
+			if e.deadLetterStore != nil {
+				errInfo := ErrorInfo{Err: err, Message: err.Error()}
+				if dlErr := e.deadLetterStore.Write(p.id, event, errInfo); dlErr == nil {
+					e.observer.OnDeadLetterWritten(p.id, event, errInfo)
+				}
+			}
 			if e.applyErrorPolicy(ctx, idx, sourceID, pipelineIdxs) {
 				return fmt.Errorf("engine stopped due to error policy")
 			}
