@@ -65,9 +65,9 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 2.3 Change Buffer
 
-- [ ] Bounded channel between source dispatcher and target
-- [ ] Configurable size per pipeline
-- [ ] `Block` policy — backpressure to source
+- [x] Bounded channel between source dispatcher and target (`ChangeBuffer[T]` generic)
+- [x] Configurable size per pipeline
+- [x] `Block` policy — backpressure to source (default Go channel blocking)
 - [ ] `DropOldest` policy — ring buffer semantics
 - [ ] `Error` policy — mark pipeline as ERROR when full
 - [ ] Observer notifications on depth changes and policy triggers
