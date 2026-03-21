@@ -105,7 +105,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 ### 2.8 Readiness Tracking
 
 - [x] Per-pipeline readiness: `true` when baseline complete and streaming
-- [ ] Per-source readiness: all pipelines on source are ready
+- [x] Per-source readiness: `IsSourceReady(sourceID)` — all pipelines on source are ready
 - [x] Global readiness: all pipelines are ready
 - [x] `AwaitReady` with timeout (channel + timer)
 - [x] Callback registration (`OnReady`)
@@ -114,9 +114,9 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 - [x] Stop accepting new work
 - [ ] Flush all pipeline buffers
-- [ ] Take snapshot if `snapshotOnShutdown` is configured
+- [x] Take snapshot if `snapshotOnShutdown` is configured
 - [x] Close all targets
-- [ ] ACK final positions
+- [x] ACK final positions
 - [x] Close all sources
 - [ ] Configurable shutdown timeout
 

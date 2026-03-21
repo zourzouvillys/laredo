@@ -26,6 +26,9 @@ type Engine interface {
 	// IsReady reports whether all pipelines are ready.
 	IsReady() bool
 
+	// IsSourceReady reports whether all pipelines for a source are ready.
+	IsSourceReady(sourceID string) bool
+
 	// OnReady registers a callback that is invoked when all pipelines are ready.
 	// If already ready, the callback is invoked immediately.
 	OnReady(callback func())
@@ -687,6 +690,22 @@ func (e *coreEngine) Stop(ctx context.Context) error {
 	cancel()
 	e.wg.Wait()
 
+	// Take snapshot on shutdown if configured.
+	if e.snapshotOnShutdown && e.snapshotStore != nil {
+		if err := e.doSnapshot(ctx, map[string]Value{"trigger": "shutdown"}); err != nil {
+			e.observer.OnSnapshotFailed("shutdown", ErrorInfo{Err: err, Message: fmt.Sprintf("shutdown snapshot: %v", err)})
+		}
+	}
+
+	// ACK final positions for each source.
+	for sourceID, source := range e.sources {
+		if pos, advanced := e.ackTracker.AckPosition(sourceID); advanced {
+			if err := source.Ack(ctx, pos); err == nil {
+				e.observer.OnAckAdvanced(sourceID, pos)
+			}
+		}
+	}
+
 	// Close all targets.
 	for i := range e.pipelines {
 		p := &e.pipelines[i]
@@ -714,6 +733,24 @@ func (e *coreEngine) AwaitReady(timeout time.Duration) bool {
 //nolint:revive // Engine interface implementation.
 func (e *coreEngine) IsReady() bool {
 	return e.readiness.IsReady()
+}
+
+//nolint:revive // Engine interface implementation.
+func (e *coreEngine) IsSourceReady(sourceID string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	found := false
+	for i := range e.pipelines {
+		p := &e.pipelines[i]
+		if p.sourceID != sourceID {
+			continue
+		}
+		found = true
+		if p.state != PipelineStreaming && p.state != PipelinePaused {
+			return false
+		}
+	}
+	return found
 }
 
 //nolint:revive // Engine interface implementation.
@@ -893,6 +930,12 @@ func (e *coreEngine) CreateSnapshot(ctx context.Context, userMeta map[string]Val
 	if e.stopped {
 		return errStopped
 	}
+	return e.doSnapshot(ctx, userMeta)
+}
+
+// doSnapshot performs the snapshot without lifecycle state checks.
+// Caller must hold e.mu.RLock or ensure no concurrent mutations.
+func (e *coreEngine) doSnapshot(ctx context.Context, userMeta map[string]Value) error {
 	if e.snapshotStore == nil {
 		return errors.New("no snapshot store configured")
 	}

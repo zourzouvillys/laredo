@@ -1319,6 +1319,88 @@ func TestEngine_AckCoordination(t *testing.T) {
 	}
 }
 
+func TestEngine_IsSourceReady(t *testing.T) {
+	src := configuredSource()
+	target := memory.NewIndexedTarget()
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	// Not ready before start.
+	if e.IsSourceReady("pg") {
+		t.Error("expected not ready before start")
+	}
+
+	// Unknown source returns false.
+	if e.IsSourceReady("nonexistent") {
+		t.Error("expected false for unknown source")
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	if !e.IsSourceReady("pg") {
+		t.Error("expected source ready after baseline")
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+func TestEngine_SnapshotOnShutdown(t *testing.T) {
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+
+	target := memory.NewIndexedTarget()
+	store := &fakeSnapshotStore{}
+	obs := &testutil.TestObserver{}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithObserver(obs),
+		laredo.WithSnapshotStore(store),
+		laredo.WithSnapshotSerializer(fakeSnapshotSerializer{}),
+		laredo.WithSnapshotOnShutdown(true),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	// Verify a snapshot was taken during shutdown.
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.saved) != 1 {
+		t.Fatalf("expected 1 snapshot on shutdown, got %d", len(store.saved))
+	}
+	if store.saved[0].metadata.UserMeta["trigger"] != "shutdown" {
+		t.Errorf("expected trigger=shutdown in user meta, got %v", store.saved[0].metadata.UserMeta)
+	}
+}
+
 // contains checks if s contains substr.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
