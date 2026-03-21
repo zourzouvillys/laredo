@@ -517,7 +517,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 13.2 GoReleaser (already scaffolded)
 
-- [ ] Verify cross-compilation: linux/darwin amd64/arm64
+- [x] Verify cross-compilation: linux/darwin amd64/arm64 (configured in .goreleaser.yml)
 - [ ] Docker image push to `ghcr.io/zourzouvillys/laredo-server`
 - [ ] Checksums, SBOMs
 - [ ] Changelog generation
@@ -635,16 +635,16 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Configuring PostgreSQL logical replication (postgresql.md)
 - [ ] Setting up publication management (auto-create, row filters, column lists)
 - [x] Using indexed in-memory targets with secondary indexes (in-memory-targets.md)
-- [ ] Using compiled in-memory targets with custom compilers
+- [x] Using compiled in-memory targets with custom compilers (in-memory-targets.md)
 - [x] Setting up HTTP sync targets (http-sync.md)
 - [x] Setting up replication fan-out (fan-out.md)
 - [ ] Fan-out client library usage (Go)
 - [x] Pipeline filters and transforms (filters-and-transforms.md)
 - [x] Error handling and dead letter queues (error-handling.md)
-- [ ] TTL / expiry configuration
+- [x] TTL / expiry configuration (covered in error-handling.md + monitoring.md)
 - [x] Snapshot management (snapshots.md)
 - [x] Monitoring with Prometheus / Grafana dashboards (monitoring.md)
-- [ ] Monitoring with OpenTelemetry
+- [x] Monitoring with OpenTelemetry (monitoring.md + library-usage.md)
 - [x] Deploying with Docker (docker.md)
 - [x] Deploying on Kubernetes (kubernetes.md)
 - [ ] Custom source implementation guide
