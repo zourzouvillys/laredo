@@ -429,13 +429,13 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `laredo status` — overall service status (sources, pipelines, buffers)
 - [x] `laredo status --table <schema.table>` — per-table detail with indexes
 - [ ] `laredo source [source_id]` — source detail including source-specific metadata (slot info, shard info)
-- [ ] `laredo pipelines` — tabular list of all pipelines
+- [x] `laredo pipelines` — tabular list of all pipelines
 - [ ] `laredo tables` — tabular list of configured tables
 - [ ] `laredo schema <schema.table>` — column definitions
-- [ ] `laredo query <schema.table> [key_values...]` — lookup by primary index
-- [ ] `laredo query --index <name> [key_values...]` — lookup by named index
+- [x] `laredo query <schema.table> [key_values...]` — lookup by primary index
+- [x] `laredo query --index <name> [key_values...]` — lookup by named index
 - [x] `laredo query --pk <id>` — lookup by primary key
-- [ ] `laredo query --all --limit N` — paginated listing
+- [x] `laredo query --all --limit N` — paginated listing
 - [ ] `laredo watch [schema.table]` — stream status events / row changes
 - [ ] `laredo watch --verbose` — include full row data
 - [x] `laredo reload <schema.table>` / `laredo reload --all` / `laredo reload --source <id> --all`

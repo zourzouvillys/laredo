@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/zourzouvillys/laredo"
 	v1 "github.com/zourzouvillys/laredo/gen/laredo/v1"
@@ -49,6 +50,8 @@ func main() {
 		readyCmd(args)
 	case "snapshot":
 		snapshotCmd(args)
+	case "pipelines":
+		pipelinesCmd(args)
 	case "query":
 		queryCmd(args)
 	case "reload":
@@ -75,6 +78,7 @@ Usage: laredo <command> [flags]
 
 Commands:
   status             Show service status (pipelines, sources)
+  pipelines          List all pipelines
   ready              Check if the server is ready (exit 0/1)
   reload             Trigger re-baseline for a table
   pause              Pause a source
@@ -86,6 +90,8 @@ Commands:
   snapshot prune     Prune old snapshots
   query count        Count rows in a table
   query get          Get a row by primary key
+  query list         List rows (paginated)
+  query lookup       Lookup by index values
   dead-letters       List dead letters for a pipeline
   dead-letters purge Purge dead letters
   version            Print version
@@ -371,7 +377,7 @@ func snapshotPruneCmd(args []string) {
 
 func queryCmd(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: laredo query <count|get>")
+		fmt.Fprintln(os.Stderr, "usage: laredo query <count|get|list|lookup>")
 		os.Exit(1)
 	}
 
@@ -383,6 +389,10 @@ func queryCmd(args []string) {
 		queryCountCmd(subArgs)
 	case "get":
 		queryGetCmd(subArgs)
+	case "list":
+		queryListCmd(subArgs)
+	case "lookup":
+		queryLookupCmd(subArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown query command: %s\n", sub) //nolint:gosec // CLI output
 		os.Exit(1)
@@ -450,6 +460,149 @@ func queryGetCmd(args []string) {
 	}
 
 	printJSON(resp.Msg.GetRow().AsMap())
+}
+
+func queryListCmd(args []string) {
+	fs := flag.NewFlagSet("query list", flag.ExitOnError)
+	limit := fs.Int("limit", 100, "max rows to return")
+	parseGlobalFlags(fs, args)
+
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: laredo query list [--limit N] <schema.table>")
+		os.Exit(1)
+	}
+
+	schema, table, ok := strings.Cut(remaining[0], ".")
+	if !ok {
+		fmt.Fprintln(os.Stderr, "table must be in schema.table format")
+		os.Exit(1)
+	}
+
+	resp, err := queryClient().ListRows(ctx(), connect.NewRequest(&v1.ListRowsRequest{
+		Schema:   schema,
+		Table:    table,
+		PageSize: int32(*limit), //nolint:gosec // CLI input
+	}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	rows := resp.Msg.GetRows()
+	if output == outputJSON {
+		result := make([]map[string]any, 0, len(rows))
+		for _, r := range rows {
+			result = append(result, r.AsMap())
+		}
+		printJSON(result)
+		return
+	}
+
+	fmt.Printf("%d rows (total: %d)\n", len(rows), resp.Msg.GetTotalCount())
+	for _, r := range rows {
+		printJSON(r.AsMap())
+	}
+}
+
+func queryLookupCmd(args []string) {
+	fs := flag.NewFlagSet("query lookup", flag.ExitOnError)
+	index := fs.String("index", "", "named index to use")
+	parseGlobalFlags(fs, args)
+
+	remaining := fs.Args()
+	if len(remaining) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: laredo query lookup [--index <name>] <schema.table> <value> [value...]")
+		os.Exit(1)
+	}
+
+	schema, table, ok := strings.Cut(remaining[0], ".")
+	if !ok {
+		fmt.Fprintln(os.Stderr, "table must be in schema.table format")
+		os.Exit(1)
+	}
+
+	// Build key values from remaining args.
+	keyValues := make([]*structpb.Value, 0, len(remaining)-1)
+	for _, v := range remaining[1:] {
+		pv, _ := structpb.NewValue(v)
+		keyValues = append(keyValues, pv)
+	}
+
+	if *index != "" {
+		// Use LookupAll for named index.
+		resp, err := queryClient().LookupAll(ctx(), connect.NewRequest(&v1.LookupAllRequest{
+			Schema:    schema,
+			Table:     table,
+			IndexName: *index,
+			KeyValues: keyValues,
+		}))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		rows := resp.Msg.GetRows()
+		if len(rows) == 0 {
+			fmt.Fprintln(os.Stderr, "no results")
+			os.Exit(1)
+		}
+		result := make([]map[string]any, 0, len(rows))
+		for _, r := range rows {
+			result = append(result, r.AsMap())
+		}
+		printJSON(result)
+	} else {
+		// Use Lookup for primary lookup index.
+		resp, err := queryClient().Lookup(ctx(), connect.NewRequest(&v1.LookupRequest{
+			Schema:    schema,
+			Table:     table,
+			KeyValues: keyValues,
+		}))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		if !resp.Msg.GetFound() {
+			fmt.Fprintln(os.Stderr, "not found")
+			os.Exit(1)
+		}
+		printJSON(resp.Msg.GetRow().AsMap())
+	}
+}
+
+// --- pipelines ---
+
+func pipelinesCmd(args []string) {
+	fs := flag.NewFlagSet("pipelines", flag.ExitOnError)
+	parseGlobalFlags(fs, args)
+
+	resp, err := oamClient().GetStatus(ctx(), connect.NewRequest(&v1.GetStatusRequest{}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	pipelines := resp.Msg.GetPipelines()
+	if output == outputJSON {
+		printJSON(pipelines)
+		return
+	}
+
+	if len(pipelines) == 0 {
+		fmt.Println("no pipelines")
+		return
+	}
+
+	fmt.Printf("%-50s  %-8s  %-20s  %-12s  %s\n", "PIPELINE", "SOURCE", "TABLE", "STATE", "ROWS")
+	for _, p := range pipelines {
+		fmt.Printf("%-50s  %-8s  %-20s  %-12s  %d\n",
+			p.GetPipelineId(),
+			p.GetSourceId(),
+			p.GetSchema()+"."+p.GetTable(),
+			p.GetState().String(),
+			p.GetRowCount(),
+		)
+	}
 }
 
 // --- reload ---
