@@ -234,19 +234,19 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 4.4 Replication Fan-Out (`target/fanout/`)
 
-- [ ] In-memory state: `map[primaryKey]Row`
-- [ ] Change journal: bounded circular buffer of `JournalEntry` with monotonic sequence numbers
-- [ ] Journal pruning: by `max_entries` and `max_age`
+- [x] In-memory state: `map[primaryKey]Row`
+- [x] Change journal: bounded circular buffer of `JournalEntry` with monotonic sequence numbers
+- [x] Journal pruning: by `max_entries` and `max_age`
 - [ ] Periodic snapshot scheduler: serialize in-memory state at current sequence, tag with journal position
 - [ ] Snapshot retention: `keep_count`, `max_age`
 - [ ] Client registry: track connected clients, their sequence position, backpressure state
-- [ ] `OnBaselineRow` — insert into state + append INSERT to journal
-- [ ] `OnBaselineComplete` — mark READY, take initial snapshot, start accepting clients
-- [ ] `OnInsert`/`OnUpdate`/`OnDelete`/`OnTruncate` — update state, append to journal, broadcast to clients
+- [x] `OnBaselineRow` — insert into state + append INSERT to journal
+- [x] `OnBaselineComplete` — mark READY
+- [x] `OnInsert`/`OnUpdate`/`OnDelete`/`OnTruncate` — update state, append to journal
 - [ ] `OnSchemaChange` — append SCHEMA_CHANGE to journal, broadcast, take new snapshot
 - [ ] `OnClose` — final snapshot, disconnect all clients, shut down gRPC server
-- [ ] `IsDurable()` — always `true`
-- [ ] Export/restore snapshot
+- [x] `IsDurable()` — always `true`
+- [x] Export/restore snapshot
 - [ ] Per-client backpressure: configurable `max_size`, `drop_disconnect` / `slow_down` policies
 - [ ] Heartbeats: periodic heartbeat messages on idle connections (default 5s)
 
