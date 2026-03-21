@@ -31,7 +31,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `Engine.AwaitReady()` — block until all pipelines reach `STREAMING` or timeout
 - [x] `Engine.IsReady()` — global readiness (per-source/per-table/per-pipeline variants deferred)
 - [x] `Engine.OnReady(callback)` — callback-style readiness notification
-- [ ] `Engine.Reload()` — trigger re-baseline for a specific table (spec §4.1.2 forced re-baseline)
+- [x] `Engine.Reload()` — trigger re-baseline for a specific table (spec §4.1.2 forced re-baseline)
 - [x] `Engine.Pause()` / `Engine.Resume()` — per-source pause/resume
 - [ ] `Engine.CreateSnapshot()` — on-demand snapshot with user metadata
 
@@ -61,7 +61,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [ ] Resume — source `SupportsResume()` + has last ACKed position: skip baseline, resume stream
 - [ ] Snapshot restore — load from snapshot store, validate positions, call `target.RestoreSnapshot()`, then resume stream
 - [ ] Snapshot unusable fallback — log warning, fall through to full baseline
-- [ ] Re-baseline flow (spec §4.1.2) — pause stream, `OnTruncate`, new snapshot tx, reload rows, resume stream, ACK
+- [x] Re-baseline flow (spec §4.1.2) — pause stream, `OnTruncate`, re-baseline rows, resume stream
 
 ### 2.3 Change Buffer
 

@@ -644,7 +644,7 @@ func (e *coreEngine) OnReady(callback func()) {
 }
 
 //nolint:revive // Engine interface implementation.
-func (e *coreEngine) Reload(_ context.Context, sourceID string, _ TableIdentifier) error {
+func (e *coreEngine) Reload(ctx context.Context, sourceID string, table TableIdentifier) error {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	if !e.started {
@@ -653,10 +653,95 @@ func (e *coreEngine) Reload(_ context.Context, sourceID string, _ TableIdentifie
 	if e.stopped {
 		return errStopped
 	}
-	if _, ok := e.sources[sourceID]; !ok {
+	source, ok := e.sources[sourceID]
+	if !ok {
 		return fmt.Errorf("unknown source: %s", sourceID)
 	}
-	// TODO: implement re-baseline
+
+	// Find pipelines matching this source+table.
+	var affectedIdxs []int
+	for i := range e.pipelines {
+		p := &e.pipelines[i]
+		if p.sourceID == sourceID && p.table == table &&
+			(p.state == PipelineStreaming || p.state == PipelinePaused) {
+			affectedIdxs = append(affectedIdxs, i)
+		}
+	}
+	if len(affectedIdxs) == 0 {
+		return fmt.Errorf("no active pipelines for source %s table %s", sourceID, table)
+	}
+
+	// Pause the source to stop change delivery.
+	if err := source.Pause(ctx); err != nil {
+		return fmt.Errorf("pause source for reload: %w", err)
+	}
+
+	// Transition affected pipelines to BASELINING.
+	for _, idx := range affectedIdxs {
+		e.transitionPipeline(idx, PipelineBaselining)
+	}
+
+	// Truncate affected targets.
+	for _, idx := range affectedIdxs {
+		p := &e.pipelines[idx]
+		if err := p.target.OnTruncate(ctx, p.table); err != nil {
+			e.transitionPipeline(idx, PipelineError)
+		}
+	}
+
+	// Fire baseline started observer events.
+	for _, idx := range affectedIdxs {
+		p := &e.pipelines[idx]
+		if p.state == PipelineBaselining {
+			e.observer.OnBaselineStarted(p.id, p.table)
+		}
+	}
+
+	// Re-baseline from source.
+	var rowCount int64
+	baselineStart := time.Now()
+
+	_, err := source.Baseline(ctx, []TableIdentifier{table}, func(t TableIdentifier, row Row) {
+		rowCount++
+		e.dispatchBaselineRow(ctx, affectedIdxs, t, row)
+	})
+	if err != nil {
+		// Resume source even on error before returning.
+		_ = source.Resume(ctx)
+		for _, idx := range affectedIdxs {
+			e.transitionPipeline(idx, PipelineError)
+		}
+		return fmt.Errorf("reload baseline failed: %w", err)
+	}
+
+	baselineDuration := time.Since(baselineStart)
+
+	// Notify baseline complete.
+	for _, idx := range affectedIdxs {
+		p := &e.pipelines[idx]
+		if p.state != PipelineBaselining {
+			continue
+		}
+		if err := p.target.OnBaselineComplete(ctx, p.table); err != nil {
+			e.transitionPipeline(idx, PipelineError)
+			continue
+		}
+		e.observer.OnBaselineCompleted(p.id, p.table, rowCount, baselineDuration)
+	}
+
+	// Transition back to STREAMING.
+	for _, idx := range affectedIdxs {
+		p := &e.pipelines[idx]
+		if p.state == PipelineBaselining {
+			e.transitionPipeline(idx, PipelineStreaming)
+		}
+	}
+
+	// Resume the source.
+	if err := source.Resume(ctx); err != nil {
+		return fmt.Errorf("resume source after reload: %w", err)
+	}
+
 	return nil
 }
 

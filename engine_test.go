@@ -929,6 +929,117 @@ func TestEngine_PauseDoesNotAffectErrorPipelines(t *testing.T) {
 	}
 }
 
+func TestEngine_Reload(t *testing.T) {
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(2, "bob"))
+
+	target := memory.NewIndexedTarget()
+	obs := &testutil.TestObserver{}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Verify initial baseline data.
+	if target.Count() != 2 {
+		t.Fatalf("expected 2 rows after initial baseline, got %d", target.Count())
+	}
+
+	// Modify the source data (simulate changed upstream data).
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(3, "charlie"))
+
+	// Trigger re-baseline.
+	if err := e.Reload(ctx, "pg", testutil.SampleTable()); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	// After re-baseline, target should have the new data (truncated + reloaded).
+	// The source now has 3 rows configured.
+	if target.Count() != 3 {
+		t.Fatalf("expected 3 rows after reload, got %d", target.Count())
+	}
+
+	row, ok := target.Get(3)
+	if !ok {
+		t.Fatal("expected row with id=3 after reload")
+	}
+	if row["name"] != "charlie" {
+		t.Errorf("expected name=charlie, got %v", row["name"])
+	}
+
+	// Verify observer events: should have new BaselineStarted and BaselineCompleted.
+	baselineStarted := obs.EventsByType("BaselineStarted")
+	if len(baselineStarted) != 2 {
+		t.Errorf("expected 2 BaselineStarted events (initial + reload), got %d", len(baselineStarted))
+	}
+	baselineCompleted := obs.EventsByType("BaselineCompleted")
+	if len(baselineCompleted) != 2 {
+		t.Errorf("expected 2 BaselineCompleted events, got %d", len(baselineCompleted))
+	}
+
+	// Verify pipeline went back to STREAMING.
+	stateChanges := obs.EventsByType("PipelineStateChanged")
+	lastChange := stateChanges[len(stateChanges)-1]
+	if lastChange.Data["newState"] != laredo.PipelineStreaming {
+		t.Errorf("expected STREAMING after reload, got %v", lastChange.Data["newState"])
+	}
+
+	// Verify changes still flow after reload.
+	src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(4, "dave"))
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return target.Count() == 4
+	}, "expected 4 rows after streaming resumes")
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+func TestEngine_ReloadUnknownTable(t *testing.T) {
+	src := configuredSource()
+	target := memory.NewIndexedTarget()
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Reload a table that has no pipelines.
+	err := e.Reload(ctx, "pg", laredo.Table("public", "nonexistent"))
+	if err == nil {
+		t.Error("expected error reloading table with no pipelines")
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
 // contains checks if s contains substr.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
