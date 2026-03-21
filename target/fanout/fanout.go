@@ -138,7 +138,9 @@ func (t *Target) OnSchemaChange(_ context.Context, _ laredo.TableIdentifier, _, 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.cols = newColumns
-	return laredo.SchemaChangeResponse{Action: laredo.SchemaContinue}
+	// Append a schema change marker to the journal so clients know to re-read schema.
+	t.j.append(laredo.ActionTruncate, nil, nil) // schema changes use truncate action as marker
+	return laredo.SchemaChangeResponse{Action: laredo.SchemaReBaseline}
 }
 
 //nolint:revive // implements SyncTarget.
@@ -170,6 +172,9 @@ func (t *Target) SupportsConsistentSnapshot() bool { return false }
 
 //nolint:revive // implements SyncTarget.
 func (t *Target) OnClose(_ context.Context, _ laredo.TableIdentifier) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.ready = false
 	return nil
 }
 

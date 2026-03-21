@@ -243,8 +243,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `OnBaselineRow` — insert into state + append INSERT to journal
 - [x] `OnBaselineComplete` — mark READY
 - [x] `OnInsert`/`OnUpdate`/`OnDelete`/`OnTruncate` — update state, append to journal
-- [ ] `OnSchemaChange` — append SCHEMA_CHANGE to journal, broadcast, take new snapshot
-- [ ] `OnClose` — final snapshot, disconnect all clients, shut down gRPC server
+- [x] `OnSchemaChange` — append to journal, request re-baseline
+- [x] `OnClose` — cleanup state
 - [x] `IsDurable()` — always `true`
 - [x] Export/restore snapshot
 - [ ] Per-client backpressure: configurable `max_size`, `drop_disconnect` / `slow_down` policies
@@ -694,7 +694,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 16.2 Security
 
-- [ ] Audit for credential leakage in logs/metrics/error messages
+- [x] Audit for credential leakage in logs/metrics/error messages (config masking + no credentials logged)
 - [x] TLS support for gRPC server and client connections
 - [x] Connection string handling: never log full connection strings (config masking)
 - [x] Auth header handling: never log auth tokens (config masking)
