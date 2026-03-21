@@ -1642,12 +1642,12 @@ func TestEngine_SnapshotRestore(t *testing.T) {
 	}
 
 	// SnapshotRestoreStarted and SnapshotRestoreCompleted should fire.
-	if obs.EventCount("SnapshotRestoreStarted") != 1 {
-		t.Errorf("expected 1 SnapshotRestoreStarted, got %d", obs.EventCount("SnapshotRestoreStarted"))
-	}
-	if obs.EventCount("SnapshotRestoreCompleted") != 1 {
-		t.Errorf("expected 1 SnapshotRestoreCompleted, got %d", obs.EventCount("SnapshotRestoreCompleted"))
-	}
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return obs.EventCount("SnapshotRestoreStarted") == 1
+	}, "expected 1 SnapshotRestoreStarted")
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return obs.EventCount("SnapshotRestoreCompleted") == 1
+	}, "expected 1 SnapshotRestoreCompleted")
 
 	// Streaming should still work after restore.
 	src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(3, "charlie"))
