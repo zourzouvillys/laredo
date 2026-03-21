@@ -1984,6 +1984,53 @@ func TestEngine_TTLFieldBased(t *testing.T) {
 	}
 }
 
+func TestEngine_PostBaselineValidation(t *testing.T) {
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(2, "bob"))
+
+	target := memory.NewIndexedTarget()
+	obs := &testutil.TestObserver{}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Verify validation result was fired.
+	validations := obs.EventsByType("ValidationResult")
+	if len(validations) != 1 {
+		t.Fatalf("expected 1 ValidationResult, got %d", len(validations))
+	}
+
+	v := validations[0]
+	if v.Data["sourceCount"] != int64(2) {
+		t.Errorf("expected sourceCount=2, got %v", v.Data["sourceCount"])
+	}
+	if v.Data["targetCount"] != int64(2) {
+		t.Errorf("expected targetCount=2, got %v", v.Data["targetCount"])
+	}
+	if v.Data["match"] != true {
+		t.Errorf("expected match=true, got %v", v.Data["match"])
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
 // contains checks if s contains substr.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)

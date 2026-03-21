@@ -686,6 +686,20 @@ func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source Sy
 		e.observer.OnBaselineCompleted(p.id, p.table, rowCounts[p.table], baselineDuration)
 	}
 
+	// Post-baseline validation: compare dispatched row count with target count.
+	for _, idx := range pipelineIdxs {
+		p := &e.pipelines[idx]
+		if p.state != PipelineBaselining {
+			continue
+		}
+		if counter, ok := p.target.(interface{ Count() int }); ok {
+			sourceCount := rowCounts[p.table]
+			targetCount := int64(counter.Count())
+			match := sourceCount == targetCount
+			e.observer.OnValidationResult(p.id, p.table, sourceCount, targetCount, match)
+		}
+	}
+
 	// Transition to streaming.
 	for _, idx := range pipelineIdxs {
 		p := &e.pipelines[idx]
