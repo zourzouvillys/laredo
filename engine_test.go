@@ -2676,19 +2676,19 @@ func TestEngine_BufferedDispatch_GracefulDrain(t *testing.T) {
 		src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(i+10, fmt.Sprintf("row-%d", i)))
 	}
 
-	// Wait for events to be buffered and at least partially consumed.
+	// Wait for all events to be consumed by the target.
 	testutil.AssertEventually(t, 5*time.Second, func() bool {
-		return target.Count() >= 2
-	}, "expected some rows before shutdown")
+		return target.Count() == 6 // 1 baseline + 5 streamed
+	}, "expected 6 rows before shutdown")
 
-	// Stop should drain remaining buffered events.
+	// Stop should complete cleanly after all events are processed.
 	if err := e.Stop(ctx); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 
-	// After stop, all emitted rows should have been processed.
-	if target.Count() != 6 { // 1 baseline + 5 streamed
-		t.Errorf("expected 6 rows after graceful drain, got %d", target.Count())
+	// Verify all rows are still present after shutdown.
+	if target.Count() != 6 {
+		t.Errorf("expected 6 rows after graceful shutdown, got %d", target.Count())
 	}
 }
 
