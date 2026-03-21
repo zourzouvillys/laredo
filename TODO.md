@@ -357,12 +357,12 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 8.1 Protobuf Definitions
 
-- [ ] `proto/laredo/v1/oam.proto` — full OAM service from spec §17.1 (all messages, all RPCs)
-- [ ] `proto/laredo/v1/query.proto` — full Query service from spec §17.2
-- [ ] `proto/replication/v1/replication.proto` — full Replication service from spec §6.4.9
-- [ ] `buf.yaml` + `buf.gen.yaml` for buf-managed code generation
-- [ ] Generate Go code into `gen/` (committed to repo)
-- [ ] Add `make proto` target (already in Makefile, needs buf config)
+- [x] `proto/laredo/v1/oam.proto` — full OAM service from spec §17.1 (all messages, all RPCs)
+- [x] `proto/laredo/v1/query.proto` — full Query service from spec §17.2
+- [x] `proto/laredo/replication/v1/replication.proto` — full Replication service from spec §6.4.9
+- [x] `buf.yaml` + `buf.gen.yaml` for buf-managed code generation
+- [x] Generate Go code into `gen/` (committed to repo)
+- [x] Add `make proto` target (already in Makefile, needs buf config)
 
 ### 8.2 OAM Service (`service/oam/`)
 

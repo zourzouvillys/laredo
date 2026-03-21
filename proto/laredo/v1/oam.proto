@@ -1,0 +1,479 @@
+syntax = "proto3";
+package laredo.v1;
+
+option go_package = "github.com/zourzouvillys/laredo/gen/laredo/v1;laredov1";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+service LaredoOAMService {
+  // --- Status & Monitoring ---
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+  rpc GetTableStatus(GetTableStatusRequest) returns (GetTableStatusResponse);
+  rpc GetPipelineStatus(GetPipelineStatusRequest) returns (GetPipelineStatusResponse);
+  rpc WatchStatus(WatchStatusRequest) returns (stream WatchStatusResponse);
+  rpc CheckReady(CheckReadyRequest) returns (CheckReadyResponse);
+
+  // --- Source Management ---
+  rpc GetSourceInfo(GetSourceInfoRequest) returns (GetSourceInfoResponse);
+
+  // --- Administration ---
+  rpc ReloadTable(ReloadTableRequest) returns (ReloadTableResponse);
+  rpc ReloadAll(ReloadAllRequest) returns (ReloadAllResponse);
+  rpc PauseSync(PauseSyncRequest) returns (PauseSyncResponse);
+  rpc ResumeSync(ResumeSyncRequest) returns (ResumeSyncResponse);
+  rpc ResetSource(ResetSourceRequest) returns (ResetSourceResponse);
+
+  // --- Configuration (read-only) ---
+  rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
+  rpc GetTableSchema(GetTableSchemaRequest) returns (GetTableSchemaResponse);
+
+  // --- Snapshot Management ---
+  rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
+  rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
+  rpc InspectSnapshot(InspectSnapshotRequest) returns (InspectSnapshotResponse);
+  rpc RestoreSnapshot(RestoreSnapshotRequest) returns (RestoreSnapshotResponse);
+  rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
+  rpc PruneSnapshots(PruneSnapshotsRequest) returns (PruneSnapshotsResponse);
+
+  // --- Dead Letter Management ---
+  rpc ListDeadLetters(ListDeadLettersRequest) returns (ListDeadLettersResponse);
+  rpc ReplayDeadLetters(ReplayDeadLettersRequest) returns (ReplayDeadLettersResponse);
+  rpc PurgeDeadLetters(PurgeDeadLettersRequest) returns (PurgeDeadLettersResponse);
+
+  // --- Replay (Debugging) ---
+  rpc StartReplay(StartReplayRequest) returns (StartReplayResponse);
+  rpc GetReplayStatus(GetReplayStatusRequest) returns (GetReplayStatusResponse);
+  rpc StopReplay(StopReplayRequest) returns (StopReplayResponse);
+}
+
+// ============================================================
+// Status & Monitoring
+// ============================================================
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  ServiceState state = 1;
+  repeated SourceStatus sources = 2;
+  repeated PipelineStatus pipelines = 3;
+  google.protobuf.Timestamp started_at = 4;
+  google.protobuf.Timestamp last_change_at = 5;
+  SnapshotSummary snapshot_status = 6;
+}
+
+enum ServiceState {
+  SERVICE_STATE_UNSPECIFIED = 0;
+  SERVICE_STATE_STARTING = 1;
+  SERVICE_STATE_BASELINING = 2;
+  SERVICE_STATE_STREAMING = 3;
+  SERVICE_STATE_PAUSED = 4;
+  SERVICE_STATE_RELOADING = 5;
+  SERVICE_STATE_ERROR = 6;
+}
+
+message SourceStatus {
+  string source_id = 1;
+  string source_type = 2;
+  bool supports_resume = 3;
+  string ordering_guarantee = 4;
+  string current_position = 5;
+  string acked_position = 6;
+  int64 lag_bytes = 7;
+  google.protobuf.Duration lag_time = 8;
+  google.protobuf.Struct source_details = 9;
+}
+
+message PipelineStatus {
+  string pipeline_id = 1;
+  string source_id = 2;
+  string schema = 3;
+  string table = 4;
+  string target_type = 5;
+  PipelineState state = 6;
+  int64 row_count = 7;
+  int64 inserts_applied = 8;
+  int64 updates_applied = 9;
+  int64 deletes_applied = 10;
+  int64 truncates_applied = 11;
+  google.protobuf.Timestamp last_change_at = 12;
+  string error_message = 13;
+  int32 buffer_depth = 14;
+  int32 buffer_capacity = 15;
+  int64 dead_letter_count = 16;
+}
+
+enum PipelineState {
+  PIPELINE_STATE_UNSPECIFIED = 0;
+  PIPELINE_STATE_INITIALIZING = 1;
+  PIPELINE_STATE_BASELINING = 2;
+  PIPELINE_STATE_STREAMING = 3;
+  PIPELINE_STATE_PAUSED = 4;
+  PIPELINE_STATE_ERROR = 5;
+  PIPELINE_STATE_STOPPED = 6;
+}
+
+message GetTableStatusRequest {
+  string schema = 1;
+  string table = 2;
+}
+
+message GetTableStatusResponse {
+  repeated PipelineStatus pipelines = 1;
+  repeated IndexInfo indexes = 2;
+}
+
+message IndexInfo {
+  string name = 1;
+  repeated string fields = 2;
+  bool unique = 3;
+  int64 entry_count = 4;
+}
+
+message GetPipelineStatusRequest {
+  string pipeline_id = 1;
+}
+
+message GetPipelineStatusResponse {
+  PipelineStatus status = 1;
+  repeated IndexInfo indexes = 2;
+}
+
+message WatchStatusRequest {
+  repeated string tables = 1;
+  repeated string pipeline_ids = 2;
+}
+
+message WatchStatusResponse {
+  google.protobuf.Timestamp timestamp = 1;
+  oneof event {
+    ServiceStateChange service_state_change = 2;
+    PipelineStateChangeEvent pipeline_state_change = 3;
+    RowChange row_change = 4;
+    SourceStateChange source_state_change = 5;
+  }
+}
+
+message ServiceStateChange {
+  ServiceState old_state = 1;
+  ServiceState new_state = 2;
+}
+
+message PipelineStateChangeEvent {
+  string pipeline_id = 1;
+  PipelineState old_state = 2;
+  PipelineState new_state = 3;
+}
+
+message SourceStateChange {
+  string source_id = 1;
+  string event_type = 2;
+  string message = 3;
+}
+
+message RowChange {
+  string pipeline_id = 1;
+  string schema = 2;
+  string table = 3;
+  string action = 4;
+  string position = 5;
+  int64 xid = 6;
+}
+
+message CheckReadyRequest {
+  string source = 1;
+  string table = 2;
+  string pipeline_id = 3;
+}
+
+message CheckReadyResponse {
+  bool ready = 1;
+  repeated string not_ready_reasons = 2;
+}
+
+// ============================================================
+// Source Management
+// ============================================================
+
+message GetSourceInfoRequest {
+  string source_id = 1;
+}
+
+message GetSourceInfoResponse {
+  repeated SourceInfo sources = 1;
+}
+
+message SourceInfo {
+  string source_id = 1;
+  string source_type = 2;
+  bool supports_resume = 3;
+  string ordering_guarantee = 4;
+  string current_position = 5;
+  string acked_position = 6;
+  int64 lag_bytes = 7;
+  google.protobuf.Duration lag_time = 8;
+  google.protobuf.Struct details = 9;
+}
+
+// ============================================================
+// Administration
+// ============================================================
+
+message ReloadTableRequest {
+  string source_id = 1;
+  string schema = 2;
+  string table = 3;
+}
+
+message ReloadTableResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message ReloadAllRequest {
+  string source_id = 1;
+}
+
+message ReloadAllResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message PauseSyncRequest {
+  string source_id = 1;
+}
+
+message PauseSyncResponse {
+  ServiceState state = 1;
+}
+
+message ResumeSyncRequest {
+  string source_id = 1;
+}
+
+message ResumeSyncResponse {
+  ServiceState state = 1;
+}
+
+message ResetSourceRequest {
+  string source_id = 1;
+  bool confirm = 2;
+  bool drop_publication = 3;
+}
+
+message ResetSourceResponse {
+  bool accepted = 1;
+  string message = 2;
+  google.protobuf.Struct details = 3;
+}
+
+// ============================================================
+// Configuration (read-only)
+// ============================================================
+
+message ListTablesRequest {}
+
+message ListTablesResponse {
+  repeated TableConfig tables = 1;
+}
+
+message TableConfig {
+  string schema = 1;
+  string table = 2;
+  string primary_key = 3;
+  string source_id = 4;
+  string source_type = 5;
+  google.protobuf.Struct source_config = 6;
+  string target_type = 7;
+  google.protobuf.Struct target_config = 8;
+}
+
+message GetTableSchemaRequest {
+  string schema = 1;
+  string table = 2;
+}
+
+message GetTableSchemaResponse {
+  repeated ColumnDefinition columns = 1;
+}
+
+message ColumnDefinition {
+  int32 ordinal_position = 1;
+  string column_name = 2;
+  string data_type = 3;
+  bool not_null = 4;
+  bool is_primary_key = 5;
+  int32 primary_key_ordinal = 6;
+}
+
+// ============================================================
+// Snapshot Management
+// ============================================================
+
+message CreateSnapshotRequest {
+  repeated string tables = 1;
+  google.protobuf.Struct user_meta = 2;
+}
+
+message CreateSnapshotResponse {
+  bool accepted = 1;
+  string snapshot_id = 2;
+  string message = 3;
+}
+
+message ListSnapshotsRequest {
+  string table = 1;
+  int32 limit = 2;
+}
+
+message ListSnapshotsResponse {
+  repeated SnapshotInfo snapshots = 1;
+}
+
+message SnapshotInfo {
+  string snapshot_id = 1;
+  google.protobuf.Timestamp created_at = 2;
+  string format = 3;
+  repeated SourcePositionEntry source_positions = 4;
+  repeated TableSnapshotSummary tables = 5;
+  int64 size_bytes = 6;
+  string store_type = 7;
+  string store_location = 8;
+  google.protobuf.Struct user_meta = 9;
+}
+
+message SourcePositionEntry {
+  string source_id = 1;
+  string position = 2;
+}
+
+message TableSnapshotSummary {
+  string schema = 1;
+  string table = 2;
+  int64 row_count = 3;
+  string target_type = 4;
+}
+
+message InspectSnapshotRequest {
+  string snapshot_id = 1;
+}
+
+message InspectSnapshotResponse {
+  SnapshotInfo info = 1;
+}
+
+message RestoreSnapshotRequest {
+  string snapshot_id = 1;
+  bool confirm = 2;
+  bool skip_meta_check = 3;
+}
+
+message RestoreSnapshotResponse {
+  bool accepted = 1;
+  string message = 2;
+  google.protobuf.Struct user_meta = 3;
+  repeated string warnings = 4;
+}
+
+message DeleteSnapshotRequest {
+  string snapshot_id = 1;
+}
+
+message DeleteSnapshotResponse {
+  bool deleted = 1;
+}
+
+message PruneSnapshotsRequest {
+  int32 keep = 1;
+  string table = 2;
+}
+
+message PruneSnapshotsResponse {
+  int32 deleted_count = 1;
+}
+
+message SnapshotSummary {
+  bool enabled = 1;
+  string store_type = 2;
+  string last_snapshot_id = 3;
+  google.protobuf.Timestamp last_snapshot_at = 4;
+  google.protobuf.Timestamp next_scheduled_at = 5;
+  int32 snapshot_count = 6;
+}
+
+// ============================================================
+// Dead Letter Management
+// ============================================================
+
+message ListDeadLettersRequest {
+  string pipeline_id = 1;
+  int32 limit = 2;
+}
+
+message ListDeadLettersResponse {
+  repeated DeadLetterEntry entries = 1;
+  int32 total_count = 2;
+}
+
+message DeadLetterEntry {
+  google.protobuf.Timestamp timestamp = 1;
+  string action = 2;
+  string position = 3;
+  string error_message = 4;
+  google.protobuf.Struct change_data = 5;
+}
+
+message ReplayDeadLettersRequest {
+  string pipeline_id = 1;
+}
+
+message ReplayDeadLettersResponse {
+  int32 replayed = 1;
+  int32 succeeded = 2;
+  int32 failed = 3;
+}
+
+message PurgeDeadLettersRequest {
+  string pipeline_id = 1;
+}
+
+message PurgeDeadLettersResponse {
+  int32 purged = 1;
+}
+
+// ============================================================
+// Replay (Debugging)
+// ============================================================
+
+message StartReplayRequest {
+  string snapshot_id = 1;
+  string target_pipeline_id = 2;
+  string speed = 3;
+  repeated string tables = 4;
+}
+
+message StartReplayResponse {
+  bool accepted = 1;
+  string replay_id = 2;
+  string message = 3;
+}
+
+message GetReplayStatusRequest {
+  string replay_id = 1;
+}
+
+message GetReplayStatusResponse {
+  string replay_id = 1;
+  string state = 2;
+  int64 rows_replayed = 3;
+  google.protobuf.Duration elapsed = 4;
+}
+
+message StopReplayRequest {
+  string replay_id = 1;
+}
+
+message StopReplayResponse {
+  bool stopped = 1;
+}

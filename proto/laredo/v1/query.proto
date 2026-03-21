@@ -1,0 +1,87 @@
+syntax = "proto3";
+package laredo.v1;
+
+option go_package = "github.com/zourzouvillys/laredo/gen/laredo/v1;laredov1";
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+service LaredoQueryService {
+  rpc Lookup(LookupRequest) returns (LookupResponse);
+  rpc LookupAll(LookupAllRequest) returns (LookupAllResponse);
+  rpc GetRow(GetRowRequest) returns (GetRowResponse);
+  rpc ListRows(ListRowsRequest) returns (ListRowsResponse);
+  rpc CountRows(CountRowsRequest) returns (CountRowsResponse);
+  rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse);
+}
+
+message LookupRequest {
+  string schema = 1;
+  string table = 2;
+  string index_name = 3;
+  repeated google.protobuf.Value key_values = 4;
+}
+
+message LookupResponse {
+  bool found = 1;
+  google.protobuf.Struct row = 2;
+}
+
+message LookupAllRequest {
+  string schema = 1;
+  string table = 2;
+  string index_name = 3;
+  repeated google.protobuf.Value key_values = 4;
+}
+
+message LookupAllResponse {
+  repeated google.protobuf.Struct rows = 1;
+}
+
+message GetRowRequest {
+  string schema = 1;
+  string table = 2;
+  int64 primary_key = 3;
+}
+
+message GetRowResponse {
+  bool found = 1;
+  google.protobuf.Struct row = 2;
+}
+
+message ListRowsRequest {
+  string schema = 1;
+  string table = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListRowsResponse {
+  repeated google.protobuf.Struct rows = 1;
+  string next_page_token = 2;
+  int64 total_count = 3;
+}
+
+message CountRowsRequest {
+  string schema = 1;
+  string table = 2;
+}
+
+message CountRowsResponse {
+  int64 count = 1;
+}
+
+message SubscribeRequest {
+  string schema = 1;
+  string table = 2;
+  bool replay_existing = 3;
+}
+
+message SubscribeResponse {
+  string action = 1;
+  string position = 2;
+  int64 xid = 3;
+  google.protobuf.Timestamp timestamp = 4;
+  google.protobuf.Struct old_values = 5;
+  google.protobuf.Struct new_values = 6;
+}

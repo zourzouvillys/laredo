@@ -1,0 +1,169 @@
+syntax = "proto3";
+package laredo.replication.v1;
+
+option go_package = "github.com/zourzouvillys/laredo/gen/laredo/replication/v1;replicationv1";
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+service LaredoReplicationService {
+  // Primary replication stream. Client connects, declares its state,
+  // receives catch-up data (snapshot or delta), then live changes.
+  rpc Sync(SyncRequest) returns (stream SyncResponse);
+
+  // List available snapshots that clients can use for bootstrapping.
+  rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
+
+  // Fetch a specific snapshot. Streaming response for large snapshots.
+  rpc FetchSnapshot(FetchSnapshotRequest) returns (stream FetchSnapshotResponse);
+
+  // Get current server state (latest sequence, journal bounds, client count).
+  rpc GetReplicationStatus(GetReplicationStatusRequest) returns (GetReplicationStatusResponse);
+}
+
+// ============================================================
+// Sync (primary replication stream)
+// ============================================================
+
+message SyncRequest {
+  string schema = 1;
+  string table = 2;
+  int64 last_known_sequence = 3;
+  string last_snapshot_id = 4;
+  string client_id = 5;
+}
+
+message SyncResponse {
+  oneof message {
+    SyncHandshake handshake = 1;
+    SnapshotBegin snapshot_begin = 2;
+    SnapshotRow snapshot_row = 3;
+    SnapshotEnd snapshot_end = 4;
+    ReplicationJournalEntry journal_entry = 5;
+    SchemaChangeNotification schema_change = 6;
+    Heartbeat heartbeat = 7;
+  }
+}
+
+message SyncHandshake {
+  SyncMode mode = 1;
+  int64 server_current_sequence = 2;
+  int64 journal_oldest_sequence = 3;
+  int64 resume_from_sequence = 4;
+  repeated ColumnDefinition columns = 5;
+  string snapshot_id = 6;
+}
+
+enum SyncMode {
+  SYNC_MODE_UNSPECIFIED = 0;
+  SYNC_MODE_FULL_SNAPSHOT = 1;
+  SYNC_MODE_DELTA = 2;
+  SYNC_MODE_DELTA_FROM_SNAPSHOT = 3;
+}
+
+message SnapshotBegin {
+  string snapshot_id = 1;
+  int64 sequence = 2;
+  int64 row_count = 3;
+}
+
+message SnapshotRow {
+  google.protobuf.Struct row = 1;
+}
+
+message SnapshotEnd {
+  int64 sequence = 1;
+  int64 rows_sent = 2;
+}
+
+message ReplicationJournalEntry {
+  int64 sequence = 1;
+  string source_position = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  string action = 4;
+  google.protobuf.Struct old_values = 5;
+  google.protobuf.Struct new_values = 6;
+}
+
+message SchemaChangeNotification {
+  int64 sequence = 1;
+  repeated ColumnDefinition old_columns = 2;
+  repeated ColumnDefinition new_columns = 3;
+}
+
+message ColumnDefinition {
+  int32 ordinal_position = 1;
+  string column_name = 2;
+  string data_type = 3;
+  bool not_null = 4;
+  bool is_primary_key = 5;
+  int32 primary_key_ordinal = 6;
+}
+
+message Heartbeat {
+  int64 current_sequence = 1;
+  google.protobuf.Timestamp server_time = 2;
+}
+
+// ============================================================
+// Snapshot browsing
+// ============================================================
+
+message ListSnapshotsRequest {
+  string schema = 1;
+  string table = 2;
+  int32 limit = 3;
+}
+
+message ListSnapshotsResponse {
+  repeated ReplicationSnapshotInfo snapshots = 1;
+}
+
+message ReplicationSnapshotInfo {
+  string snapshot_id = 1;
+  int64 sequence = 2;
+  string source_position = 3;
+  int64 row_count = 4;
+  int64 size_bytes = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+
+message FetchSnapshotRequest {
+  string snapshot_id = 1;
+}
+
+message FetchSnapshotResponse {
+  oneof chunk {
+    SnapshotBegin begin = 1;
+    SnapshotRow row = 2;
+    SnapshotEnd end = 3;
+  }
+}
+
+// ============================================================
+// Status
+// ============================================================
+
+message GetReplicationStatusRequest {
+  string schema = 1;
+  string table = 2;
+}
+
+message GetReplicationStatusResponse {
+  int64 current_sequence = 1;
+  int64 journal_oldest_sequence = 2;
+  int64 journal_entry_count = 3;
+  int64 row_count = 4;
+  int32 connected_clients = 5;
+  repeated ConnectedClient clients = 6;
+  ReplicationSnapshotInfo latest_snapshot = 7;
+}
+
+message ConnectedClient {
+  string client_id = 1;
+  int64 current_sequence = 2;
+  int64 behind_count = 3;
+  int32 buffer_depth = 4;
+  google.protobuf.Timestamp connected_at = 5;
+  string state = 6;
+}
