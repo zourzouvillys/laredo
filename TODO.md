@@ -508,12 +508,12 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 13.1 Docker Image
 
-- [ ] Multi-stage build (already scaffolded, needs refinement)
-- [ ] Distroless base image for production, alpine variant for debug
+- [x] Multi-stage build (builder + distroless production image)
+- [x] Distroless base image for production
 - [ ] Entrypoint wrapper: run init scripts from `/docker-entrypoint-init.d/`, merge config, validate, start
-- [ ] HEALTHCHECK instruction
-- [ ] Exposed ports: 4001 (gRPC), 4002 (replication), 8080 (health), 9090 (metrics)
-- [ ] Volumes: `/etc/laredo/`, `/etc/laredo/conf.d/`, `/var/lib/laredo/`, `/docker-entrypoint-init.d/`
+- [x] HEALTHCHECK instruction (uses `laredo-server healthcheck`)
+- [x] Exposed ports: 4001 (gRPC), 8080 (health/metrics)
+- [x] Volumes: `/etc/laredo/`, `/etc/laredo/conf.d/`, `/var/lib/laredo/`
 
 ### 13.2 GoReleaser (already scaffolded)
 
