@@ -140,18 +140,18 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Stateful mode: persistent named slot, resume from last ACKed LSN
 - [x] Publication management (auto-create with table list):
   - [ ] `create = false` — use existing publication, fail if not found
-  - [ ] `create = true` — auto-create publication from configured tables
+  - [x] `create = true` — auto-create publication from configured tables
   - [ ] Sync publication on startup (add/remove tables, update publish operations)
   - [ ] Row filters and column lists (PostgreSQL 15+)
-  - [ ] Publication naming: default `{slot_name}_pub`, configurable override
+  - [x] Publication naming: default `{slot_name}_pub`, configurable override
 - [x] Baseline: `REPEATABLE READ` snapshot, `SELECT *` per table, return LSN position
 - [x] Streaming: consume `pgoutput` messages, decode into `ChangeEvent`
 - [x] Position type: LSN (uint64 wrapper with string formatting `0/XXXXXXXX`)
 - [x] `ComparePositions` — LSN comparison
 - [x] ACK — `StandbyStatusUpdate` with confirmed flush LSN
-- [ ] Reconnect state machine: `CONNECTING → CONNECTED → STREAMING → RECONNECTING → ERROR`
-  - [ ] Exponential backoff with configurable max_attempts, initial/max backoff, multiplier
-  - [ ] Stateful mode reconnect: resume from last ACKed LSN
+- [x] Reconnect state machine: `CONNECTING → CONNECTED → STREAMING → RECONNECTING → ERROR`
+  - [x] Exponential backoff with configurable max_attempts, initial/max backoff, multiplier
+  - [x] Stateful mode reconnect: resume from last ACKed LSN
   - [ ] Ephemeral mode reconnect: signal engine for full re-baseline
 - [x] Slot health monitoring: lag bytes behind WAL tip (GetLag queries pg_replication_slots)
 - [ ] `ResetSource` — drop and recreate slot (+ publication if auto-managed)

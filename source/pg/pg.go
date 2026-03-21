@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/zourzouvillys/laredo"
 )
@@ -167,10 +168,11 @@ func (s *Source) Baseline(ctx context.Context, tables []laredo.TableIdentifier, 
 
 // Stream begins streaming changes from the given position using logical replication.
 //
+// Stream begins streaming with automatic reconnect on transient failures.
+// Uses exponential backoff between reconnection attempts.
+//
 //nolint:revive // implements SyncSource.
 func (s *Source) Stream(ctx context.Context, from laredo.Position, handler laredo.ChangeHandler) error {
-	s.setState(laredo.SourceStreaming)
-
 	startLSN := s.slotLSN
 	if from != nil {
 		if lsn, ok := from.(LSN); ok {
@@ -183,11 +185,63 @@ func (s *Source) Stream(ctx context.Context, from laredo.Position, handler lared
 		pubName = s.cfg.publication.Name
 	}
 
-	err := s.repl.startStreaming(ctx, s.cfg.slotName, pubName, startLSN, s.tables, handler)
-	if err != nil && ctx.Err() == nil {
-		s.setState(laredo.SourceError)
+	backoff := s.cfg.reconnect.InitialBackoff
+	if backoff == 0 {
+		backoff = 1 * time.Second
 	}
-	return err
+
+	for attempt := 0; ; attempt++ {
+		s.setState(laredo.SourceStreaming)
+
+		err := s.repl.startStreaming(ctx, s.cfg.slotName, pubName, startLSN, s.tables, handler)
+
+		// Clean exit (context cancelled).
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err == nil {
+			return nil
+		}
+
+		// Check if we've exhausted reconnect attempts.
+		maxAttempts := s.cfg.reconnect.MaxAttempts
+		if maxAttempts == 0 {
+			maxAttempts = 10
+		}
+		if attempt >= maxAttempts {
+			s.setState(laredo.SourceError)
+			return fmt.Errorf("pg source: exhausted %d reconnect attempts: %w", maxAttempts, err)
+		}
+
+		// Reconnect: close old connection, create new one, retry.
+		s.setState(laredo.SourceReconnecting)
+		_ = s.repl.close(ctx)
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+
+		if err := s.repl.connect(ctx); err != nil {
+			// Connection failed — will retry on next iteration.
+			continue
+		}
+
+		// Grow backoff.
+		multiplier := s.cfg.reconnect.Multiplier
+		if multiplier == 0 {
+			multiplier = 2.0
+		}
+		backoff = time.Duration(float64(backoff) * multiplier)
+		maxBackoff := s.cfg.reconnect.MaxBackoff
+		if maxBackoff == 0 {
+			maxBackoff = 30 * time.Second
+		}
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
 }
 
 // Ack confirms that changes up to this position have been durably processed.
