@@ -37,9 +37,9 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 1.3 Replay Engine (spec §15)
 
-- [ ] `SnapshotReplay` builder API
-- [ ] `ReplaySpeed` — `FULL_SPEED`, `REAL_TIME`, throttled
-- [ ] `replay.Run()` blocking and `replay.Start()` async variants
+- [x] `SnapshotReplay` builder API — `NewSnapshotReplay(store).Target(table, target).Run(ctx, id)`
+- [x] `ReplaySpeed` — `ReplayFullSpeed`, `ReplayRealTime` constants defined
+- [x] `replay.Run()` blocking and `replay.Start()` async variants
 - [ ] Wire replay into OAM gRPC service (`StartReplay`, `GetReplayStatus`, `StopReplay`)
 
 ---
