@@ -415,7 +415,41 @@ func (e *coreEngine) runSource(ctx context.Context, sourceID string, pipelineIdx
 		}
 	}
 
-	// Baseline.
+	// Try resume path: if the source supports resume and has a last ACKed
+	// position, skip baseline and go directly to streaming.
+	var position Position
+	if source.SupportsResume() {
+		lastPos, err := source.LastAckedPosition(ctx)
+		if err == nil && lastPos != nil {
+			position = lastPos
+
+			// Skip baseline — transition directly to STREAMING.
+			for _, idx := range pipelineIdxs {
+				p := &e.pipelines[idx]
+				if p.state == PipelineInitializing {
+					e.transitionPipeline(idx, PipelineStreaming)
+					e.readiness.SetReady(p.id)
+				}
+			}
+
+			e.streamFromPosition(ctx, sourceID, source, pipelineIdxs, position)
+			return
+		}
+	}
+
+	// Full baseline path.
+	position = e.runBaseline(ctx, sourceID, source, tables, pipelineIdxs)
+	if position == nil {
+		return // baseline failed or context cancelled
+	}
+
+	e.streamFromPosition(ctx, sourceID, source, pipelineIdxs, position)
+}
+
+// runBaseline performs the full baseline flow: transition to BASELINING, read all
+// rows from the source, dispatch to targets, complete. Returns the baseline position
+// or nil if the baseline failed.
+func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source SyncSource, tables []TableIdentifier, pipelineIdxs []int) Position {
 	e.transitionPipelines(pipelineIdxs, PipelineBaselining)
 
 	rowCounts := make(map[TableIdentifier]int64, len(tables))
@@ -434,11 +468,11 @@ func (e *coreEngine) runSource(ctx context.Context, sourceID string, pipelineIdx
 	})
 	if err != nil {
 		if ctx.Err() != nil {
-			return
+			return nil
 		}
 		e.transitionPipelines(pipelineIdxs, PipelineError)
 		e.observer.OnSourceDisconnected(sourceID, fmt.Sprintf("baseline failed: %v", err))
-		return
+		return nil
 	}
 
 	baselineDuration := time.Since(baselineStart)
@@ -466,8 +500,12 @@ func (e *coreEngine) runSource(ctx context.Context, sourceID string, pipelineIdx
 		e.readiness.SetReady(p.id)
 	}
 
-	// Stream changes.
-	err = source.Stream(ctx, position, ChangeHandlerFunc(func(event ChangeEvent) error {
+	return position
+}
+
+// streamFromPosition starts streaming changes from the given position.
+func (e *coreEngine) streamFromPosition(ctx context.Context, sourceID string, source SyncSource, pipelineIdxs []int, position Position) {
+	err := source.Stream(ctx, position, ChangeHandlerFunc(func(event ChangeEvent) error {
 		return e.dispatchChange(ctx, pipelineIdxs, event)
 	}))
 	if err != nil && ctx.Err() == nil {

@@ -1111,6 +1111,111 @@ func TestEngine_CreateSnapshot(t *testing.T) {
 	}
 }
 
+func TestEngine_ResumeSkipsBaseline(t *testing.T) {
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+
+	// Set a last ACKed position to enable resume.
+	ctx := context.Background()
+	if err := src.Ack(ctx, uint64(5)); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+
+	target := memory.NewIndexedTarget()
+	obs := &testutil.TestObserver{}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// On resume, baseline is skipped — no rows should be loaded into target.
+	if target.Count() != 0 {
+		t.Errorf("expected 0 rows (baseline skipped on resume), got %d", target.Count())
+	}
+
+	// No BaselineStarted or BaselineCompleted events should fire.
+	if obs.EventCount("BaselineStarted") != 0 {
+		t.Errorf("expected no BaselineStarted events on resume, got %d", obs.EventCount("BaselineStarted"))
+	}
+	if obs.EventCount("BaselineCompleted") != 0 {
+		t.Errorf("expected no BaselineCompleted events on resume, got %d", obs.EventCount("BaselineCompleted"))
+	}
+
+	// Pipeline should go directly INITIALIZING → STREAMING (no BASELINING).
+	stateChanges := obs.EventsByType("PipelineStateChanged")
+	if len(stateChanges) != 1 {
+		t.Fatalf("expected 1 state change (→STREAMING), got %d", len(stateChanges))
+	}
+	if stateChanges[0].Data["newState"] != laredo.PipelineStreaming {
+		t.Errorf("expected transition to STREAMING, got %v", stateChanges[0].Data["newState"])
+	}
+
+	// Verify streaming still works.
+	src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(10, "resumed"))
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return target.Count() == 1
+	}, "expected 1 row from streamed insert after resume")
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+func TestEngine_ResumeNoPositionFallsBackToBaseline(t *testing.T) {
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+
+	// Don't set lastAck — SupportsResume() returns false, should do full baseline.
+	target := memory.NewIndexedTarget()
+	obs := &testutil.TestObserver{}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Full baseline should have loaded the row.
+	if target.Count() != 1 {
+		t.Errorf("expected 1 row from baseline, got %d", target.Count())
+	}
+
+	// BaselineStarted and BaselineCompleted should fire.
+	if obs.EventCount("BaselineStarted") != 1 {
+		t.Errorf("expected 1 BaselineStarted, got %d", obs.EventCount("BaselineStarted"))
+	}
+	if obs.EventCount("BaselineCompleted") != 1 {
+		t.Errorf("expected 1 BaselineCompleted, got %d", obs.EventCount("BaselineCompleted"))
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
 // contains checks if s contains substr.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
