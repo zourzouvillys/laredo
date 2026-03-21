@@ -243,18 +243,43 @@ func (s *Source) PositionFromString(str string) (laredo.Position, error) {
 	return lsn, nil
 }
 
+// Pause pauses the source by setting state to PAUSED. The replication
+// stream continues running but the engine won't deliver changes.
+//
 //nolint:revive // implements SyncSource.
 func (s *Source) Pause(_ context.Context) error {
-	return fmt.Errorf("pg source: pause not yet implemented")
+	s.setState(laredo.SourcePaused)
+	return nil
 }
 
+// Resume resumes the source after a pause.
+//
 //nolint:revive // implements SyncSource.
 func (s *Source) Resume(_ context.Context) error {
-	return fmt.Errorf("pg source: resume not yet implemented")
+	s.setState(laredo.SourceStreaming)
+	return nil
 }
 
+// GetLag queries the replication slot for lag information.
+//
 //nolint:revive // implements SyncSource.
-func (s *Source) GetLag() laredo.LagInfo { return laredo.LagInfo{} }
+func (s *Source) GetLag() laredo.LagInfo {
+	if s.conn.queryConn == nil {
+		return laredo.LagInfo{}
+	}
+
+	var lagBytes *int64
+	_ = s.conn.queryConn.QueryRow(context.Background(),
+		`SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)::bigint
+		 FROM pg_replication_slots WHERE slot_name = $1`,
+		s.cfg.slotName,
+	).Scan(&lagBytes)
+
+	if lagBytes == nil {
+		return laredo.LagInfo{}
+	}
+	return laredo.LagInfo{LagBytes: *lagBytes}
+}
 
 //nolint:revive // implements SyncSource.
 func (s *Source) OrderingGuarantee() laredo.OrderingGuarantee { return laredo.TotalOrder }

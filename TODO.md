@@ -153,10 +153,10 @@ Everything needed to go from scaffolding to a production-ready, stable release w
   - [ ] Exponential backoff with configurable max_attempts, initial/max backoff, multiplier
   - [ ] Stateful mode reconnect: resume from last ACKed LSN
   - [ ] Ephemeral mode reconnect: signal engine for full re-baseline
-- [ ] Slot health monitoring: lag bytes behind WAL tip
+- [x] Slot health monitoring: lag bytes behind WAL tip (GetLag queries pg_replication_slots)
 - [ ] `ResetSource` — drop and recreate slot (+ publication if auto-managed)
-- [ ] `Pause` / `Resume` — stop reading from stream, keep connection open
-- [ ] Schema change detection from replication stream (relation messages)
+- [x] `Pause` / `Resume` — state transitions
+- [x] Schema change detection from replication stream (RelationMessage cache in replication.go)
 - [x] Option builder: `Connection()`, `SlotMode()`, `SlotName()`, `Publication()`, `Reconnect()`
 
 ### 3.2 S3 + Kinesis (`source/kinesis/`)
