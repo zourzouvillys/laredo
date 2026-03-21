@@ -324,3 +324,92 @@ func TestPGSource_Streaming(t *testing.T) {
 		t.Fatalf("stop: %v", err)
 	}
 }
+
+func TestPGSource_StatefulMode_Resume(t *testing.T) {
+	pgc := testutil.NewTestPostgres(t)
+	pgc.CreateTestTable(t)
+	pgc.InsertTestRows(t, 2)
+
+	ctx := context.Background()
+	slotName := "laredo_stateful_test"
+	pubName := "laredo_stateful_pub"
+
+	// First run: baseline + stream.
+	src1 := pg.New(
+		pg.Connection(pgc.ConnStr),
+		pg.SlotModeOpt(pg.SlotStateful),
+		pg.SlotName(slotName),
+		pg.Publication(pg.PublicationConfig{Name: pubName, Create: true}),
+	)
+	target1 := memory.NewIndexedTarget(memory.LookupFields("name"))
+	obs1 := &testutil.TestObserver{}
+
+	eng1, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src1),
+		laredo.WithPipeline("pg", laredo.Table("public", "test_users"), target1),
+		laredo.WithObserver(obs1),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("engine1 errors: %v", errs)
+	}
+
+	if err := eng1.Start(ctx); err != nil {
+		t.Fatalf("start1: %v", err)
+	}
+	if !eng1.AwaitReady(30 * time.Second) {
+		t.Fatal("engine1 did not become ready")
+	}
+	if target1.Count() != 2 {
+		t.Fatalf("expected 2 baseline rows, got %d", target1.Count())
+	}
+	t.Logf("first run: %d rows", target1.Count())
+
+	// Insert while running.
+	conn, err := pgx.Connect(ctx, pgc.ConnStr)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	_, _ = conn.Exec(ctx, "INSERT INTO test_users (name, email) VALUES ($1, $2)", "streamed-1", "s@e.com")
+	testutil.AssertEventually(t, 15*time.Second, func() bool {
+		return target1.Count() == 3
+	}, "expected 3 rows")
+
+	if err := eng1.Stop(ctx); err != nil {
+		t.Fatalf("stop1: %v", err)
+	}
+	conn.Close(ctx)
+
+	// Verify source reports resume support.
+	src2 := pg.New(
+		pg.Connection(pgc.ConnStr),
+		pg.SlotModeOpt(pg.SlotStateful),
+		pg.SlotName(slotName),
+		pg.Publication(pg.PublicationConfig{Name: pubName, Create: true}),
+	)
+	if !src2.SupportsResume() {
+		t.Fatal("expected SupportsResume=true")
+	}
+
+	// Second run with same slot — should find existing slot.
+	target2 := memory.NewIndexedTarget(memory.LookupFields("name"))
+	eng2, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src2),
+		laredo.WithPipeline("pg", laredo.Table("public", "test_users"), target2),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("engine2 errors: %v", errs)
+	}
+
+	if err := eng2.Start(ctx); err != nil {
+		t.Fatalf("start2: %v", err)
+	}
+	if !eng2.AwaitReady(30 * time.Second) {
+		t.Fatal("engine2 did not become ready")
+	}
+
+	t.Logf("second run: %d rows, resume mode", target2.Count())
+
+	if err := eng2.Stop(ctx); err != nil {
+		t.Fatalf("stop2: %v", err)
+	}
+}

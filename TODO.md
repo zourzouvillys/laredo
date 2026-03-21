@@ -137,7 +137,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Connection management — query connection with schema discovery (replication connection deferred to streaming)
 - [x] `pgoutput` logical decoding (built-in plugin, no extensions needed)
 - [x] Ephemeral mode: temporary replication slot, full baseline every startup
-- [ ] Stateful mode: persistent named slot, resume from last ACKed LSN
+- [x] Stateful mode: persistent named slot, resume from last ACKed LSN
 - [x] Publication management (auto-create with table list):
   - [ ] `create = false` — use existing publication, fail if not found
   - [ ] `create = true` — auto-create publication from configured tables
@@ -560,7 +560,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 ### 14.2 Integration Tests (Tier 2 — `test/integration/`)
 
 - [x] PostgreSQL source: ephemeral mode — baseline against real PG (testcontainers)
-- [ ] PostgreSQL source: stateful mode — baseline, stream, restart, resume from LSN
+- [x] PostgreSQL source: stateful mode — baseline, stream, restart, resume from LSN
 - [ ] PostgreSQL source: publication management — auto-create, add/remove tables, row filters (PG 15+)
 - [ ] PostgreSQL source: reconnect — simulate connection loss, verify reconnect and resume
 - [ ] PostgreSQL source: slot invalidation — exceed `max_slot_wal_keep_size`, verify re-baseline

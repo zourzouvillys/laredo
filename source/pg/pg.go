@@ -16,12 +16,13 @@ import (
 
 // Source implements laredo.SyncSource using PostgreSQL logical replication.
 type Source struct {
-	cfg     sourceConfig
-	conn    connManager
-	repl    replicationManager
-	schemas map[laredo.TableIdentifier][]laredo.ColumnDefinition
-	tables  []laredo.TableIdentifier
-	slotLSN LSN // LSN from slot creation
+	cfg         sourceConfig
+	conn        connManager
+	repl        replicationManager
+	schemas     map[laredo.TableIdentifier][]laredo.ColumnDefinition
+	tables      []laredo.TableIdentifier
+	slotLSN     LSN  // LSN from slot creation
+	slotExisted bool // true if we reused an existing slot (stateful resume)
 
 	mu    sync.Mutex
 	state laredo.SourceState
@@ -92,8 +93,32 @@ func (s *Source) Init(ctx context.Context, config laredo.SourceConfig) (map[lare
 		}
 	}
 
-	// Create replication slot.
+	// Create replication slot (or reuse existing in stateful mode).
 	temporary := s.cfg.slotMode == SlotEphemeral
+	if s.cfg.slotMode == SlotStateful {
+		// Check if slot already exists.
+		var exists bool
+		_ = s.conn.queryConn.QueryRow(ctx,
+			"SELECT EXISTS(SELECT 1 FROM pg_replication_slots WHERE slot_name = $1)",
+			s.cfg.slotName,
+		).Scan(&exists)
+		if exists {
+			// Slot exists — reuse it. Get the confirmed flush LSN.
+			s.slotExisted = true
+			var lsnStr *string
+			_ = s.conn.queryConn.QueryRow(ctx,
+				"SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name = $1",
+				s.cfg.slotName,
+			).Scan(&lsnStr)
+			if lsnStr != nil {
+				if lsn, err := ParseLSN(*lsnStr); err == nil {
+					s.slotLSN = lsn
+				}
+			}
+			return schemas, nil
+		}
+	}
+
 	slotLSN, err := s.repl.createSlot(ctx, s.cfg.slotName, temporary)
 	if err != nil {
 		s.setState(laredo.SourceError)
@@ -180,9 +205,20 @@ func (s *Source) SupportsResume() bool {
 	return s.cfg.slotMode == SlotStateful
 }
 
+// LastAckedPosition queries the replication slot for the confirmed flush LSN.
+// Returns nil if the slot doesn't exist or has no confirmed position.
+//
 //nolint:revive // implements SyncSource.
 func (s *Source) LastAckedPosition(_ context.Context) (laredo.Position, error) {
-	return nil, nil
+	// Only return a position if we reused an existing slot (stateful resume).
+	// For newly created slots, return nil so the engine runs baseline first.
+	if !s.slotExisted {
+		return nil, nil
+	}
+	if s.slotLSN == 0 {
+		return nil, nil
+	}
+	return s.slotLSN, nil
 }
 
 //nolint:revive // implements SyncSource.
