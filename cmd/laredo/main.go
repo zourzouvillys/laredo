@@ -50,7 +50,7 @@ func main() {
 	case "help", "--help", "-h":
 		usage()
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd) //nolint:gosec // CLI output to stderr
 		usage()
 		os.Exit(1)
 	}
@@ -151,7 +151,7 @@ func snapshotCmd(args []string) {
 	case "inspect":
 		snapshotInspectCmd(subArgs)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown snapshot command: %s\n", sub)
+		fmt.Fprintf(os.Stderr, "unknown snapshot command: %s\n", sub) //nolint:gosec // CLI output
 		os.Exit(1)
 	}
 }
@@ -273,7 +273,7 @@ func queryCmd(args []string) {
 	case "get":
 		queryGetCmd(subArgs)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown query command: %s\n", sub)
+		fmt.Fprintf(os.Stderr, "unknown query command: %s\n", sub) //nolint:gosec // CLI output
 		os.Exit(1)
 	}
 }
