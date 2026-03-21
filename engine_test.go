@@ -1267,6 +1267,58 @@ func TestEngine_ResumeNoPositionFallsBackToBaseline(t *testing.T) {
 	}
 }
 
+func TestEngine_AckCoordination(t *testing.T) {
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+
+	target := memory.NewIndexedTarget()
+	obs := &testutil.TestObserver{}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Emit some changes.
+	src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(2, "bob"))
+	src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(3, "charlie"))
+
+	// Wait for changes to be applied.
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return target.Count() == 3
+	}, "expected 3 rows")
+
+	// Verify ACK events were fired.
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return obs.EventCount("AckAdvanced") >= 2
+	}, "expected at least 2 AckAdvanced events")
+
+	// Verify the source received ACKs.
+	lastAck, err := src.LastAckedPosition(ctx)
+	if err != nil {
+		t.Fatalf("last acked position: %v", err)
+	}
+	if lastAck == nil {
+		t.Fatal("expected non-nil last ACKed position")
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
 // contains checks if s contains substr.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)

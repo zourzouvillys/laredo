@@ -74,10 +74,10 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 2.4 ACK Coordination
 
-- [ ] Track per-pipeline confirmed position (last change where `IsDurable() == true`)
-- [ ] Compute minimum confirmed position across all pipelines sharing a source
-- [ ] ACK the source at the minimum confirmed position
-- [ ] Handle pipelines in ERROR state (advance past them per `Isolate` policy)
+- [x] Track per-pipeline confirmed position (last change where `IsDurable() == true`)
+- [x] Compute minimum confirmed position across all pipelines sharing a source
+- [x] ACK the source at the minimum confirmed position
+- [x] Handle pipelines in ERROR state (advance past them per `Isolate` policy)
 
 ### 2.5 Error Handling & Retry
 

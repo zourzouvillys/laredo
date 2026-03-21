@@ -218,11 +218,20 @@ func NewEngine(opts ...Option) (Engine, []error) {
 		pipelineIDs[i] = id
 	}
 
+	ackTracker := engine.NewAckTracker()
+	for i, pc := range cfg.pipelines {
+		src := cfg.sources[pc.sourceID]
+		if src != nil {
+			ackTracker.RegisterPipeline(pipelines[i].id, pc.sourceID, src.ComparePositions)
+		}
+	}
+
 	return &coreEngine{
 		sources:            cfg.sources,
 		pipelines:          pipelines,
 		observer:           observer,
 		readiness:          engine.NewReadinessTracker(pipelineIDs),
+		ackTracker:         ackTracker,
 		snapshotStore:      cfg.snapshotStore,
 		snapshotSerializer: cfg.snapshotSerializer,
 		snapshotSchedule:   cfg.snapshotSchedule,
@@ -331,10 +340,11 @@ var (
 
 // coreEngine is the internal Engine implementation.
 type coreEngine struct {
-	sources   map[string]SyncSource
-	pipelines []resolvedPipeline
-	observer  EngineObserver
-	readiness *engine.ReadinessTracker
+	sources    map[string]SyncSource
+	pipelines  []resolvedPipeline
+	observer   EngineObserver
+	readiness  *engine.ReadinessTracker
+	ackTracker *engine.AckTracker
 
 	snapshotStore      SnapshotStore
 	snapshotSerializer SnapshotSerializer
@@ -506,7 +516,7 @@ func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source Sy
 // streamFromPosition starts streaming changes from the given position.
 func (e *coreEngine) streamFromPosition(ctx context.Context, sourceID string, source SyncSource, pipelineIdxs []int, position Position) {
 	err := source.Stream(ctx, position, ChangeHandlerFunc(func(event ChangeEvent) error {
-		return e.dispatchChange(ctx, pipelineIdxs, event)
+		return e.dispatchChange(ctx, sourceID, source, pipelineIdxs, event)
 	}))
 	if err != nil && ctx.Err() == nil {
 		e.observer.OnSourceDisconnected(sourceID, fmt.Sprintf("stream error: %v", err))
@@ -547,8 +557,9 @@ func (e *coreEngine) dispatchBaselineRow(ctx context.Context, pipelineIdxs []int
 }
 
 // dispatchChange delivers a change event to all matching pipelines, applying
-// filters and transforms.
-func (e *coreEngine) dispatchChange(ctx context.Context, pipelineIdxs []int, event ChangeEvent) error {
+// filters and transforms. After all pipelines are processed, it advances
+// the ACK position if all durable targets have confirmed.
+func (e *coreEngine) dispatchChange(ctx context.Context, sourceID string, source SyncSource, pipelineIdxs []int, event ChangeEvent) error {
 	for _, idx := range pipelineIdxs {
 		p := &e.pipelines[idx]
 		if p.table != event.Table || p.state != PipelineStreaming {
@@ -584,10 +595,24 @@ func (e *coreEngine) dispatchChange(ctx context.Context, pipelineIdxs []int, eve
 		if err != nil {
 			e.observer.OnChangeError(p.id, event.Table, event.Action, ErrorInfo{Err: err, Message: err.Error()})
 			e.transitionPipeline(idx, PipelineError)
+			e.ackTracker.Skip(p.id)
 			continue
 		}
 		e.observer.OnChangeApplied(p.id, event.Table, event.Action, time.Since(start))
+
+		// Confirm the position if the target has durably processed it.
+		if p.target.IsDurable() {
+			e.ackTracker.Confirm(p.id, event.Position)
+		}
 	}
+
+	// Try to advance the ACK position for this source.
+	if pos, advanced := e.ackTracker.AckPosition(sourceID); advanced {
+		if err := source.Ack(ctx, pos); err == nil {
+			e.observer.OnAckAdvanced(sourceID, pos)
+		}
+	}
+
 	return nil
 }
 
