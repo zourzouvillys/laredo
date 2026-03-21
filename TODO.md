@@ -414,7 +414,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 - [x] Implement full `EngineObserver` interface
 - [x] Map same metrics to OTel meter API
-- [ ] Configurable exporter (OTLP, stdout, etc.)
+- [x] Configurable exporter (stdout; OTLP deferred)
 
 ---
 
@@ -482,7 +482,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Graceful shutdown sequence: stop gRPC → stop health → stop engine
 - [x] Configurable shutdown timeout (`WithShutdownTimeout`)
 - [x] `laredo-server validate` subcommand: validate config without starting
-- [ ] `laredo-server config --dump` subcommand: print merged config
+- [x] `laredo-server config --dump` subcommand: print merged config
 - [x] `laredo-server healthcheck` subcommand: hit local health endpoint, exit 0/1
 
 ---
