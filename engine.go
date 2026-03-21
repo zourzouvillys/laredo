@@ -573,6 +573,9 @@ func (e *coreEngine) dispatchChange(ctx context.Context, pipelineIdxs []int, eve
 			}
 			err = p.target.OnUpdate(ctx, event.Table, row, event.OldValues)
 		case ActionDelete:
+			if !applyFilters(p, event.Table, event.OldValues) {
+				continue
+			}
 			err = p.target.OnDelete(ctx, event.Table, event.OldValues)
 		case ActionTruncate:
 			err = p.target.OnTruncate(ctx, event.Table)
@@ -586,6 +589,18 @@ func (e *coreEngine) dispatchChange(ctx context.Context, pipelineIdxs []int, eve
 		e.observer.OnChangeApplied(p.id, event.Table, event.Action, time.Since(start))
 	}
 	return nil
+}
+
+// applyFilters runs only the pipeline's filter chain on a row.
+// Returns false if the row is filtered out. Used for DELETE events where
+// transforms should not modify the identity.
+func applyFilters(p *resolvedPipeline, table TableIdentifier, row Row) bool {
+	for _, f := range p.filters {
+		if !f.Include(table, row) {
+			return false
+		}
+	}
+	return true
 }
 
 // applyFiltersAndTransforms runs the pipeline's filter and transform chains on a row.

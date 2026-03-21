@@ -659,6 +659,57 @@ func TestEngine_FilterChain(t *testing.T) {
 	}
 }
 
+func TestEngine_FilterDeleteEvents(t *testing.T) {
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(2, "anna"))
+
+	target := memory.NewIndexedTarget()
+
+	// Filter: only rows where name starts with "a".
+	nameFilter := &filter.FieldPrefix{Field: "name", Prefix: "a"}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target,
+			laredo.PipelineFilterOpt(nameFilter),
+		),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	if target.Count() != 2 {
+		t.Fatalf("expected 2 rows after baseline, got %d", target.Count())
+	}
+
+	// Delete a row that passes the filter — should be removed from target.
+	src.EmitDelete(testutil.SampleTable(), laredo.Row{"id": 1, "name": "alice"})
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return target.Count() == 1
+	}, "expected 1 row after deleting alice")
+
+	// Delete a row whose OldValues don't pass the filter — should be skipped.
+	// "bob" doesn't start with "a", so this DELETE should not affect the target.
+	src.EmitDelete(testutil.SampleTable(), laredo.Row{"id": 99, "name": "bob"})
+	time.Sleep(100 * time.Millisecond)
+	if target.Count() != 1 {
+		t.Errorf("expected 1 row (filtered delete should be skipped), got %d", target.Count())
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
 func TestEngine_TransformChain(t *testing.T) {
 	src := configuredSource()
 	src.AddRow(testutil.SampleTable(), laredo.Row{"id": 1, "name": "alice", "value": "secret"})

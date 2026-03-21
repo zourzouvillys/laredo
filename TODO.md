@@ -91,7 +91,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 - [x] Apply `PipelineFilter` chain before target dispatch (baseline rows + change events)
 - [x] Apply `PipelineTransform` chain (mutate row, nil = drop)
-- [ ] Handle filter/transform on `DELETE` events (apply to identity/old values)
+- [x] Handle filter on `DELETE` events (apply filters to old values; transforms not applied to identity)
 
 ### 2.7 TTL / Expiry (spec §10)
 
