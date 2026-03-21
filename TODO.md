@@ -420,9 +420,9 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ## 10. CLI (`cmd/laredo/`)
 
-- [ ] CLI framework (e.g. `cobra` or `github.com/urfave/cli/v2`)
-- [ ] Global flags: `--address`, `--tls`, `--cert`, `--timeout`, `--output` (table/json/yaml)
-- [ ] `LAREDO_ADDRESS` env var for default server address
+- [x] CLI framework (flag-based subcommand dispatcher)
+- [x] Global flags: `--address`, `--timeout`, `--output` (table/json)
+- [x] `LAREDO_ADDRESS` env var for default server address
 
 ### 10.1 Commands (spec §18)
 
@@ -434,7 +434,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [ ] `laredo schema <schema.table>` — column definitions
 - [ ] `laredo query <schema.table> [key_values...]` — lookup by primary index
 - [ ] `laredo query --index <name> [key_values...]` — lookup by named index
-- [ ] `laredo query --pk <id>` — lookup by primary key
+- [x] `laredo query --pk <id>` — lookup by primary key
 - [ ] `laredo query --all --limit N` — paginated listing
 - [ ] `laredo watch [schema.table]` — stream status events / row changes
 - [ ] `laredo watch --verbose` — include full row data
@@ -442,17 +442,17 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [ ] `laredo pause [--source <id>]` / `laredo resume [--source <id>]`
 - [ ] `laredo reset-source <source_id>` with confirmation prompt
 - [ ] `laredo reset-source <source_id> --drop-publication` for decommissioning
-- [ ] `laredo snapshot create [--meta key=value ...]`
-- [ ] `laredo snapshot list`
-- [ ] `laredo snapshot inspect <id>`
+- [x] `laredo snapshot create [--meta key=value ...]`
+- [x] `laredo snapshot list`
+- [x] `laredo snapshot inspect <id>`
 - [ ] `laredo snapshot restore <id>` with confirmation prompt
-- [ ] `laredo snapshot delete <id>`
+- [x] `laredo snapshot delete <id>`
 - [ ] `laredo snapshot prune --keep N`
 - [ ] `laredo dead-letters <pipeline_id>` — list dead letters
 - [ ] `laredo dead-letters replay <pipeline_id>`
 - [ ] `laredo dead-letters purge <pipeline_id>`
 - [ ] `laredo replay <snapshot_id> [--pipeline <id>] [--speed full|realtime|Nx]`
-- [ ] `laredo ready [--pipeline <id>]` — exit code 0 if ready, 1 if not
+- [x] `laredo ready [--pipeline <id>]` — exit code 0 if ready, 1 if not
 - [ ] `laredo fanout status <schema.table>` — replication fan-out status
 - [ ] `laredo fanout clients <schema.table>` — connected clients
 - [ ] `laredo fanout snapshots <schema.table>` — available fan-out snapshots
@@ -461,7 +461,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 ### 10.2 Output Formatting
 
 - [ ] Table formatter: aligned columns, human-readable numbers (1,284), durations (3h 42m)
-- [ ] JSON output: structured, machine-readable
+- [x] JSON output: structured, machine-readable
 - [ ] YAML output
 
 ---
