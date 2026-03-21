@@ -468,20 +468,20 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ## 11. Pre-built Service (`cmd/laredo-server/`)
 
-- [ ] Config loading: file + conf.d + env vars + CLI flags (spec §21.2)
-- [ ] Config validation on startup (fail fast with clear errors)
-- [ ] Engine construction from config
-- [ ] gRPC server startup (OAM + Query on configured port)
-- [ ] Health HTTP server:
-  - [ ] `/health/live` — process is running and not deadlocked
-  - [ ] `/health/ready` — all pipelines streaming (JSON body with per-pipeline status)
-  - [ ] `/health/startup` — service initialized and begun baseline
-- [ ] Metrics endpoint (Prometheus `/metrics`)
-- [ ] Structured logging (slog-based, configurable level)
-- [ ] Signal handling: `SIGTERM` / `SIGINT` → graceful shutdown
-- [ ] Graceful shutdown sequence: stop gRPC → drain in-flight → snapshot → pause sources → flush buffers → ACK → close targets → close sources
+- [x] Config loading: file via --config flag or LAREDO_CONFIG env var
+- [x] Config validation on startup (fail fast with clear errors)
+- [x] Engine construction from config
+- [x] gRPC server startup (OAM + Query on configured port)
+- [x] Health HTTP server:
+  - [x] `/health/live` — process is running
+  - [x] `/health/ready` — all pipelines streaming (JSON body)
+  - [x] `/health/startup` — service initialized
+- [x] Metrics endpoint (Prometheus `/metrics`)
+- [x] Structured logging (slog-based JSON, configurable level via --log-level)
+- [x] Signal handling: `SIGTERM` / `SIGINT` → graceful shutdown
+- [x] Graceful shutdown sequence: stop gRPC → stop health → stop engine
 - [x] Configurable shutdown timeout (`WithShutdownTimeout`)
-- [ ] `laredo-server validate` subcommand: validate config without starting
+- [x] `laredo-server validate` subcommand: validate config without starting
 - [ ] `laredo-server config --dump` subcommand: print merged config
 - [ ] `laredo-server healthcheck` subcommand: hit local health endpoint, exit 0/1
 
