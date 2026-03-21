@@ -81,10 +81,10 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 2.5 Error Handling & Retry
 
-- [ ] Per-change retry with exponential backoff (configurable max_retries, initial/max backoff)
-- [ ] `Isolate` policy — mark pipeline ERROR, continue others
-- [ ] `StopSource` policy — stop all pipelines on the source
-- [ ] `StopAll` policy — halt entire engine
+- [x] Per-change retry with exponential backoff (configurable max_retries, 100ms initial, 5s max backoff)
+- [x] `Isolate` policy — mark pipeline ERROR, continue others
+- [x] `StopSource` policy — stop all pipelines on the source
+- [x] `StopAll` policy — halt entire engine (cancels engine context)
 - [ ] Dead letter integration — write failed changes to dead letter store if enabled
 
 ### 2.6 Filter & Transform Chain

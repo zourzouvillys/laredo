@@ -572,33 +572,18 @@ func (e *coreEngine) dispatchChange(ctx context.Context, sourceID string, source
 		start := time.Now()
 		e.observer.OnChangeReceived(p.id, event.Table, event.Action, event.Position)
 
-		var err error
-		switch event.Action {
-		case ActionInsert:
-			row := applyFiltersAndTransforms(p, event.Table, event.NewValues)
-			if row == nil {
-				continue
-			}
-			err = p.target.OnInsert(ctx, event.Table, row)
-		case ActionUpdate:
-			row := applyFiltersAndTransforms(p, event.Table, event.NewValues)
-			if row == nil {
-				continue
-			}
-			err = p.target.OnUpdate(ctx, event.Table, row, event.OldValues)
-		case ActionDelete:
-			if !applyFilters(p, event.Table, event.OldValues) {
-				continue
-			}
-			err = p.target.OnDelete(ctx, event.Table, event.OldValues)
-		case ActionTruncate:
-			err = p.target.OnTruncate(ctx, event.Table)
+		err := e.applyChangeToTarget(ctx, p, event)
+		if err != nil {
+			// Report the initial error.
+			e.observer.OnChangeError(p.id, event.Table, event.Action, ErrorInfo{Err: err, Message: err.Error()})
+			// Retry with exponential backoff.
+			err = e.retryChange(ctx, p, event, err)
 		}
 
 		if err != nil {
-			e.observer.OnChangeError(p.id, event.Table, event.Action, ErrorInfo{Err: err, Message: err.Error()})
-			e.transitionPipeline(idx, PipelineError)
-			e.ackTracker.Skip(p.id)
+			if e.applyErrorPolicy(ctx, idx, sourceID, pipelineIdxs) {
+				return fmt.Errorf("engine stopped due to error policy")
+			}
 			continue
 		}
 		e.observer.OnChangeApplied(p.id, event.Table, event.Action, time.Since(start))
@@ -617,6 +602,102 @@ func (e *coreEngine) dispatchChange(ctx context.Context, sourceID string, source
 	}
 
 	return nil
+}
+
+// applyChangeToTarget applies a single change event to a pipeline's target.
+func (e *coreEngine) applyChangeToTarget(ctx context.Context, p *resolvedPipeline, event ChangeEvent) error {
+	switch event.Action {
+	case ActionInsert:
+		row := applyFiltersAndTransforms(p, event.Table, event.NewValues)
+		if row == nil {
+			return nil
+		}
+		return p.target.OnInsert(ctx, event.Table, row)
+	case ActionUpdate:
+		row := applyFiltersAndTransforms(p, event.Table, event.NewValues)
+		if row == nil {
+			return nil
+		}
+		return p.target.OnUpdate(ctx, event.Table, row, event.OldValues)
+	case ActionDelete:
+		if !applyFilters(p, event.Table, event.OldValues) {
+			return nil
+		}
+		return p.target.OnDelete(ctx, event.Table, event.OldValues)
+	case ActionTruncate:
+		return p.target.OnTruncate(ctx, event.Table)
+	default:
+		return nil
+	}
+}
+
+// retryChange retries a failed change with exponential backoff.
+// Returns nil if a retry succeeds, or the last error if all retries fail.
+func (e *coreEngine) retryChange(ctx context.Context, p *resolvedPipeline, event ChangeEvent, lastErr error) error {
+	backoff := 100 * time.Millisecond
+	const maxBackoff = 5 * time.Second
+
+	for attempt := 1; attempt <= p.maxRetries; attempt++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+
+		err := e.applyChangeToTarget(ctx, p, event)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		e.observer.OnChangeError(p.id, event.Table, event.Action, ErrorInfo{
+			Err:     err,
+			Message: fmt.Sprintf("retry %d/%d: %v", attempt, p.maxRetries, err),
+		})
+
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+	return lastErr
+}
+
+// applyErrorPolicy applies the pipeline's error policy after retries are exhausted.
+// Returns true if the engine should stop (StopAll policy).
+func (e *coreEngine) applyErrorPolicy(ctx context.Context, failedIdx int, sourceID string, pipelineIdxs []int) bool {
+	p := &e.pipelines[failedIdx]
+
+	switch p.errorPolicy {
+	case ErrorIsolate:
+		e.transitionPipeline(failedIdx, PipelineError)
+		e.ackTracker.Skip(p.id)
+
+	case ErrorStopSource:
+		for _, idx := range pipelineIdxs {
+			pp := &e.pipelines[idx]
+			if pp.sourceID == sourceID && pp.state != PipelineError && pp.state != PipelineStopped {
+				e.transitionPipeline(idx, PipelineError)
+				e.ackTracker.Skip(pp.id)
+			}
+		}
+
+	case ErrorStopAll:
+		// Transition all pipelines to ERROR and signal engine stop.
+		for i := range e.pipelines {
+			pp := &e.pipelines[i]
+			if pp.state != PipelineError && pp.state != PipelineStopped {
+				e.transitionPipeline(i, PipelineError)
+				e.ackTracker.Skip(pp.id)
+			}
+		}
+		if e.cancel != nil {
+			e.cancel()
+		}
+		return true
+	}
+
+	return false
 }
 
 // applyFilters runs only the pipeline's filter chain on a row.

@@ -1401,6 +1401,174 @@ func TestEngine_SnapshotOnShutdown(t *testing.T) {
 	}
 }
 
+// failingTarget wraps an IndexedTarget but fails OnInsert a configurable number of times.
+type failingTarget struct {
+	*memory.IndexedTarget
+	mu        sync.Mutex
+	failCount int // number of remaining failures
+}
+
+func newFailingTarget(failCount int) *failingTarget {
+	return &failingTarget{
+		IndexedTarget: memory.NewIndexedTarget(),
+		failCount:     failCount,
+	}
+}
+
+func (t *failingTarget) OnInsert(ctx context.Context, table laredo.TableIdentifier, row laredo.Row) error {
+	t.mu.Lock()
+	if t.failCount > 0 {
+		t.failCount--
+		t.mu.Unlock()
+		return fmt.Errorf("injected insert error")
+	}
+	t.mu.Unlock()
+	return t.IndexedTarget.OnInsert(ctx, table, row)
+}
+
+func TestEngine_RetryOnError(t *testing.T) {
+	src := configuredSource()
+
+	// Target fails 2 times then succeeds. maxRetries=5 so it should recover.
+	target := newFailingTarget(2)
+	obs := &testutil.TestObserver{}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target,
+			laredo.MaxRetries(5),
+		),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Emit insert — first 2 attempts will fail, 3rd should succeed.
+	src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(1, "retry-success"))
+	testutil.AssertEventually(t, 5*time.Second, func() bool {
+		return target.Count() == 1
+	}, "expected 1 row after retry succeeds")
+
+	// Verify retry errors were reported.
+	errorEvents := obs.EventsByType("ChangeError")
+	if len(errorEvents) < 2 {
+		t.Errorf("expected at least 2 ChangeError events from retries, got %d", len(errorEvents))
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+func TestEngine_ErrorPolicyIsolate(t *testing.T) {
+	src := configuredSource()
+
+	// Target fails permanently (more failures than retries).
+	target := newFailingTarget(100)
+	obs := &testutil.TestObserver{}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target,
+			laredo.MaxRetries(1),
+			laredo.ErrorPolicyOpt(laredo.ErrorIsolate),
+		),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Emit insert that will fail permanently.
+	src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(1, "will-fail"))
+
+	// Pipeline should transition to ERROR.
+	testutil.AssertEventually(t, 5*time.Second, func() bool {
+		changes := obs.EventsByType("PipelineStateChanged")
+		for _, c := range changes {
+			if c.Data["newState"] == laredo.PipelineError {
+				return true
+			}
+		}
+		return false
+	}, "expected pipeline to transition to ERROR")
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+func TestEngine_ErrorPolicyStopSource(t *testing.T) {
+	table1 := testutil.SampleTable()
+	table2 := laredo.Table("public", "other_table")
+
+	src := testsource.New()
+	src.SetSchema(table1, testutil.SampleColumns())
+	src.SetSchema(table2, testutil.SampleColumns())
+
+	// Target for table1 fails permanently.
+	failTarget := newFailingTarget(100)
+	// Target for table2 is healthy.
+	goodTarget := memory.NewIndexedTarget()
+	obs := &testutil.TestObserver{}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", table1, failTarget,
+			laredo.MaxRetries(0),
+			laredo.ErrorPolicyOpt(laredo.ErrorStopSource),
+		),
+		laredo.WithPipeline("pg", table2, goodTarget),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Emit insert to table1 — will fail and should stop ALL pipelines on the source.
+	src.EmitInsert(table1, testutil.SampleRow(1, "will-fail"))
+
+	// Both pipelines should go to ERROR.
+	testutil.AssertEventually(t, 5*time.Second, func() bool {
+		errorCount := 0
+		for _, c := range obs.EventsByType("PipelineStateChanged") {
+			if c.Data["newState"] == laredo.PipelineError {
+				errorCount++
+			}
+		}
+		return errorCount >= 2
+	}, "expected both pipelines to transition to ERROR")
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
 // contains checks if s contains substr.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
