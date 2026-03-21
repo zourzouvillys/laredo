@@ -567,11 +567,11 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [ ] Engine + PG source + indexed memory target: end-to-end pipeline
 - [ ] Engine + PG source + HTTP target: end-to-end with httptest server
 - [ ] Engine + PG source + fan-out target + fan-out client: full replication chain
-- [ ] Snapshot create + restore cycle with real engine
-- [ ] Multi-pipeline ACK coordination: verify minimum position across targets
-- [ ] Error isolation: one pipeline fails, others continue
-- [ ] Dead letter: verify failed changes written to DLQ and replayable
-- [ ] TTL: insert rows with expiry, verify automatic removal
+- [x] Snapshot create + restore cycle with real engine (local disk store, full round-trip)
+- [x] Multi-pipeline ACK coordination: verify minimum position across targets (TestEngine_AckCoordination)
+- [x] Error isolation: one pipeline fails, others continue (TestEngine_ErrorPolicyIsolate)
+- [x] Dead letter: verify failed changes written to DLQ and replayable (TestEngine_DeadLetterIntegration)
+- [x] TTL: insert rows with expiry, verify automatic removal (TestEngine_TTLPeriodicScanner)
 
 ### 14.3 End-to-End Tests (Tier 3 — `test/e2e/`)
 

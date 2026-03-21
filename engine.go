@@ -816,7 +816,7 @@ func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source Sy
 		}
 	}
 
-	// Transition to streaming.
+	// Transition to streaming and confirm baseline position for ACK tracking.
 	for _, idx := range pipelineIdxs {
 		p := &e.pipelines[idx]
 		if p.state != PipelineBaselining {
@@ -824,6 +824,14 @@ func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source Sy
 		}
 		e.transitionPipeline(idx, PipelineStreaming)
 		e.readiness.SetReady(p.id)
+		e.ackTracker.Confirm(p.id, position)
+	}
+
+	// ACK the baseline position to the source.
+	if pos, advanced := e.ackTracker.AckPosition(sourceID); advanced {
+		if err := source.Ack(context.Background(), pos); err == nil {
+			e.observer.OnAckAdvanced(sourceID, pos)
+		}
 	}
 
 	return position
@@ -1423,11 +1431,20 @@ func (e *coreEngine) doSnapshot(ctx context.Context, userMeta map[string]Value) 
 	}
 
 	// Build metadata.
+	// Collect source positions.
+	sourcePositions := make(map[string]Position)
+	for sourceID := range e.sources {
+		if pos := e.ackTracker.LastAcked(sourceID); pos != nil {
+			sourcePositions[sourceID] = pos
+		}
+	}
+
 	metadata := SnapshotMetadata{
-		SnapshotID: snapshotID,
-		CreatedAt:  time.Now(),
-		Tables:     tableInfos,
-		UserMeta:   userMeta,
+		SnapshotID:      snapshotID,
+		CreatedAt:       time.Now(),
+		SourcePositions: sourcePositions,
+		Tables:          tableInfos,
+		UserMeta:        userMeta,
 	}
 
 	// Save through the store.

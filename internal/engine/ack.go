@@ -101,3 +101,10 @@ func (a *AckTracker) AckPosition(sourceID string) (position any, advanced bool) 
 	a.lastAcked[sourceID] = minPos
 	return minPos, true
 }
+
+// LastAcked returns the last ACKed position for a source, or nil if none.
+func (a *AckTracker) LastAcked(sourceID string) any {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lastAcked[sourceID]
+}

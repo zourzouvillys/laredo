@@ -10,6 +10,7 @@ import (
 
 	"github.com/zourzouvillys/laredo"
 	"github.com/zourzouvillys/laredo/filter"
+	"github.com/zourzouvillys/laredo/snapshot/local"
 	"github.com/zourzouvillys/laredo/source/testsource"
 	"github.com/zourzouvillys/laredo/target/memory"
 	"github.com/zourzouvillys/laredo/test/testutil"
@@ -2098,6 +2099,115 @@ func TestEngine_TTLPeriodicScanner(t *testing.T) {
 
 	if err := e.Stop(ctx); err != nil {
 		t.Fatalf("stop: %v", err)
+	}
+}
+
+func TestEngine_SnapshotCreateRestoreCycle(t *testing.T) {
+	dir := t.TempDir()
+	table := testutil.SampleTable()
+	realStore := local.New(dir)
+
+	// Phase 1: start engine, load data, create snapshot, stop.
+	src1 := testsource.New()
+	src1.SetSchema(table, testutil.SampleColumns())
+	src1.AddRow(table, testutil.SampleRow(1, "alice"))
+	src1.AddRow(table, testutil.SampleRow(2, "bob"))
+
+	target1 := memory.NewIndexedTarget()
+
+	e1, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src1),
+		laredo.WithPipeline("pg", table, target1),
+		laredo.WithSnapshotStore(realStore),
+		laredo.WithSnapshotSerializer(fakeSnapshotSerializer{}),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("engine1 errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e1.Start(ctx); err != nil {
+		t.Fatalf("start1: %v", err)
+	}
+	if !e1.AwaitReady(5 * time.Second) {
+		t.Fatal("engine1 not ready")
+	}
+
+	if target1.Count() != 2 {
+		t.Fatalf("expected 2 rows in engine1, got %d", target1.Count())
+	}
+
+	// Create snapshot.
+	if err := e1.CreateSnapshot(ctx, map[string]laredo.Value{
+		"phase": "test",
+	}); err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	if err := e1.Stop(ctx); err != nil {
+		t.Fatalf("stop1: %v", err)
+	}
+
+	// Verify snapshot exists on disk.
+	snapshots, err := realStore.List(ctx, nil)
+	if err != nil {
+		t.Fatalf("list snapshots: %v", err)
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("expected 1 snapshot on disk, got %d", len(snapshots))
+	}
+
+	// Phase 2: start new engine with snapshot store — should restore from snapshot.
+	src2 := testsource.New()
+	src2.SetSchema(table, testutil.SampleColumns())
+	// Don't add any baseline rows — data should come from snapshot.
+
+	target2 := memory.NewIndexedTarget()
+	obs2 := &testutil.TestObserver{}
+
+	e2, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src2),
+		laredo.WithPipeline("pg", table, target2),
+		laredo.WithSnapshotStore(realStore),
+		laredo.WithSnapshotSerializer(fakeSnapshotSerializer{}),
+		laredo.WithObserver(obs2),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("engine2 errors: %v", errs)
+	}
+
+	if err := e2.Start(ctx); err != nil {
+		t.Fatalf("start2: %v", err)
+	}
+	if !e2.AwaitReady(5 * time.Second) {
+		t.Fatal("engine2 not ready")
+	}
+
+	// Target should have data from snapshot.
+	if target2.Count() != 2 {
+		t.Fatalf("expected 2 rows from snapshot restore, got %d", target2.Count())
+	}
+
+	row, ok := target2.Get(1)
+	if !ok {
+		t.Fatal("expected row id=1 from snapshot")
+	}
+	if row["name"] != "alice" { //nolint:goconst // test literal
+		t.Errorf("expected alice, got %v", row["name"])
+	}
+
+	// Verify restore events fired.
+	if obs2.EventCount("SnapshotRestoreStarted") != 1 {
+		t.Errorf("expected 1 SnapshotRestoreStarted, got %d", obs2.EventCount("SnapshotRestoreStarted"))
+	}
+
+	// No baseline events (restored from snapshot).
+	if obs2.EventCount("BaselineStarted") != 0 {
+		t.Errorf("expected 0 BaselineStarted (restored from snapshot), got %d", obs2.EventCount("BaselineStarted"))
+	}
+
+	if err := e2.Stop(ctx); err != nil {
+		t.Fatalf("stop2: %v", err)
 	}
 }
 
