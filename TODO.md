@@ -403,12 +403,12 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 9.1 Prometheus (`metrics/prometheus/`)
 
-- [ ] Implement full `EngineObserver` interface
-- [ ] Gauges: pipeline state, buffer depth, row count, lag bytes, lag time, connected fan-out clients
-- [ ] Counters: inserts/updates/deletes/truncates applied (per pipeline), changes received, errors, dead letters written, rows expired, snapshots created/failed
-- [ ] Histograms: change apply duration, baseline duration, snapshot duration
-- [ ] HTTP `/metrics` endpoint handler
-- [ ] Metric naming convention: `laredo_pipeline_row_count`, `laredo_source_lag_bytes`, etc.
+- [x] Implement full `EngineObserver` interface
+- [x] Gauges: pipeline state, buffer depth, row count, lag bytes, lag time, connected fan-out clients
+- [x] Counters: inserts/updates/deletes/truncates applied (per pipeline), changes received, errors, dead letters written, rows expired, snapshots created/failed
+- [x] Histograms: change apply duration, baseline duration, snapshot duration
+- [x] HTTP `/metrics` endpoint handler
+- [x] Metric naming convention: `laredo_pipeline_row_count`, `laredo_source_lag_bytes`, etc.
 
 ### 9.2 OpenTelemetry (`metrics/otel/`)
 
