@@ -39,6 +39,9 @@ func main() {
 		case "version":
 			fmt.Printf("laredo-server %s\n", laredo.Version)
 			return
+		case "healthcheck":
+			healthcheckCmd()
+			return
 		}
 	}
 
@@ -276,6 +279,27 @@ func configDumpCmd() {
 		os.Exit(1)
 	}
 	fmt.Println(string(data))
+}
+
+func healthcheckCmd() {
+	fs := flag.NewFlagSet("healthcheck", flag.ExitOnError)
+	port := fs.Int("port", 8080, "health endpoint port")
+	fs.Parse(os.Args[2:]) //nolint:errcheck // ExitOnError handles errors
+
+	url := fmt.Sprintf("http://localhost:%d/health/ready", *port)
+	resp, err := http.Get(url) //nolint:gosec,noctx // local health check
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "health check failed: %v\n", err)
+		os.Exit(1)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusOK {
+		fmt.Println("ready")
+	} else {
+		fmt.Printf("not ready (status %d)\n", resp.StatusCode)
+		os.Exit(1)
+	}
 }
 
 func setupLogging(level string) {

@@ -438,8 +438,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [ ] `laredo query --all --limit N` — paginated listing
 - [ ] `laredo watch [schema.table]` — stream status events / row changes
 - [ ] `laredo watch --verbose` — include full row data
-- [ ] `laredo reload <schema.table>` / `laredo reload --all` / `laredo reload --source <id> --all`
-- [ ] `laredo pause [--source <id>]` / `laredo resume [--source <id>]`
+- [x] `laredo reload <schema.table>` / `laredo reload --all` / `laredo reload --source <id> --all`
+- [x] `laredo pause [--source <id>]` / `laredo resume [--source <id>]`
 - [ ] `laredo reset-source <source_id>` with confirmation prompt
 - [ ] `laredo reset-source <source_id> --drop-publication` for decommissioning
 - [x] `laredo snapshot create [--meta key=value ...]`
@@ -447,10 +447,10 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `laredo snapshot inspect <id>`
 - [ ] `laredo snapshot restore <id>` with confirmation prompt
 - [x] `laredo snapshot delete <id>`
-- [ ] `laredo snapshot prune --keep N`
-- [ ] `laredo dead-letters <pipeline_id>` — list dead letters
+- [x] `laredo snapshot prune --keep N`
+- [x] `laredo dead-letters <pipeline_id>` — list dead letters
 - [ ] `laredo dead-letters replay <pipeline_id>`
-- [ ] `laredo dead-letters purge <pipeline_id>`
+- [x] `laredo dead-letters purge <pipeline_id>`
 - [ ] `laredo replay <snapshot_id> [--pipeline <id>] [--speed full|realtime|Nx]`
 - [x] `laredo ready [--pipeline <id>]` — exit code 0 if ready, 1 if not
 - [ ] `laredo fanout status <schema.table>` — replication fan-out status
@@ -483,7 +483,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Configurable shutdown timeout (`WithShutdownTimeout`)
 - [x] `laredo-server validate` subcommand: validate config without starting
 - [ ] `laredo-server config --dump` subcommand: print merged config
-- [ ] `laredo-server healthcheck` subcommand: hit local health endpoint, exit 0/1
+- [x] `laredo-server healthcheck` subcommand: hit local health endpoint, exit 0/1
 
 ---
 

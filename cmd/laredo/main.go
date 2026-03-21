@@ -47,6 +47,14 @@ func main() {
 		snapshotCmd(args)
 	case "query":
 		queryCmd(args)
+	case "reload":
+		reloadCmd(args)
+	case "pause":
+		pauseCmd(args)
+	case "resume":
+		resumeCmd(args)
+	case "dead-letters":
+		deadLettersCmd(args)
 	case "help", "--help", "-h":
 		usage()
 	default:
@@ -62,13 +70,19 @@ func usage() {
 Usage: laredo <command> [flags]
 
 Commands:
-  ready              Check if the server is ready
+  ready              Check if the server is ready (exit 0/1)
+  reload             Trigger re-baseline for a table
+  pause              Pause a source
+  resume             Resume a paused source
   snapshot list      List snapshots
   snapshot create    Create a new snapshot
   snapshot delete    Delete a snapshot
   snapshot inspect   Inspect a snapshot
+  snapshot prune     Prune old snapshots
   query count        Count rows in a table
   query get          Get a row by primary key
+  dead-letters       List dead letters for a pipeline
+  dead-letters purge Purge dead letters
   version            Print version
 
 Global settings:
@@ -150,6 +164,8 @@ func snapshotCmd(args []string) {
 		snapshotDeleteCmd(subArgs)
 	case "inspect":
 		snapshotInspectCmd(subArgs)
+	case "prune":
+		snapshotPruneCmd(subArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown snapshot command: %s\n", sub) //nolint:gosec // CLI output
 		os.Exit(1)
@@ -256,6 +272,27 @@ func snapshotInspectCmd(args []string) {
 	printJSON(resp.Msg.GetInfo())
 }
 
+func snapshotPruneCmd(args []string) {
+	fs := flag.NewFlagSet("snapshot prune", flag.ExitOnError)
+	keep := fs.Int("keep", 0, "number of snapshots to keep (required)")
+	parseGlobalFlags(fs, args)
+
+	if *keep <= 0 {
+		fmt.Fprintln(os.Stderr, "usage: laredo snapshot prune --keep N")
+		os.Exit(1)
+	}
+
+	resp, err := oamClient().PruneSnapshots(ctx(), connect.NewRequest(&v1.PruneSnapshotsRequest{
+		Keep: int32(*keep), //nolint:gosec // CLI input
+	}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("pruned %d snapshots\n", resp.Msg.GetDeletedCount())
+}
+
 // --- query ---
 
 func queryCmd(args []string) {
@@ -339,6 +376,155 @@ func queryGetCmd(args []string) {
 	}
 
 	printJSON(resp.Msg.GetRow().AsMap())
+}
+
+// --- reload ---
+
+func reloadCmd(args []string) {
+	fs := flag.NewFlagSet("reload", flag.ExitOnError)
+	source := fs.String("source", "", "source ID (required)")
+	parseGlobalFlags(fs, args)
+
+	remaining := fs.Args()
+	if len(remaining) == 0 || *source == "" {
+		fmt.Fprintln(os.Stderr, "usage: laredo reload --source <id> <schema.table>")
+		os.Exit(1)
+	}
+
+	schema, table, ok := strings.Cut(remaining[0], ".")
+	if !ok {
+		fmt.Fprintln(os.Stderr, "table must be in schema.table format")
+		os.Exit(1)
+	}
+
+	resp, err := oamClient().ReloadTable(ctx(), connect.NewRequest(&v1.ReloadTableRequest{
+		SourceId: *source,
+		Schema:   schema,
+		Table:    table,
+	}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if resp.Msg.GetAccepted() {
+		fmt.Println(resp.Msg.GetMessage())
+	} else {
+		fmt.Fprintf(os.Stderr, "reload failed: %s\n", resp.Msg.GetMessage())
+		os.Exit(1)
+	}
+}
+
+// --- pause/resume ---
+
+func pauseCmd(args []string) {
+	fs := flag.NewFlagSet("pause", flag.ExitOnError)
+	source := fs.String("source", "", "source ID (required)")
+	parseGlobalFlags(fs, args)
+
+	if *source == "" {
+		fmt.Fprintln(os.Stderr, "usage: laredo pause --source <id>")
+		os.Exit(1)
+	}
+
+	_, err := oamClient().PauseSync(ctx(), connect.NewRequest(&v1.PauseSyncRequest{
+		SourceId: *source,
+	}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("paused")
+}
+
+func resumeCmd(args []string) {
+	fs := flag.NewFlagSet("resume", flag.ExitOnError)
+	source := fs.String("source", "", "source ID (required)")
+	parseGlobalFlags(fs, args)
+
+	if *source == "" {
+		fmt.Fprintln(os.Stderr, "usage: laredo resume --source <id>")
+		os.Exit(1)
+	}
+
+	_, err := oamClient().ResumeSync(ctx(), connect.NewRequest(&v1.ResumeSyncRequest{
+		SourceId: *source,
+	}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("resumed")
+}
+
+// --- dead-letters ---
+
+func deadLettersCmd(args []string) {
+	if len(args) > 0 && args[0] == "purge" {
+		deadLettersPurgeCmd(args[1:])
+		return
+	}
+
+	fs := flag.NewFlagSet("dead-letters", flag.ExitOnError)
+	limit := fs.Int("limit", 0, "max entries to return")
+	parseGlobalFlags(fs, args)
+
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: laredo dead-letters <pipeline-id>")
+		os.Exit(1)
+	}
+
+	resp, err := oamClient().ListDeadLetters(ctx(), connect.NewRequest(&v1.ListDeadLettersRequest{
+		PipelineId: remaining[0],
+		Limit:      int32(*limit), //nolint:gosec // CLI input won't overflow
+	}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	entries := resp.Msg.GetEntries()
+	if output == "json" {
+		printJSON(entries)
+		return
+	}
+
+	if len(entries) == 0 {
+		fmt.Println("no dead letters")
+		return
+	}
+
+	fmt.Printf("%-20s  %-8s  %s\n", "TIMESTAMP", "ACTION", "ERROR")
+	for _, e := range entries {
+		ts := ""
+		if e.GetTimestamp() != nil {
+			ts = e.GetTimestamp().AsTime().Format(time.DateTime)
+		}
+		fmt.Printf("%-20s  %-8s  %s\n", ts, e.GetAction(), e.GetErrorMessage())
+	}
+	fmt.Printf("\nTotal: %d\n", resp.Msg.GetTotalCount())
+}
+
+func deadLettersPurgeCmd(args []string) {
+	fs := flag.NewFlagSet("dead-letters purge", flag.ExitOnError)
+	parseGlobalFlags(fs, args)
+
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: laredo dead-letters purge <pipeline-id>")
+		os.Exit(1)
+	}
+
+	resp, err := oamClient().PurgeDeadLetters(ctx(), connect.NewRequest(&v1.PurgeDeadLettersRequest{
+		PipelineId: remaining[0],
+	}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("purged %d dead letters\n", resp.Msg.GetPurged())
 }
 
 func printJSON(v any) {
