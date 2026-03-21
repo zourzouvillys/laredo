@@ -38,6 +38,10 @@ type Source struct {
 	// Error injection.
 	initErr     error
 	baselineErr error
+
+	// Configurable delays.
+	baselineRowDelay time.Duration // delay between each baseline row
+	streamDelay      time.Duration // delay before delivering each stream event
 }
 
 // changeRequest wraps a change event sent from test goroutines to the Stream loop.
@@ -81,6 +85,22 @@ func (s *Source) SetBaselineError(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.baselineErr = err
+}
+
+// SetBaselineRowDelay sets a delay between each baseline row delivery.
+// Useful for testing slow baselines and timeout behavior.
+func (s *Source) SetBaselineRowDelay(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.baselineRowDelay = d
+}
+
+// SetStreamDelay sets a delay before delivering each stream event.
+// Useful for testing backpressure and timing-sensitive behavior.
+func (s *Source) SetStreamDelay(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.streamDelay = d
 }
 
 // nextSeq increments and returns the next monotonic sequence number.
@@ -212,19 +232,37 @@ func (s *Source) ValidateTables(_ context.Context, tables []laredo.TableIdentifi
 //nolint:revive // implements SyncSource.
 func (s *Source) Baseline(_ context.Context, tables []laredo.TableIdentifier, rowCallback func(laredo.TableIdentifier, laredo.Row)) (laredo.Position, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if s.baselineErr != nil {
+		s.mu.Unlock()
 		return nil, s.baselineErr
 	}
 
+	// Copy data and config under lock.
+	type tableRows struct {
+		table laredo.TableIdentifier
+		rows  []laredo.Row
+	}
+	var data []tableRows
 	for _, table := range tables {
-		for _, row := range s.rows[table] {
-			rowCallback(table, row)
+		data = append(data, tableRows{table: table, rows: s.rows[table]})
+	}
+	delay := s.baselineRowDelay
+	s.mu.Unlock()
+
+	// Deliver rows outside the lock.
+	for _, td := range data {
+		for _, row := range td.rows {
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+			rowCallback(td.table, row)
 		}
 	}
 
+	s.mu.Lock()
 	pos := s.nextSeq()
+	s.mu.Unlock()
 	return pos, nil
 }
 
@@ -244,11 +282,20 @@ func (s *Source) Stream(ctx context.Context, _ laredo.Position, handler laredo.C
 			return ctx.Err()
 		case req, ok := <-ch:
 			if !ok {
-				// Channel closed by Close().
 				s.mu.Lock()
 				s.state = laredo.SourceClosed
 				s.mu.Unlock()
 				return nil
+			}
+			s.mu.Lock()
+			delay := s.streamDelay
+			s.mu.Unlock()
+			if delay > 0 {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(delay):
+				}
 			}
 			if err := handler.OnChange(req.event); err != nil {
 				return fmt.Errorf("testsource: handler error: %w", err)

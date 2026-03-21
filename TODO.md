@@ -179,7 +179,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Programmable stream: `EmitInsert()`, `EmitUpdate()`, `EmitDelete()`, `EmitTruncate()`
 - [x] Position tracking: simple monotonic sequence
 - [x] Error injection: `SetInitError()`, `SetBaselineError()`
-- [ ] Configurable delays for testing edge cases
+- [x] Configurable delays: `SetBaselineRowDelay()`, `SetStreamDelay()`
 
 ---
 
