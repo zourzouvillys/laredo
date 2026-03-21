@@ -15,8 +15,9 @@ import (
 
 // Source implements laredo.SyncSource using PostgreSQL logical replication.
 type Source struct {
-	cfg  sourceConfig
-	conn connManager
+	cfg     sourceConfig
+	conn    connManager
+	schemas map[laredo.TableIdentifier][]laredo.ColumnDefinition
 
 	mu    sync.Mutex
 	state laredo.SourceState
@@ -63,6 +64,7 @@ func (s *Source) Init(ctx context.Context, config laredo.SourceConfig) (map[lare
 		return nil, fmt.Errorf("pg source: %w", err)
 	}
 
+	s.schemas = schemas
 	return schemas, nil
 }
 
@@ -71,9 +73,17 @@ func (s *Source) ValidateTables(_ context.Context, _ []laredo.TableIdentifier) [
 	return nil
 }
 
+// Baseline performs a consistent point-in-time snapshot using a REPEATABLE READ
+// transaction. It captures the current WAL LSN, then reads all rows from each
+// table via SELECT *.
+//
 //nolint:revive // implements SyncSource.
-func (s *Source) Baseline(_ context.Context, _ []laredo.TableIdentifier, _ func(laredo.TableIdentifier, laredo.Row)) (laredo.Position, error) {
-	return nil, fmt.Errorf("pg source: baseline not yet implemented")
+func (s *Source) Baseline(ctx context.Context, tables []laredo.TableIdentifier, rowCallback func(laredo.TableIdentifier, laredo.Row)) (laredo.Position, error) {
+	lsn, err := s.conn.baseline(ctx, tables, s.schemas, rowCallback)
+	if err != nil {
+		return nil, fmt.Errorf("pg source: %w", err)
+	}
+	return lsn, nil
 }
 
 //nolint:revive // implements SyncSource.

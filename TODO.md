@@ -144,7 +144,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
   - [ ] Sync publication on startup (add/remove tables, update publish operations)
   - [ ] Row filters and column lists (PostgreSQL 15+)
   - [ ] Publication naming: default `{slot_name}_pub`, configurable override
-- [ ] Baseline: `REPEATABLE READ` snapshot, `SELECT *` per table, return LSN position
+- [x] Baseline: `REPEATABLE READ` snapshot, `SELECT *` per table, return LSN position
 - [ ] Streaming: consume `pgoutput` messages, decode into `ChangeEvent`
 - [x] Position type: LSN (uint64 wrapper with string formatting `0/XXXXXXXX`)
 - [x] `ComparePositions` — LSN comparison
@@ -315,14 +315,14 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `FieldEquals` — match rows where field equals a value
 - [x] `FieldPrefix` — match rows where string field starts with prefix
 - [x] `FieldRegex` — match rows where field matches regex
-- [ ] Config-driven construction from HOCON `type = field-equals` etc.
+- [x] Config-driven construction from HOCON `type = field-equals` etc.
 
 ### 6.2 Built-in Transforms (`transform/`)
 
 - [x] `DropFields` — remove specified fields
 - [x] `RenameFields` — rename fields
 - [x] `AddTimestamp` — add a field with current timestamp
-- [ ] Config-driven construction from HOCON `type = drop-fields` etc.
+- [x] Config-driven construction from HOCON `type = drop-fields` etc.
 
 ### 6.3 Dead Letter Store (`deadletter/`)
 

@@ -3,6 +3,7 @@ package pg
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -134,4 +135,87 @@ func (cm *connManager) discoverTableColumns(ctx context.Context, table laredo.Ta
 	}
 
 	return cols, nil
+}
+
+// baseline performs a consistent-point-in-time snapshot of the given tables
+// using a REPEATABLE READ transaction. It captures the current WAL LSN before
+// reading data, then SELECTs all rows from each table and delivers them via
+// the rowCallback. Returns the LSN at which the snapshot was taken.
+func (cm *connManager) baseline(ctx context.Context, tables []laredo.TableIdentifier, schemas map[laredo.TableIdentifier][]laredo.ColumnDefinition, rowCallback func(laredo.TableIdentifier, laredo.Row)) (LSN, error) {
+	tx, err := cm.queryConn.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // rollback on error path
+
+	// Capture current WAL position. This is the point-in-time for the snapshot.
+	var lsnStr string
+	if err := tx.QueryRow(ctx, "SELECT pg_current_wal_lsn()::text").Scan(&lsnStr); err != nil {
+		return 0, fmt.Errorf("get current LSN: %w", err)
+	}
+	lsn, err := ParseLSN(lsnStr)
+	if err != nil {
+		return 0, fmt.Errorf("parse LSN %q: %w", lsnStr, err)
+	}
+
+	// Read all rows from each table.
+	for _, table := range tables {
+		cols := schemas[table]
+		if err := cm.baselineTable(ctx, tx, table, cols, rowCallback); err != nil {
+			return 0, fmt.Errorf("baseline %s: %w", table, err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
+	}
+
+	return lsn, nil
+}
+
+// baselineTable reads all rows from a single table and delivers them via callback.
+func (cm *connManager) baselineTable(ctx context.Context, tx pgx.Tx, table laredo.TableIdentifier, cols []laredo.ColumnDefinition, rowCallback func(laredo.TableIdentifier, laredo.Row)) error {
+	query := fmt.Sprintf("SELECT * FROM %s.%s", pgQuoteIdent(table.Schema), pgQuoteIdent(table.Table))
+
+	rows, err := tx.Query(ctx, query)
+	if err != nil {
+		return fmt.Errorf("query: %w", err)
+	}
+	defer rows.Close()
+
+	fieldDescs := rows.FieldDescriptions()
+	colNames := make([]string, len(fieldDescs))
+	for i, fd := range fieldDescs {
+		colNames[i] = fd.Name
+	}
+
+	for rows.Next() {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		values, err := rows.Values()
+		if err != nil {
+			return fmt.Errorf("scan row: %w", err)
+		}
+
+		row := make(laredo.Row, len(values))
+		for i, v := range values {
+			if i < len(colNames) {
+				row[colNames[i]] = v
+			}
+		}
+
+		rowCallback(table, row)
+	}
+
+	return rows.Err()
+}
+
+// pgQuoteIdent quotes a PostgreSQL identifier to prevent SQL injection.
+func pgQuoteIdent(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }
