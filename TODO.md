@@ -118,7 +118,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Close all targets
 - [x] ACK final positions
 - [x] Close all sources
-- [ ] Configurable shutdown timeout
+- [x] Configurable shutdown timeout (`WithShutdownTimeout`)
 
 ### 2.10 Validation (spec §12)
 
@@ -479,7 +479,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [ ] Structured logging (slog-based, configurable level)
 - [ ] Signal handling: `SIGTERM` / `SIGINT` → graceful shutdown
 - [ ] Graceful shutdown sequence: stop gRPC → drain in-flight → snapshot → pause sources → flush buffers → ACK → close targets → close sources
-- [ ] Configurable shutdown timeout
+- [x] Configurable shutdown timeout (`WithShutdownTimeout`)
 - [ ] `laredo-server validate` subcommand: validate config without starting
 - [ ] `laredo-server config --dump` subcommand: print merged config
 - [ ] `laredo-server healthcheck` subcommand: hit local health endpoint, exit 0/1

@@ -61,6 +61,7 @@ type engineConfig struct {
 	snapshotSerializer SnapshotSerializer
 	snapshotSchedule   time.Duration
 	snapshotOnShutdown bool
+	shutdownTimeout    time.Duration
 }
 
 type pipelineConfig struct {
@@ -184,6 +185,15 @@ func WithSnapshotOnShutdown(enabled bool) Option {
 	}
 }
 
+// WithShutdownTimeout sets a timeout for graceful shutdown. If the timeout
+// expires before all goroutines finish, Stop returns context.DeadlineExceeded.
+// Zero means no timeout (wait indefinitely).
+func WithShutdownTimeout(d time.Duration) Option {
+	return func(c *engineConfig) {
+		c.shutdownTimeout = d
+	}
+}
+
 // NewEngine creates an engine with the given options.
 // Returns the engine and any configuration validation errors.
 func NewEngine(opts ...Option) (Engine, []error) {
@@ -239,6 +249,7 @@ func NewEngine(opts ...Option) (Engine, []error) {
 		snapshotSerializer: cfg.snapshotSerializer,
 		snapshotSchedule:   cfg.snapshotSchedule,
 		snapshotOnShutdown: cfg.snapshotOnShutdown,
+		shutdownTimeout:    cfg.shutdownTimeout,
 	}, nil
 }
 
@@ -353,6 +364,7 @@ type coreEngine struct {
 	snapshotSerializer SnapshotSerializer
 	snapshotSchedule   time.Duration
 	snapshotOnShutdown bool
+	shutdownTimeout    time.Duration
 
 	mu      sync.RWMutex
 	started bool
@@ -854,9 +866,26 @@ func (e *coreEngine) Stop(ctx context.Context) error {
 	cancel := e.cancel
 	e.mu.Unlock()
 
+	// Apply shutdown timeout if configured.
+	if e.shutdownTimeout > 0 {
+		var timeoutCancel context.CancelFunc
+		ctx, timeoutCancel = context.WithTimeout(ctx, e.shutdownTimeout)
+		defer timeoutCancel()
+	}
+
 	// Cancel all source goroutines and wait for them to finish.
 	cancel()
-	e.wg.Wait()
+
+	done := make(chan struct{})
+	go func() {
+		e.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 
 	// Take snapshot on shutdown if configured.
 	if e.snapshotOnShutdown && e.snapshotStore != nil {
