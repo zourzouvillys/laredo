@@ -526,7 +526,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 - [x] CI: lint + test + build (GitHub Actions)
 - [x] Release: GoReleaser on tag push (GitHub Actions)
-- [ ] Add integration test job (requires PostgreSQL service container)
+- [x] Add integration test job (testcontainers: PostgreSQL + LocalStack)
 - [ ] Add documentation build/deploy job (GitHub Pages)
 - [ ] Code coverage reporting
 
@@ -559,12 +559,12 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 14.2 Integration Tests (Tier 2 — `test/integration/`)
 
-- [ ] PostgreSQL source: ephemeral mode — full baseline + streaming against real PG (testcontainers)
+- [x] PostgreSQL source: ephemeral mode — baseline against real PG (testcontainers)
 - [ ] PostgreSQL source: stateful mode — baseline, stream, restart, resume from LSN
 - [ ] PostgreSQL source: publication management — auto-create, add/remove tables, row filters (PG 15+)
 - [ ] PostgreSQL source: reconnect — simulate connection loss, verify reconnect and resume
 - [ ] PostgreSQL source: slot invalidation — exceed `max_slot_wal_keep_size`, verify re-baseline
-- [ ] Engine + PG source + indexed memory target: end-to-end pipeline
+- [x] Engine + PG source + indexed memory target: end-to-end pipeline
 - [ ] Engine + PG source + HTTP target: end-to-end with httptest server
 - [ ] Engine + PG source + fan-out target + fan-out client: full replication chain
 - [x] Snapshot create + restore cycle with real engine (local disk store, full round-trip)
@@ -595,7 +595,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 - [x] `test/testutil/observer.go` — TestObserver records all 21 observer callbacks
 - [x] `test/testutil/helpers.go` — SampleTable, SampleColumns, SampleRow, SampleChangeEvent, AssertEventually
-- [ ] `test/testutil/pg.go` — PostgreSQL testcontainer setup/teardown helper
+- [x] `test/testutil/pg.go` — PostgreSQL testcontainer setup/teardown helper
 - [ ] `test/testutil/grpc.go` — in-process gRPC server/client for service tests
 - [ ] `test/testutil/httpserver.go` — configurable mock HTTP server for target tests
 - [ ] Test data generators: random rows, schemas, change events
