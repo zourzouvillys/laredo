@@ -1679,7 +1679,7 @@ func (e *coreEngine) Targets(sourceID string, table TableIdentifier) []SyncTarge
 	var result []SyncTarget
 	for i := range e.pipelines {
 		p := &e.pipelines[i]
-		if p.sourceID == sourceID && p.table == table {
+		if (sourceID == "" || p.sourceID == sourceID) && p.table == table {
 			result = append(result, p.target)
 		}
 	}

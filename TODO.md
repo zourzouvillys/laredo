@@ -382,11 +382,11 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 8.3 Query Service (`service/query/`)
 
-- [ ] `Lookup` — single-row lookup on unique index
-- [ ] `LookupAll` — multi-row lookup on non-unique index
-- [ ] `GetRow` — direct primary key access
-- [ ] `ListRows` — paginated listing
-- [ ] `CountRows`
+- [x] `Lookup` — single-row lookup on unique index
+- [x] `LookupAll` — multi-row lookup on non-unique index
+- [x] `GetRow` — direct primary key access
+- [x] `ListRows` — paginated listing
+- [x] `CountRows`
 - [ ] `Subscribe` — server-streaming change events with optional replay of existing rows
 
 ### 8.4 Server Setup (`service/server.go`)
