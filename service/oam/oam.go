@@ -59,6 +59,112 @@ func New(engine laredo.Engine, opts ...Option) *Service {
 	return s
 }
 
+// CheckReady reports whether the engine (or a specific source/pipeline) is ready.
+func (s *Service) CheckReady(_ context.Context, req *connect.Request[v1.CheckReadyRequest]) (*connect.Response[v1.CheckReadyResponse], error) {
+	var ready bool
+	var reasons []string
+
+	switch {
+	case req.Msg.GetSource() != "":
+		ready = s.engine.IsSourceReady(req.Msg.GetSource())
+		if !ready {
+			reasons = append(reasons, fmt.Sprintf("source %s is not ready", req.Msg.GetSource()))
+		}
+	default:
+		ready = s.engine.IsReady()
+		if !ready {
+			reasons = append(reasons, "not all pipelines are ready")
+		}
+	}
+
+	return connect.NewResponse(&v1.CheckReadyResponse{
+		Ready:           ready,
+		NotReadyReasons: reasons,
+	}), nil
+}
+
+// ReloadTable triggers a re-baseline for a specific table on a source.
+func (s *Service) ReloadTable(ctx context.Context, req *connect.Request[v1.ReloadTableRequest]) (*connect.Response[v1.ReloadTableResponse], error) {
+	sourceID := req.Msg.GetSourceId()
+	if sourceID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("source_id is required"))
+	}
+
+	tableStr := req.Msg.GetSchema() + "." + req.Msg.GetTable()
+	var table laredo.TableIdentifier
+	if err := table.UnmarshalText([]byte(tableStr)); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid table: %w", err))
+	}
+
+	if err := s.engine.Reload(ctx, sourceID, table); err != nil {
+		return connect.NewResponse(&v1.ReloadTableResponse{
+			Accepted: false,
+			Message:  err.Error(),
+		}), nil
+	}
+
+	return connect.NewResponse(&v1.ReloadTableResponse{
+		Accepted: true,
+		Message:  fmt.Sprintf("reload started for %s on source %s", table, sourceID),
+	}), nil
+}
+
+// PauseSync pauses change streaming for a source.
+func (s *Service) PauseSync(ctx context.Context, req *connect.Request[v1.PauseSyncRequest]) (*connect.Response[v1.PauseSyncResponse], error) {
+	sourceID := req.Msg.GetSourceId()
+	if sourceID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("source_id is required"))
+	}
+
+	if err := s.engine.Pause(ctx, sourceID); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	return connect.NewResponse(&v1.PauseSyncResponse{
+		State: v1.ServiceState_SERVICE_STATE_PAUSED,
+	}), nil
+}
+
+// ResumeSync resumes change streaming for a source.
+func (s *Service) ResumeSync(ctx context.Context, req *connect.Request[v1.ResumeSyncRequest]) (*connect.Response[v1.ResumeSyncResponse], error) {
+	sourceID := req.Msg.GetSourceId()
+	if sourceID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("source_id is required"))
+	}
+
+	if err := s.engine.Resume(ctx, sourceID); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	return connect.NewResponse(&v1.ResumeSyncResponse{
+		State: v1.ServiceState_SERVICE_STATE_STREAMING,
+	}), nil
+}
+
+// CreateSnapshot triggers an on-demand snapshot.
+func (s *Service) CreateSnapshot(ctx context.Context, req *connect.Request[v1.CreateSnapshotRequest]) (*connect.Response[v1.CreateSnapshotResponse], error) {
+	// Convert proto Struct to map[string]Value for user metadata.
+	var userMeta map[string]laredo.Value
+	if req.Msg.GetUserMeta() != nil {
+		userMeta = make(map[string]laredo.Value, len(req.Msg.GetUserMeta().GetFields()))
+		for k, v := range req.Msg.GetUserMeta().GetFields() {
+			userMeta[k] = v.AsInterface()
+		}
+	}
+
+	if err := s.engine.CreateSnapshot(ctx, userMeta); err != nil {
+		return connect.NewResponse(&v1.CreateSnapshotResponse{
+			Accepted: false,
+			Message:  err.Error(),
+		}), nil
+	}
+
+	return connect.NewResponse(&v1.CreateSnapshotResponse{
+		Accepted: true,
+		Message:  "snapshot creation started",
+	}), nil
+}
+
 // StartReplay begins replaying a snapshot into targets.
 func (s *Service) StartReplay(_ context.Context, req *connect.Request[v1.StartReplayRequest]) (*connect.Response[v1.StartReplayResponse], error) {
 	if s.snapshotStore == nil {

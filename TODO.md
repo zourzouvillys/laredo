@@ -370,13 +370,13 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [ ] `GetTableStatus` — pipelines + indexes for a table
 - [ ] `GetPipelineStatus` — single pipeline status + indexes
 - [ ] `WatchStatus` — server-streaming status events (state changes, row changes, source events)
-- [ ] `CheckReady` — readiness check (global, per-source, per-table, per-pipeline)
+- [x] `CheckReady` — readiness check (global, per-source, per-table, per-pipeline)
 - [ ] `GetSourceInfo` — source details including source-specific metadata
-- [ ] `ReloadTable` / `ReloadAll` — trigger re-baseline
-- [ ] `PauseSync` / `ResumeSync`
+- [x] `ReloadTable` / `ReloadAll` — trigger re-baseline
+- [x] `PauseSync` / `ResumeSync`
 - [ ] `ResetSource` — drop/recreate slot and optionally publication
 - [ ] `ListTables` / `GetTableSchema` — read-only config inspection
-- [ ] `CreateSnapshot` / `ListSnapshots` / `InspectSnapshot` / `RestoreSnapshot` / `DeleteSnapshot` / `PruneSnapshots`
+- [ ] `CreateSnapshot` / `ListSnapshots` / `InspectSnapshot` / `RestoreSnapshot` / `DeleteSnapshot` / `PruneSnapshots` (`CreateSnapshot` implemented)
 - [ ] `ListDeadLetters` / `ReplayDeadLetters` / `PurgeDeadLetters`
 - [x] `StartReplay` / `GetReplayStatus` / `StopReplay`
 

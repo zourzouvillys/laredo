@@ -193,6 +193,220 @@ func TestOAM_StopReplay_NotFound(t *testing.T) {
 	}
 }
 
+// --- Admin RPC tests ---
+
+func startedEngine(t *testing.T) (laredo.Engine, *testsource.Source, *memory.IndexedTarget) {
+	t.Helper()
+	src := testsource.New()
+	src.SetSchema(testutil.SampleTable(), testutil.SampleColumns())
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+
+	target := memory.NewIndexedTarget()
+	eng, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("engine errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := eng.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !eng.AwaitReady(5 * time.Second) {
+		t.Fatal("engine not ready")
+	}
+	t.Cleanup(func() { _ = eng.Stop(ctx) })
+
+	return eng, src, target
+}
+
+func TestOAM_CheckReady(t *testing.T) {
+	eng, _, _ := startedEngine(t)
+	client := startTestServer(t, eng, nil)
+
+	resp, err := client.CheckReady(context.Background(), connect.NewRequest(&v1.CheckReadyRequest{}))
+	if err != nil {
+		t.Fatalf("CheckReady: %v", err)
+	}
+	if !resp.Msg.GetReady() {
+		t.Error("expected ready=true")
+	}
+	if len(resp.Msg.GetNotReadyReasons()) != 0 {
+		t.Errorf("expected no reasons, got %v", resp.Msg.GetNotReadyReasons())
+	}
+}
+
+func TestOAM_CheckReady_BySource(t *testing.T) {
+	eng, _, _ := startedEngine(t)
+	client := startTestServer(t, eng, nil)
+
+	resp, err := client.CheckReady(context.Background(), connect.NewRequest(&v1.CheckReadyRequest{
+		Source: "pg",
+	}))
+	if err != nil {
+		t.Fatalf("CheckReady: %v", err)
+	}
+	if !resp.Msg.GetReady() {
+		t.Error("expected ready=true for source pg")
+	}
+
+	// Unknown source should return not ready.
+	resp, err = client.CheckReady(context.Background(), connect.NewRequest(&v1.CheckReadyRequest{
+		Source: "nonexistent",
+	}))
+	if err != nil {
+		t.Fatalf("CheckReady: %v", err)
+	}
+	if resp.Msg.GetReady() {
+		t.Error("expected ready=false for nonexistent source")
+	}
+}
+
+func TestOAM_ReloadTable(t *testing.T) {
+	eng, src, target := startedEngine(t)
+	client := startTestServer(t, eng, nil)
+
+	// Add a new row to source data.
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(2, "bob"))
+
+	// Wait for the source to be streaming before reload.
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return src.State() == laredo.SourceStreaming
+	}, "expected source to be streaming")
+
+	resp, err := client.ReloadTable(context.Background(), connect.NewRequest(&v1.ReloadTableRequest{
+		SourceId: "pg",
+		Schema:   "public",
+		Table:    "test_table",
+	}))
+	if err != nil {
+		t.Fatalf("ReloadTable: %v", err)
+	}
+	if !resp.Msg.GetAccepted() {
+		t.Errorf("expected accepted=true, got message: %s", resp.Msg.GetMessage())
+	}
+
+	// After reload, target should have the new data.
+	if target.Count() != 2 {
+		t.Errorf("expected 2 rows after reload, got %d", target.Count())
+	}
+}
+
+func TestOAM_ReloadTable_MissingSourceID(t *testing.T) {
+	eng, _, _ := startedEngine(t)
+	client := startTestServer(t, eng, nil)
+
+	_, err := client.ReloadTable(context.Background(), connect.NewRequest(&v1.ReloadTableRequest{
+		Schema: "public",
+		Table:  "test_table",
+	}))
+	if err == nil {
+		t.Fatal("expected error without source_id")
+	}
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Errorf("expected CodeInvalidArgument, got %v", connect.CodeOf(err))
+	}
+}
+
+func TestOAM_PauseResumeSync(t *testing.T) {
+	eng, src, _ := startedEngine(t)
+	client := startTestServer(t, eng, nil)
+
+	// Wait for source to be streaming.
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return src.State() == laredo.SourceStreaming
+	}, "expected source to be streaming")
+
+	// Pause.
+	pauseResp, err := client.PauseSync(context.Background(), connect.NewRequest(&v1.PauseSyncRequest{
+		SourceId: "pg",
+	}))
+	if err != nil {
+		t.Fatalf("PauseSync: %v", err)
+	}
+	if pauseResp.Msg.GetState() != v1.ServiceState_SERVICE_STATE_PAUSED {
+		t.Errorf("expected PAUSED state, got %v", pauseResp.Msg.GetState())
+	}
+
+	// Resume.
+	resumeResp, err := client.ResumeSync(context.Background(), connect.NewRequest(&v1.ResumeSyncRequest{
+		SourceId: "pg",
+	}))
+	if err != nil {
+		t.Fatalf("ResumeSync: %v", err)
+	}
+	if resumeResp.Msg.GetState() != v1.ServiceState_SERVICE_STATE_STREAMING {
+		t.Errorf("expected STREAMING state, got %v", resumeResp.Msg.GetState())
+	}
+}
+
+func TestOAM_PauseSync_MissingSourceID(t *testing.T) {
+	eng, _, _ := startedEngine(t)
+	client := startTestServer(t, eng, nil)
+
+	_, err := client.PauseSync(context.Background(), connect.NewRequest(&v1.PauseSyncRequest{}))
+	if err == nil {
+		t.Fatal("expected error without source_id")
+	}
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Errorf("expected CodeInvalidArgument, got %v", connect.CodeOf(err))
+	}
+}
+
+func TestOAM_CreateSnapshot(t *testing.T) {
+	src := testsource.New()
+	src.SetSchema(testutil.SampleTable(), testutil.SampleColumns())
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+
+	target := memory.NewIndexedTarget()
+	store := local.New(t.TempDir())
+
+	eng, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithSnapshotStore(store),
+		laredo.WithSnapshotSerializer(jsonl.New()),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("engine errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := eng.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !eng.AwaitReady(5 * time.Second) {
+		t.Fatal("engine not ready")
+	}
+	t.Cleanup(func() { _ = eng.Stop(ctx) })
+
+	client := startTestServer(t, eng, store)
+
+	resp, err := client.CreateSnapshot(ctx, connect.NewRequest(&v1.CreateSnapshotRequest{}))
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+	if !resp.Msg.GetAccepted() {
+		t.Errorf("expected accepted=true, got message: %s", resp.Msg.GetMessage())
+	}
+}
+
+func TestOAM_CreateSnapshot_NoStore(t *testing.T) {
+	eng, _, _ := startedEngine(t)
+	client := startTestServer(t, eng, nil)
+
+	resp, err := client.CreateSnapshot(context.Background(), connect.NewRequest(&v1.CreateSnapshotRequest{}))
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+	// Should return accepted=false with error message (no snapshot store).
+	if resp.Msg.GetAccepted() {
+		t.Error("expected accepted=false without snapshot store")
+	}
+}
+
 func TestOAM_UnimplementedRPCs(t *testing.T) {
 	src := testsource.New()
 	src.SetSchema(testutil.SampleTable(), testutil.SampleColumns())
@@ -208,14 +422,14 @@ func TestOAM_UnimplementedRPCs(t *testing.T) {
 
 	client := startTestServer(t, eng, nil)
 
-	// All non-replay RPCs should return CodeUnimplemented.
+	// RPCs that are still unimplemented should return CodeUnimplemented.
 	_, err := client.GetStatus(context.Background(), connect.NewRequest(&v1.GetStatusRequest{}))
 	if connect.CodeOf(err) != connect.CodeUnimplemented {
 		t.Errorf("GetStatus: expected CodeUnimplemented, got %v", connect.CodeOf(err))
 	}
 
-	_, err = client.CheckReady(context.Background(), connect.NewRequest(&v1.CheckReadyRequest{}))
+	_, err = client.GetSourceInfo(context.Background(), connect.NewRequest(&v1.GetSourceInfoRequest{}))
 	if connect.CodeOf(err) != connect.CodeUnimplemented {
-		t.Errorf("CheckReady: expected CodeUnimplemented, got %v", connect.CodeOf(err))
+		t.Errorf("GetSourceInfo: expected CodeUnimplemented, got %v", connect.CodeOf(err))
 	}
 }
