@@ -265,6 +265,32 @@ func (s *Service) ResumeSync(ctx context.Context, req *connect.Request[v1.Resume
 	}), nil
 }
 
+// ListTables returns the configured tables derived from pipeline information.
+func (s *Service) ListTables(_ context.Context, _ *connect.Request[v1.ListTablesRequest]) (*connect.Response[v1.ListTablesResponse], error) {
+	pipelines := s.engine.Pipelines()
+
+	// Deduplicate tables (same table may have multiple targets).
+	type tableKey struct{ schema, table string }
+	seen := make(map[tableKey]bool)
+	var tables []*v1.TableConfig
+
+	for _, p := range pipelines {
+		key := tableKey{p.Table.Schema, p.Table.Table}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		tables = append(tables, &v1.TableConfig{
+			Schema:     p.Table.Schema,
+			Table:      p.Table.Table,
+			SourceId:   p.SourceID,
+			TargetType: p.TargetType,
+		})
+	}
+
+	return connect.NewResponse(&v1.ListTablesResponse{Tables: tables}), nil
+}
+
 // CreateSnapshot triggers an on-demand snapshot.
 func (s *Service) CreateSnapshot(ctx context.Context, req *connect.Request[v1.CreateSnapshotRequest]) (*connect.Response[v1.CreateSnapshotResponse], error) {
 	// Convert proto Struct to map[string]Value for user metadata.

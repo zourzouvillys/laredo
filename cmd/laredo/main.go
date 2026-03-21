@@ -52,6 +52,8 @@ func main() {
 		snapshotCmd(args)
 	case "pipelines":
 		pipelinesCmd(args)
+	case "tables":
+		tablesCmd(args)
 	case "query":
 		queryCmd(args)
 	case "reload":
@@ -79,6 +81,7 @@ Usage: laredo <command> [flags]
 Commands:
   status             Show service status (pipelines, sources)
   pipelines          List all pipelines
+  tables             List configured tables
   ready              Check if the server is ready (exit 0/1)
   reload             Trigger re-baseline for a table
   pause              Pause a source
@@ -601,6 +604,39 @@ func pipelinesCmd(args []string) {
 			p.GetSchema()+"."+p.GetTable(),
 			p.GetState().String(),
 			p.GetRowCount(),
+		)
+	}
+}
+
+// --- tables ---
+
+func tablesCmd(args []string) {
+	fs := flag.NewFlagSet("tables", flag.ExitOnError)
+	parseGlobalFlags(fs, args)
+
+	resp, err := oamClient().ListTables(ctx(), connect.NewRequest(&v1.ListTablesRequest{}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	tables := resp.Msg.GetTables()
+	if output == outputJSON {
+		printJSON(tables)
+		return
+	}
+
+	if len(tables) == 0 {
+		fmt.Println("no tables")
+		return
+	}
+
+	fmt.Printf("%-30s  %-10s  %s\n", "TABLE", "SOURCE", "TARGET")
+	for _, t := range tables {
+		fmt.Printf("%-30s  %-10s  %s\n",
+			t.GetSchema()+"."+t.GetTable(),
+			t.GetSourceId(),
+			t.GetTargetType(),
 		)
 	}
 }

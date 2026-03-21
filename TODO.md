@@ -375,7 +375,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `ReloadTable` / `ReloadAll` — trigger re-baseline
 - [x] `PauseSync` / `ResumeSync`
 - [ ] `ResetSource` — drop/recreate slot and optionally publication
-- [ ] `ListTables` / `GetTableSchema` — read-only config inspection
+- [x] `ListTables` / `GetTableSchema` — `ListTables` implemented; `GetTableSchema` deferred (needs column info in pipeline state)
 - [x] `CreateSnapshot` / `ListSnapshots` / `InspectSnapshot` / `RestoreSnapshot` / `DeleteSnapshot` / `PruneSnapshots` (`RestoreSnapshot` deferred — needs engine method)
 - [x] `ListDeadLetters` / `ReplayDeadLetters` / `PurgeDeadLetters` (`ListDeadLetters` + `PurgeDeadLetters` implemented; `ReplayDeadLetters` deferred — needs target lookup by pipeline ID)
 - [x] `StartReplay` / `GetReplayStatus` / `StopReplay`
@@ -430,7 +430,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `laredo status --table <schema.table>` — per-table detail with indexes
 - [ ] `laredo source [source_id]` — source detail including source-specific metadata (slot info, shard info)
 - [x] `laredo pipelines` — tabular list of all pipelines
-- [ ] `laredo tables` — tabular list of configured tables
+- [x] `laredo tables` — tabular list of configured tables
 - [ ] `laredo schema <schema.table>` — column definitions
 - [x] `laredo query <schema.table> [key_values...]` — lookup by primary index
 - [x] `laredo query --index <name> [key_values...]` — lookup by named index
@@ -460,7 +460,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 10.2 Output Formatting
 
-- [ ] Table formatter: aligned columns, human-readable numbers (1,284), durations (3h 42m)
+- [x] Table formatter: aligned columns (basic printf-based)
 - [x] JSON output: structured, machine-readable
 - [ ] YAML output
 
