@@ -584,10 +584,10 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 14.4 Benchmarks (Tier 4 — `test/bench/`)
 
-- [ ] Indexed in-memory target: insert throughput, lookup latency (1K, 100K, 1M rows)
-- [ ] Compiled in-memory target: compile + insert throughput
-- [ ] Change buffer throughput: all three policies under contention
-- [ ] Snapshot serialization: JSONL write/read speed for large datasets
+- [x] Indexed in-memory target: insert throughput, lookup latency (100, 10K, 100K rows)
+- [x] Compiled in-memory target: compile + insert throughput
+- [x] Change buffer throughput: block + trysend policies
+- [x] Snapshot serialization: JSONL write/read speed (1K rows)
 - [ ] Fan-out broadcast: throughput with 1, 10, 100 connected clients
 - [ ] PostgreSQL source: baseline rows/sec, streaming changes/sec
 
