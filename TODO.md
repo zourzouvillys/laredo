@@ -40,7 +40,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `SnapshotReplay` builder API — `NewSnapshotReplay(store).Target(table, target).Run(ctx, id)`
 - [x] `ReplaySpeed` — `ReplayFullSpeed`, `ReplayRealTime` constants defined
 - [x] `replay.Run()` blocking and `replay.Start()` async variants
-- [ ] Wire replay into OAM gRPC service (`StartReplay`, `GetReplayStatus`, `StopReplay`)
+- [x] Wire replay into OAM gRPC service (`StartReplay`, `GetReplayStatus`, `StopReplay`)
 
 ---
 
@@ -378,7 +378,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [ ] `ListTables` / `GetTableSchema` — read-only config inspection
 - [ ] `CreateSnapshot` / `ListSnapshots` / `InspectSnapshot` / `RestoreSnapshot` / `DeleteSnapshot` / `PruneSnapshots`
 - [ ] `ListDeadLetters` / `ReplayDeadLetters` / `PurgeDeadLetters`
-- [ ] `StartReplay` / `GetReplayStatus` / `StopReplay`
+- [x] `StartReplay` / `GetReplayStatus` / `StopReplay`
 
 ### 8.3 Query Service (`service/query/`)
 
@@ -391,11 +391,11 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 8.4 Server Setup (`service/server.go`)
 
-- [ ] gRPC server creation with TLS configuration
-- [ ] Register OAM + Query services
-- [ ] Optional service enabling (`EnableOAM`, `EnableQuery`)
-- [ ] Port configuration
-- [ ] Graceful shutdown: stop accepting, drain in-flight requests
+- [ ] TLS configuration
+- [x] Register OAM + Query services
+- [x] Optional service enabling (`EnableOAM`, `EnableQuery`)
+- [x] Port configuration
+- [x] Graceful shutdown: stop accepting, drain in-flight requests
 
 ---
 
