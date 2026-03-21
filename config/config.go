@@ -384,6 +384,41 @@ func (c *Config) Validate() []error {
 	return errs
 }
 
+// MaskSensitive returns a copy of the config with sensitive values masked.
+// Connection strings, auth headers, and other credentials are replaced with "***".
+func MaskSensitive(c *Config) *Config {
+	masked := *c
+
+	// Deep copy and mask sources.
+	masked.Sources = make(map[string]SourceConfig, len(c.Sources))
+	for id, src := range c.Sources {
+		src.Connection = maskValue(src.Connection)
+		masked.Sources[id] = src
+	}
+
+	// Deep copy and mask targets.
+	masked.Tables = make([]TableConfig, len(c.Tables))
+	for i, tc := range c.Tables {
+		maskedTargets := make([]TargetConfig, len(tc.Targets))
+		for j, tgt := range tc.Targets {
+			tgt.AuthHeader = maskValue(tgt.AuthHeader)
+			maskedTargets[j] = tgt
+		}
+		tc.Targets = maskedTargets
+		masked.Tables[i] = tc
+	}
+
+	return &masked
+}
+
+// maskValue replaces a non-empty value with "***".
+func maskValue(s string) string {
+	if s == "" {
+		return ""
+	}
+	return "***"
+}
+
 // ToEngineOptions converts the parsed config into laredo engine options.
 func (c *Config) ToEngineOptions() ([]laredo.Option, error) {
 	var opts []laredo.Option

@@ -5,6 +5,11 @@ import (
 	"testing"
 )
 
+const (
+	pgType    = "postgresql"
+	maskedStr = "***"
+)
+
 const basicConfig = `
 sources {
   pg_main {
@@ -59,7 +64,7 @@ func TestParse_BasicConfig(t *testing.T) {
 		t.Fatalf("expected 1 source, got %d", len(cfg.Sources))
 	}
 	src := cfg.Sources["pg_main"]
-	if src.Type != "postgresql" {
+	if src.Type != pgType {
 		t.Errorf("expected type=postgresql, got %q", src.Type)
 	}
 	if src.SlotMode != "stateful" {
@@ -216,7 +221,7 @@ func TestValidate_NoSources(t *testing.T) {
 
 func TestValidate_UnknownSource(t *testing.T) {
 	cfg := &Config{
-		Sources: map[string]SourceConfig{"pg": {Type: "postgresql"}},
+		Sources: map[string]SourceConfig{"pg": {Type: pgType}},
 		Tables:  []TableConfig{{Source: "unknown", Schema: "s", Table: "t", Targets: []TargetConfig{{Type: "x"}}}},
 	}
 	errs := cfg.Validate()
@@ -261,7 +266,7 @@ func TestToEngineOptions_UnknownSourceType(t *testing.T) {
 
 func TestToEngineOptions_UnknownTargetType(t *testing.T) {
 	cfg := &Config{
-		Sources: map[string]SourceConfig{"pg": {Type: "postgresql"}},
+		Sources: map[string]SourceConfig{"pg": {Type: pgType}},
 		Tables:  []TableConfig{{Source: "pg", Schema: "s", Table: "t", Targets: []TargetConfig{{Type: "exotic-target"}}}},
 	}
 	_, err := cfg.ToEngineOptions()
@@ -372,6 +377,67 @@ tables = [{ source = pg, schema = public, table = users, targets = [{ type = ind
 	})
 	if err == nil {
 		t.Fatal("expected error for invalid override")
+	}
+}
+
+func TestMaskSensitive(t *testing.T) {
+	cfg, err := Parse(basicConfig)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	masked := MaskSensitive(cfg)
+
+	// Connection should be masked.
+	src := masked.Sources["pg_main"]
+	if src.Connection != maskedStr {
+		t.Errorf("expected masked connection, got %q", src.Connection)
+	}
+
+	// Original should be unchanged.
+	origSrc := cfg.Sources["pg_main"]
+	if origSrc.Connection == maskedStr {
+		t.Error("original config should not be modified")
+	}
+
+	// Non-sensitive fields should be preserved.
+	if src.Type != pgType {
+		t.Errorf("expected type=postgresql, got %q", src.Type)
+	}
+}
+
+func TestMaskSensitive_AuthHeader(t *testing.T) {
+	cfg := &Config{
+		Sources: map[string]SourceConfig{"pg": {Type: "pg"}},
+		Tables: []TableConfig{{
+			Source: "pg", Schema: "s", Table: "t",
+			Targets: []TargetConfig{{Type: "http-sync", AuthHeader: "Bearer secret"}},
+		}},
+	}
+
+	masked := MaskSensitive(cfg)
+
+	if masked.Tables[0].Targets[0].AuthHeader != maskedStr {
+		t.Errorf("expected masked auth header, got %q", masked.Tables[0].Targets[0].AuthHeader)
+	}
+
+	// Original unchanged.
+	if cfg.Tables[0].Targets[0].AuthHeader != "Bearer secret" {
+		t.Error("original auth header should not be modified")
+	}
+}
+
+func TestMaskSensitive_EmptyValues(t *testing.T) {
+	cfg := &Config{
+		Sources: map[string]SourceConfig{"pg": {Type: "pg", Connection: ""}},
+		Tables:  []TableConfig{{Source: "pg", Schema: "s", Table: "t", Targets: []TargetConfig{{Type: "x"}}}},
+	}
+
+	masked := MaskSensitive(cfg)
+
+	// Empty values should stay empty, not become maskedStr.
+	if masked.Sources["pg"].Connection != "" {
+		t.Errorf("expected empty connection to stay empty, got %q", masked.Sources["pg"].Connection)
 	}
 }
 

@@ -348,8 +348,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Config directory merge: load `conf.d/*.conf` in alphabetical order
 - [x] `--set key=value` CLI flag override
 - [x] Config validation: required fields, type checking, cross-references (source IDs in table config must exist)
-- [ ] Config dump command for debugging
-- [ ] Sensitive value masking in dumps/logs (connection strings, auth headers)
+- [x] Config dump command for debugging (`laredo-server config --config <path>`)
+- [x] Sensitive value masking in dumps/logs (connection strings, auth headers)
 
 ---
 

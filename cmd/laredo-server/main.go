@@ -33,6 +33,9 @@ func main() {
 		case "validate":
 			validateCmd()
 			return
+		case "config":
+			configDumpCmd()
+			return
 		case "version":
 			fmt.Printf("laredo-server %s\n", laredo.Version)
 			return
@@ -241,6 +244,38 @@ func validateCmd() {
 	}
 
 	fmt.Println("config is valid")
+}
+
+func configDumpCmd() {
+	fs := flag.NewFlagSet("config", flag.ExitOnError)
+	configPath := fs.String("config", "", "path to HOCON config file")
+	confDir := fs.String("conf-dir", "/etc/laredo/conf.d", "directory of *.conf files to merge")
+	fs.Parse(os.Args[2:]) //nolint:errcheck // ExitOnError handles errors
+
+	// Handle "config --dump" or just "config" as dump.
+	cfgPath := *configPath
+	if cfgPath == "" {
+		cfgPath = os.Getenv("LAREDO_CONFIG")
+	}
+	if cfgPath == "" {
+		fmt.Fprintln(os.Stderr, "config file required: use --config flag or LAREDO_CONFIG env var")
+		os.Exit(1)
+	}
+
+	cfg, err := config.LoadWithOptions(cfgPath, config.LoadOptions{ConfDir: *confDir})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Mask sensitive values and dump.
+	masked := config.MaskSensitive(cfg)
+	data, err := json.MarshalIndent(masked, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error marshaling config: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(data))
 }
 
 func setupLogging(level string) {
