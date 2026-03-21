@@ -1,73 +1,103 @@
 // Package pg implements a SyncSource backed by PostgreSQL logical replication.
+//
+// It uses the built-in pgoutput logical decoding plugin and supports two modes:
+//   - Ephemeral: temporary replication slot, full baseline every startup.
+//   - Stateful: persistent named slot, resume from last ACKed LSN.
 package pg
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/zourzouvillys/laredo"
 )
 
 // Source implements laredo.SyncSource using PostgreSQL logical replication.
 type Source struct {
-	// TODO: implement
+	cfg   sourceConfig
+	state laredo.SourceState
 }
 
-// New creates a new PostgreSQL source.
-func New( /* opts */ ) *Source {
-	return &Source{}
+// New creates a new PostgreSQL source with the given options.
+func New(opts ...Option) *Source {
+	cfg := defaultConfig()
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	return &Source{
+		cfg:   cfg,
+		state: laredo.SourceClosed,
+	}
 }
 
 var _ laredo.SyncSource = (*Source)(nil)
 
 //nolint:revive // implements SyncSource.
-func (s *Source) Init(ctx context.Context, config laredo.SourceConfig) (map[laredo.TableIdentifier][]laredo.ColumnDefinition, error) {
-	panic("not implemented")
+func (s *Source) Init(_ context.Context, _ laredo.SourceConfig) (map[laredo.TableIdentifier][]laredo.ColumnDefinition, error) {
+	return nil, fmt.Errorf("pg source: not yet implemented")
 }
 
 //nolint:revive // implements SyncSource.
-func (s *Source) ValidateTables(ctx context.Context, tables []laredo.TableIdentifier) []laredo.ValidationError {
-	panic("not implemented")
+func (s *Source) ValidateTables(_ context.Context, _ []laredo.TableIdentifier) []laredo.ValidationError {
+	return nil
 }
 
 //nolint:revive // implements SyncSource.
-func (s *Source) Baseline(ctx context.Context, tables []laredo.TableIdentifier, rowCallback func(laredo.TableIdentifier, laredo.Row)) (laredo.Position, error) {
-	panic("not implemented")
+func (s *Source) Baseline(_ context.Context, _ []laredo.TableIdentifier, _ func(laredo.TableIdentifier, laredo.Row)) (laredo.Position, error) {
+	return nil, fmt.Errorf("pg source: not yet implemented")
 }
 
 //nolint:revive // implements SyncSource.
-func (s *Source) Stream(ctx context.Context, from laredo.Position, handler laredo.ChangeHandler) error {
-	panic("not implemented")
+func (s *Source) Stream(_ context.Context, _ laredo.Position, _ laredo.ChangeHandler) error {
+	return fmt.Errorf("pg source: not yet implemented")
 }
 
 //nolint:revive // implements SyncSource.
-func (s *Source) Ack(ctx context.Context, position laredo.Position) error {
-	panic("not implemented")
+func (s *Source) Ack(_ context.Context, _ laredo.Position) error {
+	return nil
 }
 
 //nolint:revive // implements SyncSource.
-func (s *Source) SupportsResume() bool { return false }
+func (s *Source) SupportsResume() bool {
+	return s.cfg.slotMode == SlotStateful
+}
 
 //nolint:revive // implements SyncSource.
-func (s *Source) LastAckedPosition(ctx context.Context) (laredo.Position, error) {
+func (s *Source) LastAckedPosition(_ context.Context) (laredo.Position, error) {
 	return nil, nil
 }
 
 //nolint:revive // implements SyncSource.
-func (s *Source) ComparePositions(a, b laredo.Position) int { panic("not implemented") }
-
-//nolint:revive // implements SyncSource.
-func (s *Source) PositionToString(p laredo.Position) string { panic("not implemented") }
-
-//nolint:revive // implements SyncSource.
-func (s *Source) PositionFromString(str string) (laredo.Position, error) {
-	panic("not implemented")
+func (s *Source) ComparePositions(a, b laredo.Position) int {
+	return CompareLSN(a, b)
 }
 
 //nolint:revive // implements SyncSource.
-func (s *Source) Pause(ctx context.Context) error { panic("not implemented") }
+func (s *Source) PositionToString(p laredo.Position) string {
+	if lsn, ok := p.(LSN); ok {
+		return lsn.String()
+	}
+	return fmt.Sprintf("%v", p)
+}
 
 //nolint:revive // implements SyncSource.
-func (s *Source) Resume(ctx context.Context) error { panic("not implemented") }
+func (s *Source) PositionFromString(str string) (laredo.Position, error) {
+	lsn, err := ParseLSN(str)
+	if err != nil {
+		return nil, err
+	}
+	return lsn, nil
+}
+
+//nolint:revive // implements SyncSource.
+func (s *Source) Pause(_ context.Context) error {
+	return fmt.Errorf("pg source: not yet implemented")
+}
+
+//nolint:revive // implements SyncSource.
+func (s *Source) Resume(_ context.Context) error {
+	return fmt.Errorf("pg source: not yet implemented")
+}
 
 //nolint:revive // implements SyncSource.
 func (s *Source) GetLag() laredo.LagInfo { return laredo.LagInfo{} }
@@ -76,7 +106,7 @@ func (s *Source) GetLag() laredo.LagInfo { return laredo.LagInfo{} }
 func (s *Source) OrderingGuarantee() laredo.OrderingGuarantee { return laredo.TotalOrder }
 
 //nolint:revive // implements SyncSource.
-func (s *Source) State() laredo.SourceState { return laredo.SourceClosed }
+func (s *Source) State() laredo.SourceState { return s.state }
 
 //nolint:revive // implements SyncSource.
-func (s *Source) Close(ctx context.Context) error { return nil }
+func (s *Source) Close(_ context.Context) error { return nil }

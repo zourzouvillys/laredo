@@ -146,8 +146,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
   - [ ] Publication naming: default `{slot_name}_pub`, configurable override
 - [ ] Baseline: `REPEATABLE READ` snapshot, `SELECT *` per table, return LSN position
 - [ ] Streaming: consume `pgoutput` messages, decode into `ChangeEvent`
-- [ ] Position type: LSN (uint64 wrapper with string formatting `0/XXXXXXXX`)
-- [ ] `ComparePositions` — LSN comparison
+- [x] Position type: LSN (uint64 wrapper with string formatting `0/XXXXXXXX`)
+- [x] `ComparePositions` — LSN comparison
 - [ ] ACK — `StandbyStatusUpdate` with confirmed flush LSN
 - [ ] Reconnect state machine: `CONNECTING → CONNECTED → STREAMING → RECONNECTING → ERROR`
   - [ ] Exponential backoff with configurable max_attempts, initial/max backoff, multiplier
@@ -157,7 +157,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [ ] `ResetSource` — drop and recreate slot (+ publication if auto-managed)
 - [ ] `Pause` / `Resume` — stop reading from stream, keep connection open
 - [ ] Schema change detection from replication stream (relation messages)
-- [ ] Option builder: `Connection()`, `SlotMode()`, `SlotName()`, `Publication()`, `Reconnect()`
+- [x] Option builder: `Connection()`, `SlotMode()`, `SlotName()`, `Publication()`, `Reconnect()`
 
 ### 3.2 S3 + Kinesis (`source/kinesis/`)
 
