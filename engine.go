@@ -26,6 +26,10 @@ type Engine interface {
 	// IsReady reports whether all pipelines are ready.
 	IsReady() bool
 
+	// OnReady registers a callback that is invoked when all pipelines are ready.
+	// If already ready, the callback is invoked immediately.
+	OnReady(callback func())
+
 	// Reload triggers a re-baseline for a specific table on a source.
 	Reload(ctx context.Context, sourceID string, table TableIdentifier) error
 
@@ -632,6 +636,11 @@ func (e *coreEngine) AwaitReady(timeout time.Duration) bool {
 //nolint:revive // Engine interface implementation.
 func (e *coreEngine) IsReady() bool {
 	return e.readiness.IsReady()
+}
+
+//nolint:revive // Engine interface implementation.
+func (e *coreEngine) OnReady(callback func()) {
+	e.readiness.OnReady(callback)
 }
 
 //nolint:revive // Engine interface implementation.

@@ -9,10 +9,11 @@ import (
 // baseline is complete and it has transitioned to streaming. Global readiness
 // is achieved when all registered pipelines are ready.
 type ReadinessTracker struct {
-	mu       sync.Mutex
-	ready    map[string]bool
-	allReady chan struct{} // closed when all pipelines are ready
-	closed   bool
+	mu        sync.Mutex
+	ready     map[string]bool
+	allReady  chan struct{} // closed when all pipelines are ready
+	closed    bool
+	callbacks []func()
 }
 
 // NewReadinessTracker creates a tracker for the given pipeline IDs.
@@ -33,23 +34,45 @@ func NewReadinessTracker(pipelineIDs []string) *ReadinessTracker {
 }
 
 // SetReady marks a pipeline as ready. When all pipelines are ready, the global
-// readiness channel is closed.
+// readiness channel is closed and registered callbacks are fired.
 func (r *ReadinessTracker) SetReady(pipelineID string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	r.ready[pipelineID] = true
 
 	if r.closed {
+		r.mu.Unlock()
 		return
 	}
 	for _, v := range r.ready {
 		if !v {
+			r.mu.Unlock()
 			return
 		}
 	}
 	r.closed = true
 	close(r.allReady)
+	cbs := append([]func(){}, r.callbacks...)
+	r.callbacks = nil
+	r.mu.Unlock()
+
+	for _, cb := range cbs {
+		cb()
+	}
+}
+
+// OnReady registers a callback to be invoked when all pipelines are ready.
+// If already ready, the callback is invoked immediately (synchronously).
+// Callbacks are fired outside the lock and must not block.
+func (r *ReadinessTracker) OnReady(cb func()) {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		cb()
+		return
+	}
+	r.callbacks = append(r.callbacks, cb)
+	r.mu.Unlock()
 }
 
 // IsReady reports whether all pipelines are ready.

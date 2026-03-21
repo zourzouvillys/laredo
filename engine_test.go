@@ -392,6 +392,79 @@ func TestEngine_ReadinessBeforeStart(t *testing.T) {
 	}
 }
 
+func TestEngine_OnReady(t *testing.T) {
+	src := testsource.New()
+	src.SetSchema(testutil.SampleTable(), testutil.SampleColumns())
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+
+	target := memory.NewIndexedTarget()
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	readyCh := make(chan struct{})
+	e.OnReady(func() { close(readyCh) })
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	select {
+	case <-readyCh:
+		// success
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnReady callback was not invoked")
+	}
+
+	if !e.IsReady() {
+		t.Error("expected IsReady true after OnReady fired")
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+func TestEngine_OnReadyAlreadyReady(t *testing.T) {
+	src := testsource.New()
+	src.SetSchema(testutil.SampleTable(), testutil.SampleColumns())
+
+	target := memory.NewIndexedTarget()
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Register callback after already ready — should fire immediately.
+	called := false
+	e.OnReady(func() { called = true })
+	if !called {
+		t.Error("OnReady should fire immediately when already ready")
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
 // configuredSource creates a test source with schemas and baseline rows configured.
 func configuredSource() *testsource.Source {
 	src := testsource.New()

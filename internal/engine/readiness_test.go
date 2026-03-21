@@ -79,3 +79,54 @@ func TestReadinessTracker_DuplicateSetReady(t *testing.T) {
 		t.Error("expected ready")
 	}
 }
+
+func TestReadinessTracker_OnReady(t *testing.T) {
+	rt := NewReadinessTracker([]string{"p1", "p2"})
+
+	called := false
+	rt.OnReady(func() { called = true })
+
+	rt.SetReady("p1")
+	if called {
+		t.Error("callback should not be called yet")
+	}
+
+	rt.SetReady("p2")
+	if !called {
+		t.Error("callback should have been called when all ready")
+	}
+}
+
+func TestReadinessTracker_OnReadyAlreadyReady(t *testing.T) {
+	rt := NewReadinessTracker([]string{"p1"})
+	rt.SetReady("p1")
+
+	called := false
+	rt.OnReady(func() { called = true })
+	if !called {
+		t.Error("callback should be called immediately when already ready")
+	}
+}
+
+func TestReadinessTracker_OnReadyMultipleCallbacks(t *testing.T) {
+	rt := NewReadinessTracker([]string{"p1"})
+
+	count := 0
+	rt.OnReady(func() { count++ })
+	rt.OnReady(func() { count++ })
+
+	rt.SetReady("p1")
+	if count != 2 {
+		t.Errorf("expected 2 callbacks, got %d", count)
+	}
+}
+
+func TestReadinessTracker_OnReadyEmpty(t *testing.T) {
+	rt := NewReadinessTracker(nil) // already ready
+
+	called := false
+	rt.OnReady(func() { called = true })
+	if !called {
+		t.Error("callback should fire immediately on empty tracker")
+	}
+}

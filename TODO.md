@@ -30,7 +30,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `Engine.Stop()` — graceful shutdown: drain buffers, close sources/targets (snapshot-on-shutdown deferred to §5.4)
 - [x] `Engine.AwaitReady()` — block until all pipelines reach `STREAMING` or timeout
 - [x] `Engine.IsReady()` — global readiness (per-source/per-table/per-pipeline variants deferred)
-- [ ] `Engine.OnReady(callback)` — callback-style readiness notification
+- [x] `Engine.OnReady(callback)` — callback-style readiness notification
 - [ ] `Engine.Reload()` — trigger re-baseline for a specific table (spec §4.1.2 forced re-baseline)
 - [ ] `Engine.Pause()` / `Engine.Resume()` — per-source pause/resume
 - [ ] `Engine.CreateSnapshot()` — on-demand snapshot with user metadata
@@ -108,7 +108,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [ ] Per-source readiness: all pipelines on source are ready
 - [x] Global readiness: all pipelines are ready
 - [x] `AwaitReady` with timeout (channel + timer)
-- [ ] Callback registration (`OnReady`)
+- [x] Callback registration (`OnReady`)
 
 ### 2.9 Graceful Shutdown
 

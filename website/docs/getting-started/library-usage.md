@@ -51,8 +51,11 @@ func main() {
     engine.Start(context.Background())
     defer engine.Stop(context.Background())
 
-    // Wait until data is ready
+    // Wait until data is ready (blocking)
     engine.AwaitReady(30 * time.Second)
+
+    // Or use a callback instead:
+    // engine.OnReady(func() { log.Println("all pipelines ready") })
 
     // Query the in-memory replica directly
     target, ok := laredo.GetTarget[*memory.IndexedTarget](
