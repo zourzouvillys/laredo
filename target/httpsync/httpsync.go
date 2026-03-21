@@ -300,7 +300,7 @@ func (t *Target) postJSONWithRetry(ctx context.Context, url string, payload any)
 			req.Header.Set(k, v)
 		}
 
-		resp, err := t.client.Do(req)
+		resp, err := t.client.Do(req) //nolint:gosec // URL is from user-configured baseURL, not external input
 		if err != nil {
 			lastErr = fmt.Errorf("POST %s: %w", url, err)
 			continue
