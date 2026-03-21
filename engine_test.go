@@ -3,6 +3,8 @@ package laredo_test
 import (
 	"context"
 	"fmt"
+	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -119,7 +121,7 @@ func TestNewEngine_Validation(t *testing.T) {
 			opts: []laredo.Option{
 				laredo.WithSource("pg", testsource.New()),
 				laredo.WithPipeline("pg", testutil.SampleTable(), memory.NewIndexedTarget()),
-				laredo.WithSnapshotStore(fakeSnapshotStore{}),
+				laredo.WithSnapshotStore(&fakeSnapshotStore{}),
 			},
 			wantErr: "snapshot serializer is required",
 		},
@@ -1040,6 +1042,75 @@ func TestEngine_ReloadUnknownTable(t *testing.T) {
 	}
 }
 
+func TestEngine_CreateSnapshot(t *testing.T) {
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(2, "bob"))
+
+	target := memory.NewIndexedTarget()
+	obs := &testutil.TestObserver{}
+	store := &fakeSnapshotStore{}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithObserver(obs),
+		laredo.WithSnapshotStore(store),
+		laredo.WithSnapshotSerializer(fakeSnapshotSerializer{}),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Create a snapshot.
+	if err := e.CreateSnapshot(ctx, map[string]laredo.Value{"reason": "test"}); err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	// Verify the store received the snapshot.
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.saved) != 1 {
+		t.Fatalf("expected 1 saved snapshot, got %d", len(store.saved))
+	}
+
+	snap := store.saved[0]
+	if snap.metadata.UserMeta["reason"] != "test" {
+		t.Errorf("expected user meta reason=test, got %v", snap.metadata.UserMeta["reason"])
+	}
+
+	entries := snap.entries[testutil.SampleTable()]
+	if len(entries) != 2 {
+		t.Errorf("expected 2 entries in snapshot, got %d", len(entries))
+	}
+
+	// Verify observer events.
+	if obs.EventCount("SnapshotStarted") != 1 {
+		t.Errorf("expected 1 SnapshotStarted, got %d", obs.EventCount("SnapshotStarted"))
+	}
+	if obs.EventCount("SnapshotCompleted") != 1 {
+		t.Errorf("expected 1 SnapshotCompleted, got %d", obs.EventCount("SnapshotCompleted"))
+	}
+
+	// Verify streaming still works after snapshot.
+	src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(3, "charlie"))
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return target.Count() == 3
+	}, "expected 3 rows after snapshot + insert")
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
 // contains checks if s contains substr.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
@@ -1054,27 +1125,56 @@ func searchString(s, substr string) bool {
 	return false
 }
 
-// fakeSnapshotStore implements SnapshotStore for testing.
-type fakeSnapshotStore struct{}
-
-func (fakeSnapshotStore) Save(_ context.Context, _ string, _ laredo.SnapshotMetadata, _ map[laredo.TableIdentifier][]laredo.SnapshotEntry) (laredo.SnapshotDescriptor, error) {
-	return laredo.SnapshotDescriptor{}, nil
+// fakeSnapshotStore implements SnapshotStore for testing, recording saves.
+type fakeSnapshotStore struct {
+	mu      sync.Mutex
+	saved   []savedSnapshot
+	saveErr error
 }
 
-func (fakeSnapshotStore) Load(_ context.Context, _ string) (laredo.SnapshotMetadata, map[laredo.TableIdentifier][]laredo.SnapshotEntry, error) {
+type savedSnapshot struct {
+	id       string
+	metadata laredo.SnapshotMetadata
+	entries  map[laredo.TableIdentifier][]laredo.SnapshotEntry
+}
+
+func (s *fakeSnapshotStore) Save(_ context.Context, id string, meta laredo.SnapshotMetadata, entries map[laredo.TableIdentifier][]laredo.SnapshotEntry) (laredo.SnapshotDescriptor, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.saveErr != nil {
+		return laredo.SnapshotDescriptor{}, s.saveErr
+	}
+	s.saved = append(s.saved, savedSnapshot{id: id, metadata: meta, entries: entries})
+	return laredo.SnapshotDescriptor{SnapshotID: id}, nil
+}
+
+func (s *fakeSnapshotStore) Load(_ context.Context, _ string) (laredo.SnapshotMetadata, map[laredo.TableIdentifier][]laredo.SnapshotEntry, error) {
 	return laredo.SnapshotMetadata{}, nil, nil
 }
 
-func (fakeSnapshotStore) Describe(_ context.Context, _ string) (laredo.SnapshotDescriptor, error) {
+func (s *fakeSnapshotStore) Describe(_ context.Context, _ string) (laredo.SnapshotDescriptor, error) {
 	return laredo.SnapshotDescriptor{}, nil
 }
 
-func (fakeSnapshotStore) List(_ context.Context, _ *laredo.SnapshotFilter) ([]laredo.SnapshotDescriptor, error) {
+func (s *fakeSnapshotStore) List(_ context.Context, _ *laredo.SnapshotFilter) ([]laredo.SnapshotDescriptor, error) {
 	return nil, nil
 }
 
-func (fakeSnapshotStore) Delete(_ context.Context, _ string) error { return nil }
+func (s *fakeSnapshotStore) Delete(_ context.Context, _ string) error { return nil }
 
-func (fakeSnapshotStore) Prune(_ context.Context, _ int, _ *laredo.TableIdentifier) error {
+func (s *fakeSnapshotStore) Prune(_ context.Context, _ int, _ *laredo.TableIdentifier) error {
 	return nil
+}
+
+// fakeSnapshotSerializer implements SnapshotSerializer for testing.
+type fakeSnapshotSerializer struct{}
+
+func (fakeSnapshotSerializer) FormatID() string { return "fake" }
+
+func (fakeSnapshotSerializer) Write(_ laredo.TableSnapshotInfo, _ []laredo.Row, _ io.Writer) error {
+	return nil
+}
+
+func (fakeSnapshotSerializer) Read(_ io.Reader) (laredo.TableSnapshotInfo, []laredo.Row, error) {
+	return laredo.TableSnapshotInfo{}, nil, nil
 }

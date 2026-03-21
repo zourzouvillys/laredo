@@ -806,7 +806,7 @@ func (e *coreEngine) Resume(ctx context.Context, sourceID string) error {
 }
 
 //nolint:revive // Engine interface implementation.
-func (e *coreEngine) CreateSnapshot(_ context.Context, _ map[string]Value) error {
+func (e *coreEngine) CreateSnapshot(ctx context.Context, userMeta map[string]Value) error {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	if !e.started {
@@ -818,7 +818,79 @@ func (e *coreEngine) CreateSnapshot(_ context.Context, _ map[string]Value) error
 	if e.snapshotStore == nil {
 		return errors.New("no snapshot store configured")
 	}
-	// TODO: implement snapshot creation
+
+	snapshotID := fmt.Sprintf("snap-%d", time.Now().UnixNano())
+
+	e.observer.OnSnapshotStarted(snapshotID)
+	snapshotStart := time.Now()
+
+	// Pause all sources to get a consistent view.
+	for sourceID, source := range e.sources {
+		if err := source.Pause(ctx); err != nil {
+			e.observer.OnSnapshotFailed(snapshotID, ErrorInfo{Err: err, Message: fmt.Sprintf("pause source %s: %v", sourceID, err)})
+			return fmt.Errorf("pause source %s for snapshot: %w", sourceID, err)
+		}
+	}
+
+	// Export all pipeline targets.
+	allEntries := make(map[TableIdentifier][]SnapshotEntry)
+	var tableInfos []TableSnapshotInfo
+	var totalRows int64
+
+	for i := range e.pipelines {
+		p := &e.pipelines[i]
+		if p.state != PipelinePaused && p.state != PipelineStreaming {
+			continue
+		}
+
+		entries, err := p.target.ExportSnapshot(ctx)
+		if err != nil {
+			// Resume sources before returning.
+			for _, src := range e.sources {
+				_ = src.Resume(ctx)
+			}
+			e.observer.OnSnapshotFailed(snapshotID, ErrorInfo{Err: err, Message: fmt.Sprintf("export %s: %v", p.id, err)})
+			return fmt.Errorf("export snapshot for pipeline %s: %w", p.id, err)
+		}
+
+		allEntries[p.table] = append(allEntries[p.table], entries...)
+		totalRows += int64(len(entries))
+
+		tableInfos = append(tableInfos, TableSnapshotInfo{
+			Table:      p.table,
+			RowCount:   int64(len(entries)),
+			TargetType: targetTypeName(p.target),
+		})
+	}
+
+	// Build metadata.
+	metadata := SnapshotMetadata{
+		SnapshotID: snapshotID,
+		CreatedAt:  time.Now(),
+		Tables:     tableInfos,
+		UserMeta:   userMeta,
+	}
+
+	// Save through the store.
+	_, err := e.snapshotStore.Save(ctx, snapshotID, metadata, allEntries)
+	if err != nil {
+		// Resume sources before returning.
+		for _, src := range e.sources {
+			_ = src.Resume(ctx)
+		}
+		e.observer.OnSnapshotFailed(snapshotID, ErrorInfo{Err: err, Message: fmt.Sprintf("save: %v", err)})
+		return fmt.Errorf("save snapshot: %w", err)
+	}
+
+	// Resume all sources.
+	for sourceID, source := range e.sources {
+		if err := source.Resume(ctx); err != nil {
+			e.observer.OnSnapshotFailed(snapshotID, ErrorInfo{Err: err, Message: fmt.Sprintf("resume source %s: %v", sourceID, err)})
+		}
+	}
+
+	e.observer.OnSnapshotCompleted(snapshotID, len(tableInfos), totalRows, 0, time.Since(snapshotStart))
+
 	return nil
 }
 
