@@ -289,14 +289,14 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 5.3 S3 Store (`snapshot/s3/`)
 
-- [ ] S3 key structure: `{prefix}/{snapshot_id}/{table}.jsonl`
-- [ ] Metadata object: `{prefix}/{snapshot_id}/metadata.json`
-- [ ] `Save` — multipart upload for large tables
-- [ ] `Load` — streaming GetObject
-- [ ] `List` — ListObjectsV2 with prefix filtering
-- [ ] `Delete` — delete all objects under snapshot prefix
-- [ ] `Prune`
-- [ ] Configurable: bucket, prefix, region, credentials
+- [x] S3 key structure: `{prefix}/{snapshot_id}/{table}.jsonl`
+- [x] Metadata object: `{prefix}/{snapshot_id}/metadata.json`
+- [x] `Save` — PutObject per table
+- [x] `Load` — GetObject + JSONL parsing
+- [x] `List` — ListObjectsV2 with prefix/delimiter
+- [x] `Delete` — delete all objects under snapshot prefix
+- [x] `Prune` — keep N most recent
+- [x] Configurable: bucket, prefix, WithClient
 
 ### 5.4 Snapshot Scheduler (in engine)
 
