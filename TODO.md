@@ -451,7 +451,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `laredo dead-letters <pipeline_id>` — list dead letters
 - [ ] `laredo dead-letters replay <pipeline_id>`
 - [x] `laredo dead-letters purge <pipeline_id>`
-- [ ] `laredo replay <snapshot_id> [--pipeline <id>] [--speed full|realtime|Nx]`
+- [x] `laredo replay <snapshot_id> [--pipeline <id>] [--speed full|realtime|Nx]`
 - [x] `laredo ready [--pipeline <id>]` — exit code 0 if ready, 1 if not
 - [ ] `laredo fanout status <schema.table>` — replication fan-out status
 - [ ] `laredo fanout clients <schema.table>` — connected clients

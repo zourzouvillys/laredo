@@ -64,6 +64,8 @@ func main() {
 		resumeCmd(args)
 	case "source":
 		sourceCmd(args)
+	case "replay":
+		replayCmd(args)
 	case "dead-letters":
 		deadLettersCmd(args)
 	case "help", "--help", "-h":
@@ -98,6 +100,7 @@ Commands:
   query list         List rows (paginated)
   query lookup       Lookup by index values
   source             Show source details
+  replay             Replay a snapshot into targets
   dead-letters       List dead letters for a pipeline
   dead-letters purge Purge dead letters
   version            Print version
@@ -763,6 +766,69 @@ func sourceCmd(args []string) {
 			fmt.Printf("  Lag:      %d bytes\n", s.GetLagBytes())
 		}
 		fmt.Println()
+	}
+}
+
+// --- replay ---
+
+func replayCmd(args []string) {
+	fs := flag.NewFlagSet("replay", flag.ExitOnError)
+	speed := fs.String("speed", "full", "replay speed (full, realtime)")
+	pipeline := fs.String("pipeline", "", "target pipeline ID")
+	parseGlobalFlags(fs, args)
+
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: laredo replay <snapshot-id> [--speed full|realtime] [--pipeline <id>] [tables...]")
+		os.Exit(1)
+	}
+
+	snapshotID := remaining[0]
+	tables := remaining[1:]
+
+	resp, err := oamClient().StartReplay(ctx(), connect.NewRequest(&v1.StartReplayRequest{
+		SnapshotId:       snapshotID,
+		TargetPipelineId: *pipeline,
+		Speed:            *speed,
+		Tables:           tables,
+	}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !resp.Msg.GetAccepted() {
+		fmt.Fprintf(os.Stderr, "replay not accepted: %s\n", resp.Msg.GetMessage())
+		os.Exit(1)
+	}
+
+	replayID := resp.Msg.GetReplayId()
+	fmt.Printf("replay started: %s\n", replayID)
+
+	// Poll for completion.
+	for {
+		time.Sleep(500 * time.Millisecond)
+		statusResp, err := oamClient().GetReplayStatus(ctx(), connect.NewRequest(&v1.GetReplayStatusRequest{
+			ReplayId: replayID,
+		}))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error checking status: %v\n", err)
+			os.Exit(1)
+		}
+
+		state := statusResp.Msg.GetState()
+		switch state {
+		case "completed":
+			fmt.Printf("replay completed: %d rows in %s\n",
+				statusResp.Msg.GetRowsReplayed(),
+				statusResp.Msg.GetElapsed().AsDuration())
+			return
+		case "error":
+			fmt.Fprintln(os.Stderr, "replay failed")
+			os.Exit(1)
+		default:
+			// Still running — continue polling.
+		}
 	}
 }
 
