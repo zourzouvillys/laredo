@@ -61,6 +61,7 @@ type engineConfig struct {
 	snapshotSerializer SnapshotSerializer
 	snapshotSchedule   time.Duration
 	snapshotOnShutdown bool
+	snapshotRetention  int // keep N most recent snapshots; 0 = no pruning
 	shutdownTimeout    time.Duration
 	deadLetterStore    DeadLetterStore
 }
@@ -179,6 +180,14 @@ func WithSnapshotSchedule(d time.Duration) Option {
 	}
 }
 
+// WithSnapshotRetention sets the number of snapshots to retain. After each
+// snapshot, older snapshots beyond this count are pruned. Zero means no pruning.
+func WithSnapshotRetention(keep int) Option {
+	return func(c *engineConfig) {
+		c.snapshotRetention = keep
+	}
+}
+
 // WithSnapshotOnShutdown enables taking a snapshot on shutdown.
 func WithSnapshotOnShutdown(enabled bool) Option {
 	return func(c *engineConfig) {
@@ -259,6 +268,7 @@ func NewEngine(opts ...Option) (Engine, []error) {
 		snapshotSerializer: cfg.snapshotSerializer,
 		snapshotSchedule:   cfg.snapshotSchedule,
 		snapshotOnShutdown: cfg.snapshotOnShutdown,
+		snapshotRetention:  cfg.snapshotRetention,
 		shutdownTimeout:    cfg.shutdownTimeout,
 		deadLetterStore:    cfg.deadLetterStore,
 	}, nil
@@ -375,6 +385,7 @@ type coreEngine struct {
 	snapshotSerializer SnapshotSerializer
 	snapshotSchedule   time.Duration
 	snapshotOnShutdown bool
+	snapshotRetention  int
 	shutdownTimeout    time.Duration
 	deadLetterStore    DeadLetterStore
 
@@ -410,10 +421,35 @@ func (e *coreEngine) Start(ctx context.Context) error {
 		go e.runSource(runCtx, sourceID, pipelineIdxs)
 	}
 
+	// Start periodic snapshot goroutine if configured.
+	if e.snapshotSchedule > 0 && e.snapshotStore != nil {
+		e.wg.Add(1)
+		go e.runPeriodicSnapshots(runCtx)
+	}
+
 	return nil
 }
 
 // groupPipelinesBySource returns a map from source ID to pipeline indices.
+// runPeriodicSnapshots takes snapshots at the configured interval.
+func (e *coreEngine) runPeriodicSnapshots(ctx context.Context) {
+	defer e.wg.Done()
+
+	ticker := time.NewTicker(e.snapshotSchedule)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := e.doSnapshot(ctx, map[string]Value{"trigger": "scheduled"}); err != nil {
+				e.observer.OnSnapshotFailed("scheduled", ErrorInfo{Err: err, Message: fmt.Sprintf("periodic snapshot: %v", err)})
+			}
+		}
+	}
+}
+
 func (e *coreEngine) groupPipelinesBySource() map[string][]int {
 	groups := make(map[string][]int)
 	for i := range e.pipelines {
@@ -1227,6 +1263,11 @@ func (e *coreEngine) doSnapshot(ctx context.Context, userMeta map[string]Value) 
 	}
 
 	e.observer.OnSnapshotCompleted(snapshotID, len(tableInfos), totalRows, 0, time.Since(snapshotStart))
+
+	// Enforce retention policy.
+	if e.snapshotRetention > 0 {
+		_ = e.snapshotStore.Prune(ctx, e.snapshotRetention, nil)
+	}
 
 	return nil
 }

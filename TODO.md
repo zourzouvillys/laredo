@@ -299,11 +299,11 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 5.4 Snapshot Scheduler (in engine)
 
-- [ ] Periodic snapshots on configurable interval
-- [ ] On-demand via `Engine.CreateSnapshot()` or gRPC
-- [ ] Snapshot-on-shutdown
-- [ ] Snapshot creation flow: pause sources → record positions → export targets → write through serializer to store → write metadata → resume sources
-- [ ] Retention enforcement after each snapshot
+- [x] Periodic snapshots on configurable interval (`WithSnapshotSchedule`)
+- [x] On-demand via `Engine.CreateSnapshot()`
+- [x] Snapshot-on-shutdown
+- [x] Snapshot creation flow: pause sources → export targets → write to store → resume sources
+- [x] Retention enforcement after each snapshot (`WithSnapshotRetention`)
 
 ---
 
@@ -311,16 +311,16 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 6.1 Built-in Filters (`filter/`)
 
-- [ ] `FieldEquals` — match rows where field equals a value *(done in scaffolding)*
-- [ ] `FieldPrefix` — match rows where string field starts with prefix *(done in scaffolding)*
-- [ ] `FieldRegex` — match rows where field matches regex *(done in scaffolding)*
+- [x] `FieldEquals` — match rows where field equals a value
+- [x] `FieldPrefix` — match rows where string field starts with prefix
+- [x] `FieldRegex` — match rows where field matches regex
 - [ ] Config-driven construction from HOCON `type = field-equals` etc.
 
 ### 6.2 Built-in Transforms (`transform/`)
 
-- [ ] `DropFields` — remove specified fields *(done in scaffolding)*
-- [ ] `RenameFields` — rename fields *(done in scaffolding)*
-- [ ] `AddTimestamp` — add a field with current timestamp *(done in scaffolding)*
+- [x] `DropFields` — remove specified fields
+- [x] `RenameFields` — rename fields
+- [x] `AddTimestamp` — add a field with current timestamp
 - [ ] Config-driven construction from HOCON `type = drop-fields` etc.
 
 ### 6.3 Dead Letter Store (`deadletter/`)
