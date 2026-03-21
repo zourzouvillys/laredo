@@ -345,6 +345,31 @@ func (s *Source) State() laredo.SourceState {
 	return s.state
 }
 
+// ResetSource drops and recreates the replication slot and optionally the
+// publication. This is a destructive operation — the next startup will
+// perform a full baseline.
+func (s *Source) ResetSource(ctx context.Context, dropPublication bool) error {
+	// Drop the replication slot.
+	if s.repl.conn != nil {
+		if err := s.repl.dropSlot(ctx, s.cfg.slotName); err != nil {
+			return fmt.Errorf("drop slot %q: %w", s.cfg.slotName, err)
+		}
+	}
+
+	// Drop publication if requested.
+	if dropPublication && s.conn.queryConn != nil {
+		pubName := s.cfg.slotName + "_pub"
+		if s.cfg.publication.Name != "" {
+			pubName = s.cfg.publication.Name
+		}
+		_, _ = s.conn.queryConn.Exec(ctx, fmt.Sprintf("DROP PUBLICATION IF EXISTS %s", pgQuoteIdent(pubName)))
+	}
+
+	s.slotExisted = false
+	s.slotLSN = 0
+	return nil
+}
+
 //nolint:revive // implements SyncSource.
 func (s *Source) Close(ctx context.Context) error {
 	s.setState(laredo.SourceClosed)

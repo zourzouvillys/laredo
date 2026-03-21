@@ -67,6 +67,11 @@ func (rm *replicationManager) createSlot(ctx context.Context, slotName string, t
 	return LSN(lsn), nil
 }
 
+// dropSlot drops a replication slot.
+func (rm *replicationManager) dropSlot(ctx context.Context, slotName string) error {
+	return pglogrepl.DropReplicationSlot(ctx, rm.conn, slotName, pglogrepl.DropReplicationSlotOptions{})
+}
+
 // startStreaming begins logical replication from the given LSN.
 // It decodes pgoutput messages and delivers them as ChangeEvents via the handler.
 // Blocks until the context is cancelled or an error occurs.

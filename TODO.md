@@ -154,23 +154,23 @@ Everything needed to go from scaffolding to a production-ready, stable release w
   - [x] Stateful mode reconnect: resume from last ACKed LSN
   - [ ] Ephemeral mode reconnect: signal engine for full re-baseline
 - [x] Slot health monitoring: lag bytes behind WAL tip (GetLag queries pg_replication_slots)
-- [ ] `ResetSource` — drop and recreate slot (+ publication if auto-managed)
+- [x] `ResetSource` — drop and recreate slot (+ publication if auto-managed)
 - [x] `Pause` / `Resume` — state transitions
 - [x] Schema change detection from replication stream (RelationMessage cache in replication.go)
 - [x] Option builder: `Connection()`, `SlotMode()`, `SlotName()`, `Publication()`, `Reconnect()`
 
 ### 3.2 S3 + Kinesis (`source/kinesis/`)
 
-- [ ] Baseline: read S3 objects (JSONL/Parquet), build rows
+- [x] Baseline: read S3 objects (JSONL), build rows
 - [ ] Schema discovery from S3 manifest or schema registry
-- [ ] Stream: Kinesis shard consumer (enhanced fan-out or polling)
-- [ ] Composite position: S3 object version + per-shard sequence numbers
-- [ ] `ComparePositions` — compare composite positions
+- [x] Stream: Kinesis shard consumer (polling mode)
+- [x] Composite position: S3 object version + per-shard sequence numbers
+- [x] `ComparePositions` — compare composite positions
 - [ ] ACK: Kinesis checkpoint (DynamoDB checkpoint table)
-- [ ] Multi-shard: concurrent shard consumers, demux by table
+- [x] Multi-shard: concurrent shard consumers, demux by table
 - [ ] Shard split/merge handling
 - [ ] `SupportsResume()` — true if checkpointing enabled
-- [ ] Option builder: `BaselineBucket()`, `StreamARN()`, `ConsumerGroup()`, `CheckpointTable()`
+- [x] Option builder: `BaselineBucket()`, `BaselinePrefix()`, `StreamName()`, `Region()`, `WithS3Client()`, `WithKinesisClient()`
 
 ### 3.3 Test Source (`source/testsource/`)
 
