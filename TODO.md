@@ -276,15 +276,15 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 5.2 Local Disk Store (`snapshot/local/`)
 
-- [ ] Directory structure: `{base_path}/{snapshot_id}/{table_schema}.{table_name}.jsonl`
-- [ ] Metadata file: `{snapshot_id}/metadata.json`
-- [ ] `Save` — create directory, write metadata + per-table data files
-- [ ] `Load` — read metadata, stream per-table data files
-- [ ] `Describe` — read metadata only
-- [ ] `List` — scan directory, filter, sort by creation time
-- [ ] `Delete` — remove snapshot directory
-- [ ] `Prune` — delete all but N most recent (optionally per-table)
-- [ ] Atomic writes (write to temp, rename)
+- [x] Directory structure: `{base_path}/{snapshot_id}/{table_schema}.{table_name}.jsonl`
+- [x] Metadata file: `{snapshot_id}/metadata.json`
+- [x] `Save` — create temp directory, write metadata + per-table JSONL files, atomic rename
+- [x] `Load` — read metadata, stream per-table JSONL files via serializer
+- [x] `Describe` — read metadata only, calculate total size
+- [x] `List` — scan directory, filter by table, sort by creation time (newest first)
+- [x] `Delete` — remove snapshot directory
+- [x] `Prune` — delete all but N most recent (optionally per-table)
+- [x] Atomic writes (write to `.tmp-{id}` dir, rename to final)
 
 ### 5.3 S3 Store (`snapshot/s3/`)
 
