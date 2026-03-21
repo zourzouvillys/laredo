@@ -327,7 +327,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 ### 6.3 Dead Letter Store (`deadletter/`)
 
 - [x] In-memory dead letter store (for testing) — `deadletter.NewMemoryStore()`
-- [ ] S3 dead letter store
+- [x] S3 dead letter store
 - [x] Local disk dead letter store — `deadletter.NewLocalStore(basePath)`
 - [x] `Write` — append JSONL entries to `{pipelineID}.jsonl`
 - [x] `Read` — read entries with optional limit
