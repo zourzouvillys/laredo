@@ -338,16 +338,16 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ## 7. Config (`config/`)
 
-- [ ] HOCON parser integration (choose library: e.g. `github.com/gurkankaymak/hocon`)
-- [ ] Parse full config reference (spec §20): sources, tables, pipelines, targets, buffer, error handling, TTL, validation, snapshot, gRPC, health, observability
-- [ ] Config-to-engine-options mapper: translate parsed config into `laredo.Option` calls
-- [ ] Source factory: map `type = postgresql` → `pg.New()`, `type = s3-kinesis` → `kinesis.New()`
-- [ ] Target factory: map `type = indexed-memory`, `compiled-memory`, `http-sync`, `replication-fanout`
-- [ ] Filter/transform factory: map `type = field-equals`, `drop-fields`, etc.
+- [x] HOCON parser integration (`github.com/gurkankaymak/hocon`)
+- [x] Parse config reference: sources, tables, pipelines, targets, buffer, error handling, TTL, snapshot, gRPC
+- [x] Config-to-engine-options mapper: translate parsed config into `laredo.Option` calls
+- [x] Source factory: map `type = postgresql` → `pg.New()`
+- [x] Target factory: map `type = indexed-memory`, `compiled-memory`, `http-sync`
+- [x] Filter/transform factory: map `type = field-equals`, `field-prefix`, `drop-fields`, `add-timestamp`
 - [ ] Environment variable override: `SOURCES_PG_MAIN_CONNECTION` / `LAREDO_SOURCES_PG_MAIN_CONNECTION`
 - [ ] Config directory merge: load `conf.d/*.conf` in alphabetical order
 - [ ] `--set key=value` CLI flag override
-- [ ] Config validation: required fields, type checking, cross-references (source IDs in table config must exist)
+- [x] Config validation: required fields, type checking, cross-references (source IDs in table config must exist)
 - [ ] Config dump command for debugging
 - [ ] Sensitive value masking in dumps/logs (connection strings, auth headers)
 
