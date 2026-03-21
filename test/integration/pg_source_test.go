@@ -4,8 +4,11 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/zourzouvillys/laredo"
 	"github.com/zourzouvillys/laredo/source/pg"
@@ -208,6 +211,114 @@ func TestPGSource_EngineIntegration(t *testing.T) {
 	if obs.EventCount("SourceConnected") != 1 {
 		t.Errorf("expected 1 SourceConnected, got %d", obs.EventCount("SourceConnected"))
 	}
+
+	if err := eng.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+func TestPGSource_Streaming(t *testing.T) {
+	// Full end-to-end: baseline + streaming changes via logical replication.
+	pgc := testutil.NewTestPostgres(t)
+	pgc.CreateTestTable(t)
+	pgc.InsertTestRows(t, 2) // 2 baseline rows
+
+	target := memory.NewIndexedTarget(memory.LookupFields("name"))
+	obs := &testutil.TestObserver{}
+
+	// Use a named slot with a publication.
+	src := pg.New(
+		pg.Connection(pgc.ConnStr),
+		pg.SlotName("laredo_test_slot"),
+		pg.Publication(pg.PublicationConfig{Name: "laredo_test_pub", Create: true}),
+	)
+
+	eng, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", laredo.Table("public", "test_users"), target),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("engine errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := eng.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// Wait for baseline to complete.
+	if !eng.AwaitReady(30 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	if target.Count() != 2 {
+		t.Fatalf("expected 2 baseline rows, got %d", target.Count())
+	}
+	t.Logf("baseline complete: %d rows", target.Count())
+
+	// Now insert a new row via a separate connection (simulating app writes).
+	conn, err := pgx.Connect(ctx, pgc.ConnStr)
+	if err != nil {
+		t.Fatalf("connect for writes: %v", err)
+	}
+	defer conn.Close(ctx)
+
+	_, err = conn.Exec(ctx, "INSERT INTO test_users (name, email) VALUES ($1, $2)", "streamed-user", "streamed@example.com")
+	if err != nil {
+		t.Fatalf("insert streamed row: %v", err)
+	}
+	t.Log("inserted streamed row")
+
+	// Wait for the streaming change to arrive at the target.
+	testutil.AssertEventually(t, 15*time.Second, func() bool {
+		return target.Count() == 3
+	}, "expected 3 rows after streaming insert")
+
+	// Verify the streamed row.
+	row, ok := target.Lookup("streamed-user")
+	if !ok {
+		t.Fatal("expected to find streamed-user via lookup")
+	}
+	t.Logf("streamed row: %v", row)
+
+	// Insert another row and verify.
+	_, err = conn.Exec(ctx, "INSERT INTO test_users (name, email) VALUES ($1, $2)", "user-4", "user4@example.com")
+	if err != nil {
+		t.Fatalf("insert second streamed row: %v", err)
+	}
+
+	testutil.AssertEventually(t, 15*time.Second, func() bool {
+		return target.Count() == 4
+	}, "expected 4 rows after second streaming insert")
+
+	// Update a row.
+	_, err = conn.Exec(ctx, "UPDATE test_users SET email = $1 WHERE name = $2", "updated@example.com", "user-1")
+	if err != nil {
+		t.Fatalf("update row: %v", err)
+	}
+
+	testutil.AssertEventually(t, 15*time.Second, func() bool {
+		r, ok := target.Lookup("user-1")
+		return ok && fmt.Sprintf("%v", r["email"]) == "updated@example.com"
+	}, "expected user-1 email to be updated")
+
+	// Delete a row.
+	_, err = conn.Exec(ctx, "DELETE FROM test_users WHERE name = $1", "user-4")
+	if err != nil {
+		t.Fatalf("delete row: %v", err)
+	}
+
+	testutil.AssertEventually(t, 15*time.Second, func() bool {
+		return target.Count() == 3
+	}, "expected 3 rows after delete")
+
+	// Verify observer received streaming events.
+	testutil.AssertEventually(t, 5*time.Second, func() bool {
+		return obs.EventCount("ChangeApplied") >= 3
+	}, "expected at least 3 ChangeApplied events (insert + update + delete)")
+
+	t.Logf("streaming test complete: %d ChangeApplied events", obs.EventCount("ChangeApplied"))
 
 	if err := eng.Stop(ctx); err != nil {
 		t.Fatalf("stop: %v", err)

@@ -8,6 +8,7 @@ package pg
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/zourzouvillys/laredo"
@@ -17,7 +18,10 @@ import (
 type Source struct {
 	cfg     sourceConfig
 	conn    connManager
+	repl    replicationManager
 	schemas map[laredo.TableIdentifier][]laredo.ColumnDefinition
+	tables  []laredo.TableIdentifier
+	slotLSN LSN // LSN from slot creation
 
 	mu    sync.Mutex
 	state laredo.SourceState
@@ -32,6 +36,7 @@ func New(opts ...Option) *Source {
 	return &Source{
 		cfg:   cfg,
 		conn:  connManager{cfg: cfg},
+		repl:  replicationManager{cfg: cfg},
 		state: laredo.SourceClosed,
 	}
 }
@@ -65,7 +70,56 @@ func (s *Source) Init(ctx context.Context, config laredo.SourceConfig) (map[lare
 	}
 
 	s.schemas = schemas
+	s.tables = config.Tables
+
+	// Set up the replication connection and slot for streaming.
+	if err := s.repl.connect(ctx); err != nil {
+		s.setState(laredo.SourceError)
+		return nil, fmt.Errorf("pg source: %w", err)
+	}
+
+	// Determine publication name.
+	pubName := s.cfg.slotName + "_pub"
+	if s.cfg.publication.Name != "" {
+		pubName = s.cfg.publication.Name
+	}
+
+	// Create publication if configured.
+	if s.cfg.publication.Create {
+		if err := s.ensurePublication(ctx, pubName, config.Tables); err != nil {
+			s.setState(laredo.SourceError)
+			return nil, fmt.Errorf("pg source: %w", err)
+		}
+	}
+
+	// Create replication slot.
+	temporary := s.cfg.slotMode == SlotEphemeral
+	slotLSN, err := s.repl.createSlot(ctx, s.cfg.slotName, temporary)
+	if err != nil {
+		s.setState(laredo.SourceError)
+		return nil, fmt.Errorf("pg source: %w", err)
+	}
+	s.slotLSN = slotLSN
+
 	return schemas, nil
+}
+
+// ensurePublication creates or updates the publication for the configured tables.
+func (s *Source) ensurePublication(ctx context.Context, pubName string, tables []laredo.TableIdentifier) error {
+	conn := s.conn.queryConn
+	// Drop existing publication (ignore error if not exists).
+	_, _ = conn.Exec(ctx, fmt.Sprintf("DROP PUBLICATION IF EXISTS %s", pgQuoteIdent(pubName)))
+
+	// Build table list.
+	tableList := make([]string, 0, len(tables))
+	for _, t := range tables {
+		tableList = append(tableList, pgQuoteIdent(t.Schema)+"."+pgQuoteIdent(t.Table))
+	}
+
+	query := fmt.Sprintf("CREATE PUBLICATION %s FOR TABLE %s",
+		pgQuoteIdent(pubName), strings.Join(tableList, ", "))
+	_, err := conn.Exec(ctx, query)
+	return err
 }
 
 //nolint:revive // implements SyncSource.
@@ -86,13 +140,38 @@ func (s *Source) Baseline(ctx context.Context, tables []laredo.TableIdentifier, 
 	return lsn, nil
 }
 
+// Stream begins streaming changes from the given position using logical replication.
+//
 //nolint:revive // implements SyncSource.
-func (s *Source) Stream(_ context.Context, _ laredo.Position, _ laredo.ChangeHandler) error {
-	return fmt.Errorf("pg source: streaming not yet implemented")
+func (s *Source) Stream(ctx context.Context, from laredo.Position, handler laredo.ChangeHandler) error {
+	s.setState(laredo.SourceStreaming)
+
+	startLSN := s.slotLSN
+	if from != nil {
+		if lsn, ok := from.(LSN); ok {
+			startLSN = lsn
+		}
+	}
+
+	pubName := s.cfg.slotName + "_pub"
+	if s.cfg.publication.Name != "" {
+		pubName = s.cfg.publication.Name
+	}
+
+	err := s.repl.startStreaming(ctx, s.cfg.slotName, pubName, startLSN, s.tables, handler)
+	if err != nil && ctx.Err() == nil {
+		s.setState(laredo.SourceError)
+	}
+	return err
 }
 
+// Ack confirms that changes up to this position have been durably processed.
+//
 //nolint:revive // implements SyncSource.
-func (s *Source) Ack(_ context.Context, _ laredo.Position) error {
+func (s *Source) Ack(ctx context.Context, position laredo.Position) error {
+	if lsn, ok := position.(LSN); ok && s.repl.conn != nil {
+		return s.repl.sendStandbyStatus(ctx, lsn)
+	}
 	return nil
 }
 
@@ -154,6 +233,7 @@ func (s *Source) State() laredo.SourceState {
 //nolint:revive // implements SyncSource.
 func (s *Source) Close(ctx context.Context) error {
 	s.setState(laredo.SourceClosed)
+	_ = s.repl.close(ctx)
 	return s.conn.close(ctx)
 }
 

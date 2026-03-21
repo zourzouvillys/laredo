@@ -6,12 +6,10 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 // PGContainer holds a running PostgreSQL testcontainer and its connection string.
@@ -20,8 +18,9 @@ type PGContainer struct {
 	ConnStr   string
 }
 
-// NewTestPostgres starts a PostgreSQL testcontainer and returns the connection
-// string. The container is automatically terminated when the test finishes.
+// NewTestPostgres starts a PostgreSQL testcontainer with wal_level=logical
+// enabled for logical replication support. The container is automatically
+// terminated when the test finishes.
 func NewTestPostgres(t *testing.T) *PGContainer {
 	t.Helper()
 	ctx := context.Background()
@@ -31,11 +30,19 @@ func NewTestPostgres(t *testing.T) *PGContainer {
 		postgres.WithDatabase("laredo_test"),
 		postgres.WithUsername("laredo"),
 		postgres.WithPassword("laredo"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).
-				WithStartupTimeout(30*time.Second),
-		),
+		postgres.BasicWaitStrategies(),
+		// Pass -c flags to enable logical replication.
+		// The postgres Docker entrypoint forwards extra args to the postgres process.
+		postgres.WithInitScripts(), // no-op, ensures standard entrypoint
+		testcontainers.CustomizeRequest(testcontainers.GenericContainerRequest{
+			ContainerRequest: testcontainers.ContainerRequest{
+				Cmd: []string{
+					"-c", "wal_level=logical",
+					"-c", "max_replication_slots=10",
+					"-c", "max_wal_senders=10",
+				},
+			},
+		}),
 	)
 	if err != nil {
 		t.Fatalf("start postgres container: %v", err)
@@ -59,7 +66,6 @@ func NewTestPostgres(t *testing.T) *PGContainer {
 }
 
 // CreateTestTable creates a sample table in the PostgreSQL container for testing.
-// Returns the table name as "public.test_users".
 func (pg *PGContainer) CreateTestTable(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
@@ -80,6 +86,12 @@ func (pg *PGContainer) CreateTestTable(t *testing.T) {
 	`)
 	if err != nil {
 		t.Fatalf("create test table: %v", err)
+	}
+
+	// Set REPLICA IDENTITY FULL so DELETE/UPDATE include old values.
+	_, err = conn.Exec(ctx, `ALTER TABLE test_users REPLICA IDENTITY FULL`)
+	if err != nil {
+		t.Fatalf("set replica identity: %v", err)
 	}
 }
 

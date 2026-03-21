@@ -135,20 +135,20 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 ### 3.1 PostgreSQL (`source/pg/`)
 
 - [x] Connection management — query connection with schema discovery (replication connection deferred to streaming)
-- [ ] `pgoutput` logical decoding (built-in plugin, no extensions needed)
-- [ ] Ephemeral mode: temporary replication slot, full baseline every startup
+- [x] `pgoutput` logical decoding (built-in plugin, no extensions needed)
+- [x] Ephemeral mode: temporary replication slot, full baseline every startup
 - [ ] Stateful mode: persistent named slot, resume from last ACKed LSN
-- [ ] Publication management:
+- [x] Publication management (auto-create with table list):
   - [ ] `create = false` — use existing publication, fail if not found
   - [ ] `create = true` — auto-create publication from configured tables
   - [ ] Sync publication on startup (add/remove tables, update publish operations)
   - [ ] Row filters and column lists (PostgreSQL 15+)
   - [ ] Publication naming: default `{slot_name}_pub`, configurable override
 - [x] Baseline: `REPEATABLE READ` snapshot, `SELECT *` per table, return LSN position
-- [ ] Streaming: consume `pgoutput` messages, decode into `ChangeEvent`
+- [x] Streaming: consume `pgoutput` messages, decode into `ChangeEvent`
 - [x] Position type: LSN (uint64 wrapper with string formatting `0/XXXXXXXX`)
 - [x] `ComparePositions` — LSN comparison
-- [ ] ACK — `StandbyStatusUpdate` with confirmed flush LSN
+- [x] ACK — `StandbyStatusUpdate` with confirmed flush LSN
 - [ ] Reconnect state machine: `CONNECTING → CONNECTED → STREAMING → RECONNECTING → ERROR`
   - [ ] Exponential backoff with configurable max_attempts, initial/max backoff, multiplier
   - [ ] Stateful mode reconnect: resume from last ACKed LSN
