@@ -2,6 +2,7 @@ package memory_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -17,6 +18,12 @@ const (
 	nameAlicia  = "alicia"
 	colName     = "name"
 	idxByName   = "by_name"
+
+	// Compiled target test constants.
+	compiled1Alice   = "1:alice"
+	compiled2Bob     = "2:bob"
+	compiled3Charlie = "3:charlie"
+	compiled1Alicia  = "1:alicia"
 )
 
 func initTarget(t *testing.T, target *memory.IndexedTarget) {
@@ -777,4 +784,536 @@ func sliceClone[T any](s []T) []T {
 	out := make([]T, len(s))
 	copy(out, s)
 	return out
+}
+
+// --- CompiledTarget tests ---
+
+// testCompiler is a simple compiler that produces "id:name" strings.
+func testCompiler(row laredo.Row) (any, error) {
+	return fmt.Sprintf("%v:%v", row["id"], row["name"]), nil
+}
+
+func initCompiledTarget(t *testing.T, target *memory.CompiledTarget) {
+	t.Helper()
+	err := target.OnInit(context.Background(), testutil.SampleTable(), testutil.SampleColumns())
+	if err != nil {
+		t.Fatalf("OnInit failed: %v", err)
+	}
+}
+
+func addCompiledBaselineRow(t *testing.T, target *memory.CompiledTarget, id int, name string) {
+	t.Helper()
+	row := testutil.SampleRow(id, name)
+	err := target.OnBaselineRow(context.Background(), testutil.SampleTable(), row)
+	if err != nil {
+		t.Fatalf("OnBaselineRow failed: %v", err)
+	}
+}
+
+func TestCompiledTarget_OnInit(t *testing.T) {
+	t.Run("basic init", func(t *testing.T) {
+		target := memory.NewCompiledTarget(
+			memory.Compiler(testCompiler),
+			memory.KeyFields("id"),
+		)
+		err := target.OnInit(context.Background(), testutil.SampleTable(), testutil.SampleColumns())
+		if err != nil {
+			t.Fatalf("OnInit failed: %v", err)
+		}
+	})
+
+	t.Run("invalid key field", func(t *testing.T) {
+		target := memory.NewCompiledTarget(
+			memory.Compiler(testCompiler),
+			memory.KeyFields("nonexistent"),
+		)
+		err := target.OnInit(context.Background(), testutil.SampleTable(), testutil.SampleColumns())
+		if err == nil {
+			t.Fatal("expected error for invalid key field")
+		}
+	})
+}
+
+func TestCompiledTarget_BaselineAndGet(t *testing.T) {
+	target := memory.NewCompiledTarget(
+		memory.Compiler(testCompiler),
+		memory.KeyFields("id"),
+	)
+	initCompiledTarget(t, target)
+
+	addCompiledBaselineRow(t, target, 1, nameAlice)
+	addCompiledBaselineRow(t, target, 2, nameBob)
+
+	err := target.OnBaselineComplete(context.Background(), testutil.SampleTable())
+	if err != nil {
+		t.Fatalf("OnBaselineComplete failed: %v", err)
+	}
+
+	// Get by key.
+	val, ok := target.Get(1)
+	if !ok {
+		t.Fatal("expected to find entry with id=1")
+	}
+	if val != compiled1Alice {
+		t.Fatalf("expected %s, got %v", compiled1Alice, val)
+	}
+
+	val, ok = target.Get(2)
+	if !ok {
+		t.Fatal("expected to find entry with id=2")
+	}
+	if val != compiled2Bob {
+		t.Fatalf("expected %s, got %v", compiled2Bob, val)
+	}
+
+	// Not found.
+	_, ok = target.Get(99)
+	if ok {
+		t.Fatal("expected entry with id=99 to not exist")
+	}
+}
+
+func TestCompiledTarget_Filter(t *testing.T) {
+	target := memory.NewCompiledTarget(
+		memory.Compiler(testCompiler),
+		memory.KeyFields("id"),
+		memory.CompiledFilter(func(row laredo.Row) bool {
+			// Only accept rows where name is not "bob".
+			return row.GetString(colName) != nameBob
+		}),
+	)
+	initCompiledTarget(t, target)
+
+	addCompiledBaselineRow(t, target, 1, nameAlice)
+	addCompiledBaselineRow(t, target, 2, nameBob)
+	addCompiledBaselineRow(t, target, 3, nameCharlie)
+
+	if target.Count() != 2 {
+		t.Fatalf("expected count=2 (bob filtered), got %d", target.Count())
+	}
+
+	_, ok := target.Get(1)
+	if !ok {
+		t.Fatal("expected alice to be stored")
+	}
+
+	_, ok = target.Get(2)
+	if ok {
+		t.Fatal("expected bob to be filtered out")
+	}
+
+	_, ok = target.Get(3)
+	if !ok {
+		t.Fatal("expected charlie to be stored")
+	}
+}
+
+func TestCompiledTarget_Insert(t *testing.T) {
+	target := memory.NewCompiledTarget(
+		memory.Compiler(testCompiler),
+		memory.KeyFields("id"),
+	)
+	initCompiledTarget(t, target)
+
+	addCompiledBaselineRow(t, target, 1, nameAlice)
+	_ = target.OnBaselineComplete(context.Background(), testutil.SampleTable())
+
+	// Insert a new row.
+	err := target.OnInsert(context.Background(), testutil.SampleTable(), testutil.SampleRow(2, nameBob))
+	if err != nil {
+		t.Fatalf("OnInsert failed: %v", err)
+	}
+
+	if target.Count() != 2 {
+		t.Fatalf("expected count=2, got %d", target.Count())
+	}
+
+	val, ok := target.Get(2)
+	if !ok {
+		t.Fatal("expected to find inserted entry")
+	}
+	if val != compiled2Bob {
+		t.Fatalf("expected %s, got %v", compiled2Bob, val)
+	}
+}
+
+func TestCompiledTarget_Update(t *testing.T) {
+	target := memory.NewCompiledTarget(
+		memory.Compiler(testCompiler),
+		memory.KeyFields("id"),
+	)
+	initCompiledTarget(t, target)
+
+	addCompiledBaselineRow(t, target, 1, nameAlice)
+	addCompiledBaselineRow(t, target, 2, nameBob)
+	_ = target.OnBaselineComplete(context.Background(), testutil.SampleTable())
+
+	// Update alice -> alicia.
+	identity := laredo.Row{"id": 1}
+	newRow := testutil.SampleRow(1, nameAlicia)
+	err := target.OnUpdate(context.Background(), testutil.SampleTable(), newRow, identity)
+	if err != nil {
+		t.Fatalf("OnUpdate failed: %v", err)
+	}
+
+	if target.Count() != 2 {
+		t.Fatalf("expected count=2, got %d", target.Count())
+	}
+
+	val, ok := target.Get(1)
+	if !ok {
+		t.Fatal("expected to find updated entry")
+	}
+	if val != compiled1Alicia {
+		t.Fatalf("expected %s, got %v", compiled1Alicia, val)
+	}
+}
+
+func TestCompiledTarget_UpdateFilterRemoves(t *testing.T) {
+	target := memory.NewCompiledTarget(
+		memory.Compiler(testCompiler),
+		memory.KeyFields("id"),
+		memory.CompiledFilter(func(row laredo.Row) bool {
+			return row.GetString(colName) != nameBob
+		}),
+	)
+	initCompiledTarget(t, target)
+
+	addCompiledBaselineRow(t, target, 1, nameAlice)
+	_ = target.OnBaselineComplete(context.Background(), testutil.SampleTable())
+
+	if target.Count() != 1 {
+		t.Fatalf("expected count=1, got %d", target.Count())
+	}
+
+	// Update alice -> bob (fails filter, treated as delete).
+	identity := laredo.Row{"id": 1}
+	newRow := testutil.SampleRow(1, nameBob)
+	err := target.OnUpdate(context.Background(), testutil.SampleTable(), newRow, identity)
+	if err != nil {
+		t.Fatalf("OnUpdate failed: %v", err)
+	}
+
+	if target.Count() != 0 {
+		t.Fatalf("expected count=0 after filter-remove, got %d", target.Count())
+	}
+
+	_, ok := target.Get(1)
+	if ok {
+		t.Fatal("expected entry to be removed by filter")
+	}
+}
+
+func TestCompiledTarget_Delete(t *testing.T) {
+	target := memory.NewCompiledTarget(
+		memory.Compiler(testCompiler),
+		memory.KeyFields("id"),
+	)
+	initCompiledTarget(t, target)
+
+	addCompiledBaselineRow(t, target, 1, nameAlice)
+	addCompiledBaselineRow(t, target, 2, nameBob)
+	_ = target.OnBaselineComplete(context.Background(), testutil.SampleTable())
+
+	// Delete alice.
+	err := target.OnDelete(context.Background(), testutil.SampleTable(), laredo.Row{"id": 1})
+	if err != nil {
+		t.Fatalf("OnDelete failed: %v", err)
+	}
+
+	if target.Count() != 1 {
+		t.Fatalf("expected count=1, got %d", target.Count())
+	}
+
+	_, ok := target.Get(1)
+	if ok {
+		t.Fatal("expected alice to be deleted")
+	}
+
+	// Bob still there.
+	val, ok := target.Get(2)
+	if !ok {
+		t.Fatal("expected bob to still exist")
+	}
+	if val != compiled2Bob {
+		t.Fatalf("expected %s, got %v", compiled2Bob, val)
+	}
+
+	// Delete nonexistent row: no error.
+	err = target.OnDelete(context.Background(), testutil.SampleTable(), laredo.Row{"id": 99})
+	if err != nil {
+		t.Fatalf("OnDelete of nonexistent row should not error: %v", err)
+	}
+}
+
+func TestCompiledTarget_Truncate(t *testing.T) {
+	target := memory.NewCompiledTarget(
+		memory.Compiler(testCompiler),
+		memory.KeyFields("id"),
+	)
+	initCompiledTarget(t, target)
+
+	addCompiledBaselineRow(t, target, 1, nameAlice)
+	addCompiledBaselineRow(t, target, 2, nameBob)
+	addCompiledBaselineRow(t, target, 3, nameCharlie)
+	_ = target.OnBaselineComplete(context.Background(), testutil.SampleTable())
+
+	if target.Count() != 3 {
+		t.Fatalf("expected count=3 before truncate, got %d", target.Count())
+	}
+
+	err := target.OnTruncate(context.Background(), testutil.SampleTable())
+	if err != nil {
+		t.Fatalf("OnTruncate failed: %v", err)
+	}
+
+	if target.Count() != 0 {
+		t.Fatalf("expected count=0 after truncate, got %d", target.Count())
+	}
+
+	_, ok := target.Get(1)
+	if ok {
+		t.Fatal("expected no entries after truncate")
+	}
+}
+
+func TestCompiledTarget_Count(t *testing.T) {
+	target := memory.NewCompiledTarget(
+		memory.Compiler(testCompiler),
+		memory.KeyFields("id"),
+	)
+	initCompiledTarget(t, target)
+
+	if target.Count() != 0 {
+		t.Fatalf("expected count=0 initially, got %d", target.Count())
+	}
+
+	addCompiledBaselineRow(t, target, 1, nameAlice)
+	if target.Count() != 1 {
+		t.Fatalf("expected count=1, got %d", target.Count())
+	}
+
+	addCompiledBaselineRow(t, target, 2, nameBob)
+	if target.Count() != 2 {
+		t.Fatalf("expected count=2, got %d", target.Count())
+	}
+
+	_ = target.OnDelete(context.Background(), testutil.SampleTable(), laredo.Row{"id": 1})
+	if target.Count() != 1 {
+		t.Fatalf("expected count=1 after delete, got %d", target.Count())
+	}
+
+	_ = target.OnTruncate(context.Background(), testutil.SampleTable())
+	if target.Count() != 0 {
+		t.Fatalf("expected count=0 after truncate, got %d", target.Count())
+	}
+}
+
+func TestCompiledTarget_All(t *testing.T) {
+	target := memory.NewCompiledTarget(
+		memory.Compiler(testCompiler),
+		memory.KeyFields("id"),
+	)
+	initCompiledTarget(t, target)
+
+	addCompiledBaselineRow(t, target, 1, nameAlice)
+	addCompiledBaselineRow(t, target, 2, nameBob)
+	addCompiledBaselineRow(t, target, 3, nameCharlie)
+
+	collected := make(map[string]any)
+	for k, v := range target.All() {
+		collected[k] = v
+	}
+
+	if len(collected) != 3 {
+		t.Fatalf("expected 3 entries from All(), got %d", len(collected))
+	}
+
+	// Verify we got all compiled values.
+	values := make(map[string]bool)
+	for _, v := range collected {
+		values[v.(string)] = true
+	}
+	for _, expected := range []string{compiled1Alice, compiled2Bob, compiled3Charlie} {
+		if !values[expected] {
+			t.Fatalf("expected value=%s in All() results", expected)
+		}
+	}
+}
+
+func TestCompiledTarget_Listen(t *testing.T) {
+	target := memory.NewCompiledTarget(
+		memory.Compiler(testCompiler),
+		memory.KeyFields("id"),
+	)
+	initCompiledTarget(t, target)
+
+	type notification struct {
+		old any
+		new any
+	}
+	var notifications []notification
+
+	unsub := target.Listen(func(old, new any) {
+		notifications = append(notifications, notification{old: old, new: new})
+	})
+
+	// Insert.
+	addCompiledBaselineRow(t, target, 1, nameAlice)
+	if len(notifications) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(notifications))
+	}
+	if notifications[0].old != nil {
+		t.Fatal("expected old=nil for insert")
+	}
+	if notifications[0].new != compiled1Alice {
+		t.Fatalf("expected new=%s, got %v", compiled1Alice, notifications[0].new)
+	}
+
+	// Update.
+	_ = target.OnUpdate(context.Background(), testutil.SampleTable(), testutil.SampleRow(1, nameAlicia), laredo.Row{"id": 1})
+	if len(notifications) != 2 {
+		t.Fatalf("expected 2 notifications, got %d", len(notifications))
+	}
+	if notifications[1].old != compiled1Alice {
+		t.Fatalf("expected old=%s, got %v", compiled1Alice, notifications[1].old)
+	}
+	if notifications[1].new != compiled1Alicia {
+		t.Fatalf("expected new=%s, got %v", compiled1Alicia, notifications[1].new)
+	}
+
+	// Delete.
+	_ = target.OnDelete(context.Background(), testutil.SampleTable(), laredo.Row{"id": 1})
+	if len(notifications) != 3 {
+		t.Fatalf("expected 3 notifications, got %d", len(notifications))
+	}
+	if notifications[2].old != compiled1Alicia {
+		t.Fatalf("expected old=%s, got %v", compiled1Alicia, notifications[2].old)
+	}
+	if notifications[2].new != nil {
+		t.Fatal("expected new=nil for delete")
+	}
+
+	// Truncate.
+	addCompiledBaselineRow(t, target, 2, nameBob)
+	_ = target.OnTruncate(context.Background(), testutil.SampleTable())
+	if len(notifications) != 5 { // +1 for baseline insert, +1 for truncate
+		t.Fatalf("expected 5 notifications, got %d", len(notifications))
+	}
+	// Truncate notification: both nil.
+	if notifications[4].old != nil || notifications[4].new != nil {
+		t.Fatal("expected both old and new to be nil for truncate")
+	}
+
+	// Unsubscribe.
+	unsub()
+	addCompiledBaselineRow(t, target, 3, nameCharlie)
+	if len(notifications) != 5 {
+		t.Fatalf("expected still 5 notifications after unsubscribe, got %d", len(notifications))
+	}
+}
+
+func TestCompiledTarget_ExportRestoreSnapshot(t *testing.T) {
+	target := memory.NewCompiledTarget(
+		memory.Compiler(testCompiler),
+		memory.KeyFields("id"),
+	)
+	initCompiledTarget(t, target)
+
+	addCompiledBaselineRow(t, target, 1, nameAlice)
+	addCompiledBaselineRow(t, target, 2, nameBob)
+	addCompiledBaselineRow(t, target, 3, nameCharlie)
+
+	// Export.
+	entries, err := target.ExportSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("ExportSnapshot failed: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(entries))
+	}
+
+	// Verify SupportsConsistentSnapshot.
+	if !target.SupportsConsistentSnapshot() {
+		t.Fatal("expected SupportsConsistentSnapshot=true")
+	}
+
+	// Clear and restore.
+	err = target.RestoreSnapshot(context.Background(), laredo.TableSnapshotInfo{}, entries)
+	if err != nil {
+		t.Fatalf("RestoreSnapshot failed: %v", err)
+	}
+
+	// Verify data integrity.
+	if target.Count() != 3 {
+		t.Fatalf("expected count=3 after restore, got %d", target.Count())
+	}
+
+	val, ok := target.Get(1)
+	if !ok {
+		t.Fatal("expected entry with id=1 after restore")
+	}
+	if val != compiled1Alice {
+		t.Fatalf("expected %s, got %v", compiled1Alice, val)
+	}
+
+	val, ok = target.Get(2)
+	if !ok {
+		t.Fatal("expected entry with id=2 after restore")
+	}
+	if val != compiled2Bob {
+		t.Fatalf("expected %s, got %v", compiled2Bob, val)
+	}
+
+	val, ok = target.Get(3)
+	if !ok {
+		t.Fatal("expected entry with id=3 after restore")
+	}
+	if val != compiled3Charlie {
+		t.Fatalf("expected %s, got %v", compiled3Charlie, val)
+	}
+}
+
+func TestCompiledTarget_CompilerError(t *testing.T) {
+	callCount := 0
+	target := memory.NewCompiledTarget(
+		memory.Compiler(func(row laredo.Row) (any, error) {
+			callCount++
+			if row.GetString(colName) == nameBob {
+				return nil, fmt.Errorf("compile error for bob")
+			}
+			return fmt.Sprintf("%v:%v", row["id"], row["name"]), nil
+		}),
+		memory.KeyFields("id"),
+	)
+	initCompiledTarget(t, target)
+
+	addCompiledBaselineRow(t, target, 1, nameAlice)
+	addCompiledBaselineRow(t, target, 2, nameBob) // should be skipped
+	addCompiledBaselineRow(t, target, 3, nameCharlie)
+
+	// Compiler was called for all 3 rows.
+	if callCount != 3 {
+		t.Fatalf("expected compiler called 3 times, got %d", callCount)
+	}
+
+	// Only 2 rows stored (bob was skipped).
+	if target.Count() != 2 {
+		t.Fatalf("expected count=2 (bob skipped), got %d", target.Count())
+	}
+
+	_, ok := target.Get(1)
+	if !ok {
+		t.Fatal("expected alice to be stored")
+	}
+
+	_, ok = target.Get(2)
+	if ok {
+		t.Fatal("expected bob to be skipped due to compiler error")
+	}
+
+	_, ok = target.Get(3)
+	if !ok {
+		t.Fatal("expected charlie to be stored")
+	}
 }

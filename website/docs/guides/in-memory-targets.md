@@ -91,11 +91,20 @@ target := memory.NewCompiledTarget(
 ### Query API
 
 ```go
-obj := target.Get("inst_abc", "rulesets/default")
-allObjects := target.All()
+// Lookup by key fields
+obj, ok := target.Get("inst_abc", "rulesets/default")
 
-target.Listen(func(old, new any) {
-    // typed domain objects
+// All compiled objects (returns iter.Seq2[string, any])
+for key, obj := range target.All() {
+    fmt.Printf("pk=%s: %v\n", key, obj)
+}
+
+// Row count
+count := target.Count()
+
+// Subscribe to changes (old/new are compiled domain objects)
+unsubscribe := target.Listen(func(old, new any) {
+    // old is nil on insert, new is nil on delete
 })
 ```
 

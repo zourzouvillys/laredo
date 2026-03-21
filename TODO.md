@@ -200,19 +200,19 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 4.2 Compiled In-Memory (`target/memory/` — `CompiledTarget`)
 
-- [ ] Pluggable compiler function: `func(Row) (any, error)`
-- [ ] Key extractor from configured `key_fields`
-- [ ] Optional filter predicate
-- [ ] `ConcurrentHashMap` (sync.Map or sharded map) of compiled objects keyed by composite key
-- [ ] `OnBaselineRow` / `OnInsert` — filter → compile → insert, notify listeners `(nil, compiled)`
-- [ ] `OnUpdate` — filter → compile → replace, notify listeners `(oldCompiled, newCompiled)`. If no longer passes filter, treat as delete
-- [ ] `OnDelete` — remove by key, notify listeners `(oldCompiled, nil)`
-- [ ] `OnTruncate` — clear map, notify
-- [ ] `IsDurable()` — always `true`
-- [ ] `OnSchemaChange` — `RE_BASELINE` by default
-- [ ] Query API: `Get(keyValues...) any`, `All() []any`, `Listen(func(old, new any)) func()`
-- [ ] Export/restore snapshot
-- [ ] Option builder: `Compiler()`, `KeyFields()`, `Filter()`
+- [x] Pluggable compiler function: `func(Row) (any, error)`
+- [x] Key extractor from configured `key_fields`
+- [x] Optional filter predicate
+- [x] Store: `map[string]compiledEntry` keyed by composite key (key fields joined with `\x00`)
+- [x] `OnBaselineRow` / `OnInsert` — filter → compile → insert, notify listeners `(nil, compiled)`
+- [x] `OnUpdate` — filter → compile → replace, notify listeners `(oldCompiled, newCompiled)`. If no longer passes filter, treat as delete
+- [x] `OnDelete` — remove by key, notify listeners `(oldCompiled, nil)`
+- [x] `OnTruncate` — clear map, notify
+- [x] `IsDurable()` — always `true`
+- [x] `OnSchemaChange` — `RE_BASELINE` by default
+- [x] Query API: `Get(keyValues...) any`, `All() iter.Seq2`, `Count() int`, `Listen(func(old, new any)) func()`
+- [x] Export/restore snapshot
+- [x] Option builder: `Compiler()`, `KeyFields()`, `CompiledFilter()`
 
 ### 4.3 Indexed In-Memory (`target/memory/` — `IndexedTarget`)
 

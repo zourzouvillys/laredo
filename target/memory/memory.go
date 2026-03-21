@@ -486,52 +486,212 @@ func (t *IndexedTarget) Listen(fn func(old, new laredo.Row)) func() {
 	}
 }
 
+// CompiledTargetOption configures a CompiledTarget.
+type CompiledTargetOption func(*CompiledTarget)
+
+// Compiler sets the function that compiles a Row into a domain object.
+func Compiler(fn func(laredo.Row) (any, error)) CompiledTargetOption {
+	return func(t *CompiledTarget) {
+		t.compiler = fn
+	}
+}
+
+// KeyFields sets the fields used to extract the composite key from rows.
+func KeyFields(fields ...string) CompiledTargetOption {
+	return func(t *CompiledTarget) {
+		t.keyFields = fields
+	}
+}
+
+// CompiledFilter sets an optional filter predicate. Rows that don't pass are skipped.
+func CompiledFilter(fn func(laredo.Row) bool) CompiledTargetOption {
+	return func(t *CompiledTarget) {
+		t.filter = fn
+	}
+}
+
+// compiledEntry holds the compiled domain object alongside the original row
+// for snapshot export.
+type compiledEntry struct {
+	compiled any
+	row      laredo.Row
+}
+
 // CompiledTarget implements laredo.SyncTarget by deserializing rows into
 // strongly-typed domain objects via a pluggable compiler function.
+//
+// All write operations (OnBaselineRow, OnInsert, OnUpdate, OnDelete, OnTruncate)
+// acquire the write lock. Read operations (Get, All, Count) acquire the
+// read lock. Listener callbacks run under the write lock and must not block.
 type CompiledTarget struct {
-	// TODO: implement
+	mu sync.RWMutex
+
+	// Configuration (set before OnInit).
+	compiler  func(laredo.Row) (any, error)
+	keyFields []string
+	filter    func(laredo.Row) bool
+
+	// Schema (set during OnInit).
+	table   laredo.TableIdentifier
+	columns []laredo.ColumnDefinition
+
+	// Primary store: composite key string -> compiledEntry.
+	store map[string]compiledEntry
+
+	// Change listeners.
+	listeners map[int]func(old, new any)
+	nextID    int
 }
 
 // NewCompiledTarget creates a new compiled in-memory target.
-func NewCompiledTarget( /* opts */ ) *CompiledTarget {
-	return &CompiledTarget{}
+func NewCompiledTarget(opts ...CompiledTargetOption) *CompiledTarget {
+	t := &CompiledTarget{
+		listeners: make(map[int]func(old, new any)),
+	}
+	for _, opt := range opts {
+		opt(t)
+	}
+	return t
 }
 
 var _ laredo.SyncTarget = (*CompiledTarget)(nil)
 
-//nolint:revive // implements SyncTarget.
-func (t *CompiledTarget) OnInit(_ context.Context, _ laredo.TableIdentifier, _ []laredo.ColumnDefinition) error {
-	panic("not implemented")
+// notifyCompiledListeners calls all registered listeners with the old and new compiled objects.
+// Must be called under the write lock.
+func (t *CompiledTarget) notifyCompiledListeners(old, new any) {
+	for _, fn := range t.listeners {
+		fn(old, new)
+	}
 }
 
 //nolint:revive // implements SyncTarget.
-func (t *CompiledTarget) OnBaselineRow(_ context.Context, _ laredo.TableIdentifier, _ laredo.Row) error {
-	panic("not implemented")
+func (t *CompiledTarget) OnInit(_ context.Context, table laredo.TableIdentifier, columns []laredo.ColumnDefinition) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.table = table
+	t.columns = columns
+
+	// Build column name set for validation.
+	colSet := make(map[string]struct{}, len(columns))
+	for _, c := range columns {
+		colSet[c.Name] = struct{}{}
+	}
+
+	// Validate key fields exist in columns.
+	for _, f := range t.keyFields {
+		if _, ok := colSet[f]; !ok {
+			return fmt.Errorf("key field %q not found in columns", f)
+		}
+	}
+
+	// Allocate store.
+	t.store = make(map[string]compiledEntry)
+
+	return nil
+}
+
+//nolint:revive // implements SyncTarget.
+func (t *CompiledTarget) OnBaselineRow(_ context.Context, _ laredo.TableIdentifier, row laredo.Row) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	return t.insertRow(row)
 }
 
 //nolint:revive // implements SyncTarget.
 func (t *CompiledTarget) OnBaselineComplete(_ context.Context, _ laredo.TableIdentifier) error {
-	panic("not implemented")
+	return nil
 }
 
 //nolint:revive // implements SyncTarget.
-func (t *CompiledTarget) OnInsert(_ context.Context, _ laredo.TableIdentifier, _ laredo.Row) error {
-	panic("not implemented")
+func (t *CompiledTarget) OnInsert(_ context.Context, _ laredo.TableIdentifier, columns laredo.Row) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	return t.insertRow(columns)
+}
+
+// insertRow compiles and stores a row. Must be called under the write lock.
+func (t *CompiledTarget) insertRow(row laredo.Row) error {
+	if t.filter != nil && !t.filter(row) {
+		return nil
+	}
+
+	compiled, err := t.compiler(row)
+	if err != nil {
+		return nil //nolint:nilerr // compiler errors skip the row
+	}
+
+	key := buildKey(row, t.keyFields)
+	t.store[key] = compiledEntry{compiled: compiled, row: copyRow(row)}
+	t.notifyCompiledListeners(nil, compiled)
+	return nil
 }
 
 //nolint:revive // implements SyncTarget.
-func (t *CompiledTarget) OnUpdate(_ context.Context, _ laredo.TableIdentifier, _ laredo.Row, _ laredo.Row) error {
-	panic("not implemented")
+func (t *CompiledTarget) OnUpdate(_ context.Context, _ laredo.TableIdentifier, columns laredo.Row, identity laredo.Row) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Find old entry by identity.
+	oldKey := buildKey(identity, t.keyFields)
+	oldEntry, exists := t.store[oldKey]
+
+	// If filter set and new row doesn't pass, treat as delete.
+	if t.filter != nil && !t.filter(columns) {
+		if exists {
+			delete(t.store, oldKey)
+			t.notifyCompiledListeners(oldEntry.compiled, nil)
+		}
+		return nil
+	}
+
+	// Compile the new row.
+	compiled, err := t.compiler(columns)
+	if err != nil {
+		return nil //nolint:nilerr // compiler errors skip the row
+	}
+
+	// Remove old entry if it existed.
+	if exists {
+		delete(t.store, oldKey)
+	}
+
+	// Store new entry.
+	newKey := buildKey(columns, t.keyFields)
+	t.store[newKey] = compiledEntry{compiled: compiled, row: copyRow(columns)}
+
+	var oldCompiled any
+	if exists {
+		oldCompiled = oldEntry.compiled
+	}
+	t.notifyCompiledListeners(oldCompiled, compiled)
+	return nil
 }
 
 //nolint:revive // implements SyncTarget.
-func (t *CompiledTarget) OnDelete(_ context.Context, _ laredo.TableIdentifier, _ laredo.Row) error {
-	panic("not implemented")
+func (t *CompiledTarget) OnDelete(_ context.Context, _ laredo.TableIdentifier, identity laredo.Row) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	key := buildKey(identity, t.keyFields)
+	oldEntry, exists := t.store[key]
+	if exists {
+		delete(t.store, key)
+		t.notifyCompiledListeners(oldEntry.compiled, nil)
+	}
+	return nil
 }
 
 //nolint:revive // implements SyncTarget.
 func (t *CompiledTarget) OnTruncate(_ context.Context, _ laredo.TableIdentifier) error {
-	panic("not implemented")
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	clear(t.store)
+	t.notifyCompiledListeners(nil, nil)
+	return nil
 }
 
 //nolint:revive // implements SyncTarget.
@@ -544,18 +704,99 @@ func (t *CompiledTarget) OnSchemaChange(_ context.Context, _ laredo.TableIdentif
 
 //nolint:revive // implements SyncTarget.
 func (t *CompiledTarget) ExportSnapshot(_ context.Context) ([]laredo.SnapshotEntry, error) {
-	panic("not implemented")
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	entries := make([]laredo.SnapshotEntry, 0, len(t.store))
+	for _, entry := range t.store {
+		entries = append(entries, laredo.SnapshotEntry{Row: copyRow(entry.row)})
+	}
+	return entries, nil
 }
 
 //nolint:revive // implements SyncTarget.
-func (t *CompiledTarget) RestoreSnapshot(_ context.Context, _ laredo.TableSnapshotInfo, _ []laredo.SnapshotEntry) error {
-	panic("not implemented")
+func (t *CompiledTarget) RestoreSnapshot(_ context.Context, _ laredo.TableSnapshotInfo, entries []laredo.SnapshotEntry) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Clear existing data.
+	clear(t.store)
+
+	// Re-compile and store each entry.
+	for _, entry := range entries {
+		if t.filter != nil && !t.filter(entry.Row) {
+			continue
+		}
+
+		compiled, err := t.compiler(entry.Row)
+		if err != nil {
+			continue // skip rows that fail compilation
+		}
+
+		key := buildKey(entry.Row, t.keyFields)
+		t.store[key] = compiledEntry{compiled: compiled, row: entry.Row}
+	}
+	return nil
 }
 
 //nolint:revive // implements SyncTarget.
-func (t *CompiledTarget) SupportsConsistentSnapshot() bool { return false }
+func (t *CompiledTarget) SupportsConsistentSnapshot() bool { return true }
 
 //nolint:revive // implements SyncTarget.
 func (t *CompiledTarget) OnClose(_ context.Context, _ laredo.TableIdentifier) error {
 	return nil
+}
+
+// Get returns the compiled object for the given key field values, or false if not found.
+func (t *CompiledTarget) Get(keyValues ...laredo.Value) (any, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	key := buildKeyFromValues(keyValues)
+	entry, ok := t.store[key]
+	if !ok {
+		return nil, false
+	}
+	return entry.compiled, true
+}
+
+// All returns an iterator over all (key, compiled) pairs in the store.
+func (t *CompiledTarget) All() iter.Seq2[string, any] {
+	return func(yield func(string, any) bool) {
+		t.mu.RLock()
+		defer t.mu.RUnlock()
+
+		for k, v := range t.store {
+			if !yield(k, v.compiled) {
+				return
+			}
+		}
+	}
+}
+
+// Count returns the number of entries in the store.
+func (t *CompiledTarget) Count() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	return len(t.store)
+}
+
+// Listen registers a change listener that is called for every insert, update,
+// delete, and truncate. For inserts, old is nil. For deletes, new is nil.
+// For truncate, both are nil. The callback runs under the write lock and must
+// not block. Returns an unsubscribe function.
+func (t *CompiledTarget) Listen(fn func(old, new any)) func() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	id := t.nextID
+	t.nextID++
+	t.listeners[id] = fn
+
+	return func() {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		delete(t.listeners, id)
+	}
 }
