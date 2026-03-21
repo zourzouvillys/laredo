@@ -269,10 +269,10 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 5.1 JSONL Serializer (`snapshot/jsonl/`)
 
-- [ ] `Write()` — one JSON object per line, one row per line
-- [ ] `Read()` — streaming line-by-line JSON decode
-- [ ] Header line with `TableSnapshotInfo` metadata
-- [ ] Handle all `Value` types (nil, string, int, float, bool, time, bytes, JSON)
+- [x] `Write()` — one JSON object per line, one row per line
+- [x] `Read()` — streaming line-by-line JSON decode (bufio scanner, up to 10MB per line)
+- [x] Header line with `TableSnapshotInfo` metadata
+- [x] Handle all `Value` types (nil, string, int, float, bool, time, bytes, JSON)
 
 ### 5.2 Local Disk Store (`snapshot/local/`)
 
