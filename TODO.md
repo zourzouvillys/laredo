@@ -98,8 +98,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 - [x] Field-based mode: `WithTTLField(fieldName)` reads time.Time or RFC 3339 string
 - [x] Computed mode: `WithTTL(func(Row) time.Time)` pipeline option
-- [ ] Periodic scanner on configurable interval
-- [ ] On scan: remove expired rows from target, update indexes, fire `OnRowExpired` observer
+- [x] Periodic scanner: `WithTTLScanInterval(d)` runs scanner goroutine per pipeline
+- [x] On scan: remove expired rows from target via `OnDelete`, fire `OnRowExpired` observer
 - [x] Skip insertion of already-expired rows on `INSERT` and baseline
 - [x] Treat update-to-expired as delete
 

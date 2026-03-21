@@ -2031,6 +2031,76 @@ func TestEngine_PostBaselineValidation(t *testing.T) {
 	}
 }
 
+func TestEngine_TTLPeriodicScanner(t *testing.T) {
+	src := configuredSource()
+	// Add a row that will expire very soon.
+	src.AddRow(testutil.SampleTable(), laredo.Row{
+		"id": 1, "name": "about-to-expire",
+		"expires_at": time.Now().Add(200 * time.Millisecond).Format(time.RFC3339Nano),
+	})
+	// Add a row that won't expire.
+	src.AddRow(testutil.SampleTable(), laredo.Row{
+		"id": 2, "name": "permanent",
+	})
+
+	target := memory.NewIndexedTarget()
+	obs := &testutil.TestObserver{}
+
+	ttlFunc := func(row laredo.Row) time.Time {
+		s, _ := row["expires_at"].(string)
+		if s == "" {
+			return time.Time{}
+		}
+		parsed, _ := time.Parse(time.RFC3339Nano, s)
+		return parsed
+	}
+
+	e, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target,
+			laredo.WithTTL(ttlFunc),
+			laredo.WithTTLScanInterval(100*time.Millisecond),
+		),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("engine did not become ready")
+	}
+
+	// Both rows should be present initially.
+	if target.Count() != 2 {
+		t.Fatalf("expected 2 rows initially, got %d", target.Count())
+	}
+
+	// Wait for the row to expire and scanner to remove it.
+	testutil.AssertEventually(t, 3*time.Second, func() bool {
+		return target.Count() == 1
+	}, "expected scanner to remove expired row")
+
+	// Permanent row should still be there.
+	_, ok := target.Get(2)
+	if !ok {
+		t.Error("expected permanent row to still exist")
+	}
+
+	// Verify OnRowExpired was fired.
+	if obs.EventCount("RowExpired") < 1 {
+		t.Errorf("expected at least 1 RowExpired event, got %d", obs.EventCount("RowExpired"))
+	}
+
+	if err := e.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
 // contains checks if s contains substr.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)

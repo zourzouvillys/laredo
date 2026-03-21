@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"reflect"
 	"strings"
 	"sync"
@@ -67,16 +68,17 @@ type engineConfig struct {
 }
 
 type pipelineConfig struct {
-	sourceID     string
-	table        TableIdentifier
-	target       SyncTarget
-	filters      []PipelineFilter
-	transforms   []PipelineTransform
-	bufferSize   int
-	bufferPolicy BufferPolicy
-	errorPolicy  ErrorPolicyKind
-	maxRetries   int
-	ttlFunc      func(Row) time.Time // returns expiry time; zero = no expiry
+	sourceID        string
+	table           TableIdentifier
+	target          SyncTarget
+	filters         []PipelineFilter
+	transforms      []PipelineTransform
+	bufferSize      int
+	bufferPolicy    BufferPolicy
+	errorPolicy     ErrorPolicyKind
+	maxRetries      int
+	ttlFunc         func(Row) time.Time
+	ttlScanInterval time.Duration
 }
 
 // WithSource registers a named source.
@@ -186,6 +188,15 @@ func WithTTLField(fieldName string) PipelineOption {
 	})
 }
 
+// WithTTLScanInterval sets how often the engine scans for expired rows.
+// Requires WithTTL or WithTTLField to be configured. The scanner removes
+// expired rows from the target and fires OnRowExpired.
+func WithTTLScanInterval(d time.Duration) PipelineOption {
+	return func(c *pipelineConfig) {
+		c.ttlScanInterval = d
+	}
+}
+
 // WithObserver sets the engine observer.
 func WithObserver(o EngineObserver) Option {
 	return func(c *engineConfig) {
@@ -269,18 +280,19 @@ func NewEngine(opts ...Option) (Engine, []error) {
 	for i, pc := range cfg.pipelines {
 		id := generatePipelineID(pc.sourceID, pc.table, pc.target)
 		pipelines[i] = resolvedPipeline{
-			id:           id,
-			sourceID:     pc.sourceID,
-			table:        pc.table,
-			target:       pc.target,
-			filters:      pc.filters,
-			transforms:   pc.transforms,
-			bufferSize:   pc.bufferSize,
-			bufferPolicy: pc.bufferPolicy,
-			errorPolicy:  pc.errorPolicy,
-			maxRetries:   pc.maxRetries,
-			ttlFunc:      pc.ttlFunc,
-			state:        PipelineInitializing,
+			id:              id,
+			sourceID:        pc.sourceID,
+			table:           pc.table,
+			target:          pc.target,
+			filters:         pc.filters,
+			transforms:      pc.transforms,
+			bufferSize:      pc.bufferSize,
+			bufferPolicy:    pc.bufferPolicy,
+			errorPolicy:     pc.errorPolicy,
+			maxRetries:      pc.maxRetries,
+			ttlFunc:         pc.ttlFunc,
+			ttlScanInterval: pc.ttlScanInterval,
+			state:           PipelineInitializing,
 		}
 		pipelineIDs[i] = id
 	}
@@ -389,18 +401,19 @@ func targetTypeName(target SyncTarget) string {
 
 // resolvedPipeline holds the fully resolved configuration and runtime state for a pipeline.
 type resolvedPipeline struct {
-	id           string
-	sourceID     string
-	table        TableIdentifier
-	target       SyncTarget
-	filters      []PipelineFilter
-	transforms   []PipelineTransform
-	bufferSize   int
-	bufferPolicy BufferPolicy
-	errorPolicy  ErrorPolicyKind
-	maxRetries   int
-	ttlFunc      func(Row) time.Time
-	state        PipelineState
+	id              string
+	sourceID        string
+	table           TableIdentifier
+	target          SyncTarget
+	filters         []PipelineFilter
+	transforms      []PipelineTransform
+	bufferSize      int
+	bufferPolicy    BufferPolicy
+	errorPolicy     ErrorPolicyKind
+	maxRetries      int
+	ttlFunc         func(Row) time.Time
+	ttlScanInterval time.Duration
+	state           PipelineState
 }
 
 var (
@@ -463,11 +476,91 @@ func (e *coreEngine) Start(ctx context.Context) error {
 		go e.runPeriodicSnapshots(runCtx)
 	}
 
+	// Start TTL scanner goroutines for pipelines with scan intervals.
+	for i := range e.pipelines {
+		p := &e.pipelines[i]
+		if p.ttlFunc != nil && p.ttlScanInterval > 0 {
+			e.wg.Add(1)
+			go e.runTTLScanner(runCtx, i)
+		}
+	}
+
 	return nil
 }
 
 // groupPipelinesBySource returns a map from source ID to pipeline indices.
 // runPeriodicSnapshots takes snapshots at the configured interval.
+// rowScanner is an optional interface for targets that support row iteration.
+// IndexedTarget implements this via its All() method.
+type rowScanner interface {
+	All() iter.Seq2[string, Row]
+}
+
+// runTTLScanner periodically scans a pipeline's target for expired rows.
+// Waits until the pipeline is ready before starting to scan.
+func (e *coreEngine) runTTLScanner(ctx context.Context, pipelineIdx int) {
+	defer e.wg.Done()
+
+	p := &e.pipelines[pipelineIdx]
+	scanner, ok := p.target.(rowScanner)
+	if !ok {
+		return // target doesn't support row scanning
+	}
+
+	// Wait until the pipeline is ready before scanning.
+	if !e.readiness.AwaitReady(0) {
+		select {
+		case <-ctx.Done():
+			return
+		case <-func() <-chan struct{} {
+			ch := make(chan struct{})
+			e.readiness.OnReady(func() { close(ch) })
+			return ch
+		}():
+		}
+	}
+
+	ticker := time.NewTicker(p.ttlScanInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			e.scanExpiredRows(ctx, p, scanner)
+		}
+	}
+}
+
+// scanExpiredRows iterates all rows in the target and deletes expired ones.
+func (e *coreEngine) scanExpiredRows(ctx context.Context, p *resolvedPipeline, scanner rowScanner) {
+	// Collect expired row keys first, then delete (avoid modifying during iteration).
+	var expiredKeys []Row
+	for _, row := range scanner.All() {
+		if ctx.Err() != nil {
+			return
+		}
+		expiry := p.ttlFunc(row)
+		if !expiry.IsZero() && time.Now().After(expiry) {
+			// Build identity from PK fields.
+			expiredKeys = append(expiredKeys, row)
+		}
+	}
+
+	for _, row := range expiredKeys {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := p.target.OnDelete(ctx, p.table, row); err != nil {
+			continue
+		}
+		// Build a key string for the observer from the row's "id" field if present.
+		keyStr := fmt.Sprintf("%v", row["id"])
+		e.observer.OnRowExpired(p.id, p.table, keyStr)
+	}
+}
+
 func (e *coreEngine) runPeriodicSnapshots(ctx context.Context) {
 	defer e.wg.Done()
 
