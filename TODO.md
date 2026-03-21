@@ -376,7 +376,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `PauseSync` / `ResumeSync`
 - [ ] `ResetSource` — drop/recreate slot and optionally publication
 - [ ] `ListTables` / `GetTableSchema` — read-only config inspection
-- [ ] `CreateSnapshot` / `ListSnapshots` / `InspectSnapshot` / `RestoreSnapshot` / `DeleteSnapshot` / `PruneSnapshots` (`CreateSnapshot` implemented)
+- [x] `CreateSnapshot` / `ListSnapshots` / `InspectSnapshot` / `RestoreSnapshot` / `DeleteSnapshot` / `PruneSnapshots` (`RestoreSnapshot` deferred — needs engine method)
 - [x] `ListDeadLetters` / `ReplayDeadLetters` / `PurgeDeadLetters` (`ListDeadLetters` + `PurgeDeadLetters` implemented; `ReplayDeadLetters` deferred — needs target lookup by pipeline ID)
 - [x] `StartReplay` / `GetReplayStatus` / `StopReplay`
 

@@ -176,6 +176,125 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *connect.Request[v1.Cr
 	}), nil
 }
 
+// ListSnapshots returns available snapshots.
+func (s *Service) ListSnapshots(ctx context.Context, req *connect.Request[v1.ListSnapshotsRequest]) (*connect.Response[v1.ListSnapshotsResponse], error) {
+	if s.snapshotStore == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no snapshot store configured"))
+	}
+
+	var filter *laredo.SnapshotFilter
+	if t := req.Msg.GetTable(); t != "" {
+		var table laredo.TableIdentifier
+		if err := table.UnmarshalText([]byte(t)); err == nil {
+			filter = &laredo.SnapshotFilter{Table: &table}
+		}
+	}
+
+	descriptors, err := s.snapshotStore.List(ctx, filter)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list snapshots: %w", err))
+	}
+
+	infos := make([]*v1.SnapshotInfo, 0, len(descriptors))
+	for _, d := range descriptors {
+		infos = append(infos, descriptorToProto(d))
+	}
+
+	return connect.NewResponse(&v1.ListSnapshotsResponse{Snapshots: infos}), nil
+}
+
+// InspectSnapshot returns detailed information about a specific snapshot.
+func (s *Service) InspectSnapshot(ctx context.Context, req *connect.Request[v1.InspectSnapshotRequest]) (*connect.Response[v1.InspectSnapshotResponse], error) {
+	if s.snapshotStore == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no snapshot store configured"))
+	}
+
+	id := req.Msg.GetSnapshotId()
+	if id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("snapshot_id is required"))
+	}
+
+	desc, err := s.snapshotStore.Describe(ctx, id)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("describe snapshot: %w", err))
+	}
+
+	return connect.NewResponse(&v1.InspectSnapshotResponse{Info: descriptorToProto(desc)}), nil
+}
+
+// DeleteSnapshot removes a snapshot.
+func (s *Service) DeleteSnapshot(ctx context.Context, req *connect.Request[v1.DeleteSnapshotRequest]) (*connect.Response[v1.DeleteSnapshotResponse], error) {
+	if s.snapshotStore == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no snapshot store configured"))
+	}
+
+	id := req.Msg.GetSnapshotId()
+	if id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("snapshot_id is required"))
+	}
+
+	if err := s.snapshotStore.Delete(ctx, id); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete snapshot: %w", err))
+	}
+
+	return connect.NewResponse(&v1.DeleteSnapshotResponse{Deleted: true}), nil
+}
+
+// PruneSnapshots deletes all but the N most recent snapshots.
+func (s *Service) PruneSnapshots(ctx context.Context, req *connect.Request[v1.PruneSnapshotsRequest]) (*connect.Response[v1.PruneSnapshotsResponse], error) {
+	if s.snapshotStore == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no snapshot store configured"))
+	}
+
+	keep := int(req.Msg.GetKeep())
+	if keep <= 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("keep must be positive"))
+	}
+
+	// Count before prune.
+	before, _ := s.snapshotStore.List(ctx, nil)
+
+	var tableFilter *laredo.TableIdentifier
+	if t := req.Msg.GetTable(); t != "" {
+		var table laredo.TableIdentifier
+		if err := table.UnmarshalText([]byte(t)); err == nil {
+			tableFilter = &table
+		}
+	}
+
+	if err := s.snapshotStore.Prune(ctx, keep, tableFilter); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("prune snapshots: %w", err))
+	}
+
+	after, _ := s.snapshotStore.List(ctx, nil)
+	deleted := len(before) - len(after)
+	if deleted < 0 {
+		deleted = 0
+	}
+
+	return connect.NewResponse(&v1.PruneSnapshotsResponse{
+		DeletedCount: int32(deleted), //nolint:gosec // count won't overflow
+	}), nil
+}
+
+func descriptorToProto(d laredo.SnapshotDescriptor) *v1.SnapshotInfo {
+	info := &v1.SnapshotInfo{
+		SnapshotId: d.SnapshotID,
+		CreatedAt:  timestamppb.New(d.CreatedAt),
+		Format:     d.Format,
+		SizeBytes:  d.SizeBytes,
+	}
+	for _, t := range d.Tables {
+		info.Tables = append(info.Tables, &v1.TableSnapshotSummary{
+			Schema:     t.Table.Schema,
+			Table:      t.Table.Table,
+			RowCount:   t.RowCount,
+			TargetType: t.TargetType,
+		})
+	}
+	return info
+}
+
 // StartReplay begins replaying a snapshot into targets.
 func (s *Service) StartReplay(_ context.Context, req *connect.Request[v1.StartReplayRequest]) (*connect.Response[v1.StartReplayResponse], error) {
 	if s.snapshotStore == nil {

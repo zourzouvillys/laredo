@@ -568,3 +568,117 @@ func TestOAM_ListDeadLetters_MissingPipelineID(t *testing.T) {
 		t.Errorf("expected CodeInvalidArgument, got %v", connect.CodeOf(err))
 	}
 }
+
+// --- Snapshot management RPC tests ---
+
+func snapshotEngine(t *testing.T) (laredo.Engine, laredo.SnapshotStore) {
+	t.Helper()
+	src := testsource.New()
+	src.SetSchema(testutil.SampleTable(), testutil.SampleColumns())
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+
+	target := memory.NewIndexedTarget()
+	store := local.New(t.TempDir())
+
+	eng, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithSnapshotStore(store),
+		laredo.WithSnapshotSerializer(jsonl.New()),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("engine errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := eng.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !eng.AwaitReady(5 * time.Second) {
+		t.Fatal("engine not ready")
+	}
+	t.Cleanup(func() { _ = eng.Stop(ctx) })
+
+	// Create a snapshot for testing.
+	if err := eng.CreateSnapshot(ctx, nil); err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	return eng, store
+}
+
+func TestOAM_ListSnapshots(t *testing.T) {
+	eng, store := snapshotEngine(t)
+	client := startTestServer(t, eng, store)
+
+	resp, err := client.ListSnapshots(context.Background(), connect.NewRequest(&v1.ListSnapshotsRequest{}))
+	if err != nil {
+		t.Fatalf("ListSnapshots: %v", err)
+	}
+	if len(resp.Msg.GetSnapshots()) < 1 {
+		t.Error("expected at least 1 snapshot")
+	}
+}
+
+func TestOAM_InspectSnapshot(t *testing.T) {
+	eng, store := snapshotEngine(t)
+	client := startTestServer(t, eng, store)
+
+	listResp, err := client.ListSnapshots(context.Background(), connect.NewRequest(&v1.ListSnapshotsRequest{}))
+	if err != nil {
+		t.Fatalf("ListSnapshots: %v", err)
+	}
+	if len(listResp.Msg.GetSnapshots()) == 0 {
+		t.Fatal("no snapshots")
+	}
+
+	snapID := listResp.Msg.GetSnapshots()[0].GetSnapshotId()
+	resp, err := client.InspectSnapshot(context.Background(), connect.NewRequest(&v1.InspectSnapshotRequest{
+		SnapshotId: snapID,
+	}))
+	if err != nil {
+		t.Fatalf("InspectSnapshot: %v", err)
+	}
+	if resp.Msg.GetInfo().GetSnapshotId() != snapID {
+		t.Errorf("expected snapshot_id=%s, got %s", snapID, resp.Msg.GetInfo().GetSnapshotId())
+	}
+}
+
+func TestOAM_DeleteSnapshot(t *testing.T) {
+	eng, store := snapshotEngine(t)
+	client := startTestServer(t, eng, store)
+
+	listResp, _ := client.ListSnapshots(context.Background(), connect.NewRequest(&v1.ListSnapshotsRequest{}))
+	if len(listResp.Msg.GetSnapshots()) == 0 {
+		t.Fatal("no snapshots")
+	}
+	snapID := listResp.Msg.GetSnapshots()[0].GetSnapshotId()
+
+	delResp, err := client.DeleteSnapshot(context.Background(), connect.NewRequest(&v1.DeleteSnapshotRequest{
+		SnapshotId: snapID,
+	}))
+	if err != nil {
+		t.Fatalf("DeleteSnapshot: %v", err)
+	}
+	if !delResp.Msg.GetDeleted() {
+		t.Error("expected deleted=true")
+	}
+
+	listResp2, _ := client.ListSnapshots(context.Background(), connect.NewRequest(&v1.ListSnapshotsRequest{}))
+	if len(listResp2.Msg.GetSnapshots()) != 0 {
+		t.Error("expected 0 snapshots after delete")
+	}
+}
+
+func TestOAM_ListSnapshots_NoStore(t *testing.T) {
+	eng, _, _ := startedEngine(t)
+	client := startTestServer(t, eng, nil)
+
+	_, err := client.ListSnapshots(context.Background(), connect.NewRequest(&v1.ListSnapshotsRequest{}))
+	if err == nil {
+		t.Fatal("expected error without snapshot store")
+	}
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Errorf("expected CodeFailedPrecondition, got %v", connect.CodeOf(err))
+	}
+}
