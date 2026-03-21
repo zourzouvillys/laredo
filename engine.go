@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zourzouvillys/laredo/internal/engine"
@@ -302,8 +303,8 @@ func NewEngine(opts ...Option) (Engine, []error) {
 			ttlFunc:          pc.ttlFunc,
 			ttlScanInterval:  pc.ttlScanInterval,
 			validationAction: pc.validationAction,
-			state:            PipelineInitializing,
 		}
+		pipelines[i].storeState(PipelineInitializing)
 		pipelineIDs[i] = id
 	}
 
@@ -424,7 +425,17 @@ type resolvedPipeline struct {
 	ttlFunc          func(Row) time.Time
 	ttlScanInterval  time.Duration
 	validationAction ValidationAction
-	state            PipelineState
+	state            atomic.Int32 // stores PipelineState atomically
+}
+
+// loadState returns the pipeline's current state.
+func (p *resolvedPipeline) loadState() PipelineState {
+	return PipelineState(p.state.Load())
+}
+
+// storeState sets the pipeline's state.
+func (p *resolvedPipeline) storeState(s PipelineState) {
+	p.state.Store(int32(s)) //nolint:gosec // PipelineState values are small constants (0-6)
 }
 
 var (
@@ -639,7 +650,7 @@ func (e *coreEngine) runSource(ctx context.Context, sourceID string, pipelineIdx
 			// Skip baseline — transition directly to STREAMING.
 			for _, idx := range pipelineIdxs {
 				p := &e.pipelines[idx]
-				if p.state == PipelineInitializing {
+				if p.loadState() == PipelineInitializing {
 					e.transitionPipeline(idx, PipelineStreaming)
 					e.readiness.SetReady(p.id)
 				}
@@ -708,7 +719,7 @@ func (e *coreEngine) trySnapshotRestore(ctx context.Context, sourceID string, _ 
 	// Restore each target from snapshot data.
 	for _, idx := range pipelineIdxs {
 		p := &e.pipelines[idx]
-		if p.state != PipelineInitializing {
+		if p.loadState() != PipelineInitializing {
 			continue
 		}
 
@@ -728,7 +739,7 @@ func (e *coreEngine) trySnapshotRestore(ctx context.Context, sourceID string, _ 
 	// All targets restored — transition to STREAMING.
 	for _, idx := range pipelineIdxs {
 		p := &e.pipelines[idx]
-		if p.state == PipelineInitializing {
+		if p.loadState() == PipelineInitializing {
 			e.transitionPipeline(idx, PipelineStreaming)
 			e.readiness.SetReady(p.id)
 		}
@@ -757,7 +768,7 @@ func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source Sy
 
 	for _, idx := range pipelineIdxs {
 		p := &e.pipelines[idx]
-		if p.state == PipelineBaselining {
+		if p.loadState() == PipelineBaselining {
 			e.observer.OnBaselineStarted(p.id, p.table)
 		}
 	}
@@ -780,7 +791,7 @@ func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source Sy
 	// Notify baseline complete for each pipeline.
 	for _, idx := range pipelineIdxs {
 		p := &e.pipelines[idx]
-		if p.state != PipelineBaselining {
+		if p.loadState() != PipelineBaselining {
 			continue
 		}
 		if err := p.target.OnBaselineComplete(ctx, p.table); err != nil {
@@ -793,7 +804,7 @@ func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source Sy
 	// Post-baseline validation: compare dispatched row count with target count.
 	for _, idx := range pipelineIdxs {
 		p := &e.pipelines[idx]
-		if p.state != PipelineBaselining {
+		if p.loadState() != PipelineBaselining {
 			continue
 		}
 		if counter, ok := p.target.(interface{ Count() int }); ok {
@@ -819,7 +830,7 @@ func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source Sy
 	// Transition to streaming and confirm baseline position for ACK tracking.
 	for _, idx := range pipelineIdxs {
 		p := &e.pipelines[idx]
-		if p.state != PipelineBaselining {
+		if p.loadState() != PipelineBaselining {
 			continue
 		}
 		e.transitionPipeline(idx, PipelineStreaming)
@@ -838,10 +849,40 @@ func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source Sy
 }
 
 // streamFromPosition starts streaming changes from the given position.
+// It creates per-pipeline change buffers and consumer goroutines. The source
+// dispatcher puts events into buffers; consumers read and apply changes to targets.
 func (e *coreEngine) streamFromPosition(ctx context.Context, sourceID string, source SyncSource, pipelineIdxs []int, position Position) {
-	err := source.Stream(ctx, position, ChangeHandlerFunc(func(event ChangeEvent) error {
-		return e.dispatchChange(ctx, sourceID, source, pipelineIdxs, event)
+	// Create a cancellable context for this source's streaming session.
+	// Consumer goroutines can cancel this to stop the source (e.g., ErrorStopSource).
+	streamCtx, streamCancel := context.WithCancel(ctx)
+	defer streamCancel()
+
+	// Create per-pipeline buffers and start consumer goroutines.
+	var consumerWg sync.WaitGroup
+	buffers := make(map[int]*engine.ChangeBuffer[ChangeEvent], len(pipelineIdxs))
+
+	for _, idx := range pipelineIdxs {
+		p := &e.pipelines[idx]
+		if p.loadState() != PipelineStreaming {
+			continue
+		}
+		buf := engine.NewChangeBuffer[ChangeEvent](p.bufferSize)
+		buffers[idx] = buf
+		consumerWg.Add(1)
+		go e.runPipelineConsumer(streamCtx, streamCancel, sourceID, source, idx, pipelineIdxs, buf, &consumerWg)
+	}
+
+	// Stream changes — dispatcher sends events to per-pipeline buffers.
+	err := source.Stream(streamCtx, position, ChangeHandlerFunc(func(event ChangeEvent) error {
+		return e.dispatchToBuffers(streamCtx, sourceID, pipelineIdxs, buffers, event)
 	}))
+
+	// Close all buffers so consumers drain remaining items and exit.
+	for _, buf := range buffers {
+		buf.Close()
+	}
+	consumerWg.Wait()
+
 	if err != nil && ctx.Err() == nil {
 		e.observer.OnSourceDisconnected(sourceID, fmt.Sprintf("stream error: %v", err))
 		e.transitionPipelines(pipelineIdxs, PipelineError)
@@ -867,7 +908,7 @@ func (e *coreEngine) tablesForPipelines(pipelineIdxs []int) []TableIdentifier {
 func (e *coreEngine) dispatchBaselineRow(ctx context.Context, pipelineIdxs []int, table TableIdentifier, row Row) {
 	for _, idx := range pipelineIdxs {
 		p := &e.pipelines[idx]
-		if p.table != table || p.state != PipelineBaselining {
+		if p.table != table || p.loadState() != PipelineBaselining {
 			continue
 		}
 		r := applyFiltersAndTransforms(p, table, row)
@@ -883,13 +924,68 @@ func (e *coreEngine) dispatchBaselineRow(ctx context.Context, pipelineIdxs []int
 	}
 }
 
-// dispatchChange delivers a change event to all matching pipelines, applying
-// filters and transforms. After all pipelines are processed, it advances
-// the ACK position if all durable targets have confirmed.
-func (e *coreEngine) dispatchChange(ctx context.Context, sourceID string, source SyncSource, pipelineIdxs []int, event ChangeEvent) error {
+// dispatchToBuffers sends a change event to all matching pipeline buffers.
+// The buffer policy determines behavior when a buffer is full:
+//   - BufferBlock: blocks until space is available (backpressure to source)
+//   - BufferDropOldest: drops the oldest item to make room
+//   - BufferError: fails immediately, triggering the pipeline's error policy
+func (e *coreEngine) dispatchToBuffers(ctx context.Context, sourceID string, pipelineIdxs []int, buffers map[int]*engine.ChangeBuffer[ChangeEvent], event ChangeEvent) error {
 	for _, idx := range pipelineIdxs {
 		p := &e.pipelines[idx]
-		if p.table != event.Table || p.state != PipelineStreaming {
+		buf := buffers[idx]
+		if buf == nil || p.table != event.Table || p.loadState() != PipelineStreaming {
+			continue
+		}
+
+		switch p.bufferPolicy {
+		case BufferBlock:
+			if !buf.SendCtx(ctx, event) {
+				// Context cancelled or buffer closed.
+				return ctx.Err()
+			}
+		case BufferDropOldest:
+			_, didDrop := buf.SendDropOldest(event)
+			if didDrop {
+				e.observer.OnBufferPolicyTriggered(p.id, BufferDropOldest)
+			}
+		case BufferError:
+			if !buf.TrySend(event) {
+				e.observer.OnBufferPolicyTriggered(p.id, BufferError)
+				if e.applyErrorPolicy(ctx, idx, sourceID, pipelineIdxs) {
+					return fmt.Errorf("engine stopped due to buffer overflow error policy")
+				}
+				continue
+			}
+		}
+
+		e.observer.OnBufferDepthChanged(p.id, buf.Len(), buf.Cap())
+	}
+
+	return nil
+}
+
+// runPipelineConsumer reads change events from the pipeline's buffer and applies
+// them to the target. It handles retries, dead letters, error policies, and ACK
+// coordination. Runs as a goroutine for the lifetime of the streaming session.
+func (e *coreEngine) runPipelineConsumer(
+	ctx context.Context,
+	cancelStream context.CancelFunc,
+	sourceID string,
+	source SyncSource,
+	pipelineIdx int,
+	pipelineIdxs []int,
+	buf *engine.ChangeBuffer[ChangeEvent],
+	wg *sync.WaitGroup,
+) {
+	defer wg.Done()
+
+	p := &e.pipelines[pipelineIdx]
+
+	for event := range buf.Receive() {
+		// Notify buffer depth after dequeue.
+		e.observer.OnBufferDepthChanged(p.id, buf.Len(), buf.Cap())
+
+		if p.loadState() != PipelineStreaming {
 			continue
 		}
 
@@ -898,41 +994,39 @@ func (e *coreEngine) dispatchChange(ctx context.Context, sourceID string, source
 
 		err := e.applyChangeToTarget(ctx, p, event)
 		if err != nil {
-			// Report the initial error.
 			e.observer.OnChangeError(p.id, event.Table, event.Action, ErrorInfo{Err: err, Message: err.Error()})
-			// Retry with exponential backoff.
 			err = e.retryChange(ctx, p, event, err)
 		}
 
 		if err != nil {
-			// Write to dead letter store if configured.
 			if e.deadLetterStore != nil {
 				errInfo := ErrorInfo{Err: err, Message: err.Error()}
 				if dlErr := e.deadLetterStore.Write(p.id, event, errInfo); dlErr == nil {
 					e.observer.OnDeadLetterWritten(p.id, event, errInfo)
 				}
 			}
-			if e.applyErrorPolicy(ctx, idx, sourceID, pipelineIdxs) {
-				return fmt.Errorf("engine stopped due to error policy")
+			stopAll := e.applyErrorPolicy(ctx, pipelineIdx, sourceID, pipelineIdxs)
+			if stopAll || p.errorPolicy == ErrorStopSource {
+				cancelStream()
+				return
 			}
+			// ErrorIsolate: pipeline is now ERROR, subsequent events will be skipped.
 			continue
 		}
+
 		e.observer.OnChangeApplied(p.id, event.Table, event.Action, time.Since(start))
 
-		// Confirm the position if the target has durably processed it.
 		if p.target.IsDurable() {
 			e.ackTracker.Confirm(p.id, event.Position)
 		}
-	}
 
-	// Try to advance the ACK position for this source.
-	if pos, advanced := e.ackTracker.AckPosition(sourceID); advanced {
-		if err := source.Ack(ctx, pos); err == nil {
-			e.observer.OnAckAdvanced(sourceID, pos)
+		// Try to advance the ACK position for this source.
+		if pos, advanced := e.ackTracker.AckPosition(sourceID); advanced {
+			if ackErr := source.Ack(ctx, pos); ackErr == nil {
+				e.observer.OnAckAdvanced(sourceID, pos)
+			}
 		}
 	}
-
-	return nil
 }
 
 // applyChangeToTarget applies a single change event to a pipeline's target.
@@ -1014,7 +1108,7 @@ func (e *coreEngine) applyErrorPolicy(ctx context.Context, failedIdx int, source
 	case ErrorStopSource:
 		for _, idx := range pipelineIdxs {
 			pp := &e.pipelines[idx]
-			if pp.sourceID == sourceID && pp.state != PipelineError && pp.state != PipelineStopped {
+			if pp.sourceID == sourceID && pp.loadState() != PipelineError && pp.loadState() != PipelineStopped {
 				e.transitionPipeline(idx, PipelineError)
 				e.ackTracker.Skip(pp.id)
 			}
@@ -1024,7 +1118,7 @@ func (e *coreEngine) applyErrorPolicy(ctx context.Context, failedIdx int, source
 		// Transition all pipelines to ERROR and signal engine stop.
 		for i := range e.pipelines {
 			pp := &e.pipelines[i]
-			if pp.state != PipelineError && pp.state != PipelineStopped {
+			if pp.loadState() != PipelineError && pp.loadState() != PipelineStopped {
 				e.transitionPipeline(i, PipelineError)
 				e.ackTracker.Skip(pp.id)
 			}
@@ -1081,11 +1175,11 @@ func isRowExpired(p *resolvedPipeline, row Row) bool {
 // transitionPipeline transitions a single pipeline to a new state and fires the observer.
 func (e *coreEngine) transitionPipeline(idx int, newState PipelineState) {
 	p := &e.pipelines[idx]
-	old := p.state
+	old := p.loadState()
 	if old == newState {
 		return
 	}
-	p.state = newState
+	p.storeState(newState)
 	e.observer.OnPipelineStateChanged(p.id, old, newState)
 }
 
@@ -1093,7 +1187,8 @@ func (e *coreEngine) transitionPipeline(idx int, newState PipelineState) {
 func (e *coreEngine) transitionPipelines(idxs []int, newState PipelineState) {
 	for _, idx := range idxs {
 		p := &e.pipelines[idx]
-		if p.state == PipelineError || p.state == PipelineStopped {
+		s := p.loadState()
+		if s == PipelineError || s == PipelineStopped {
 			continue
 		}
 		e.transitionPipeline(idx, newState)
@@ -1155,7 +1250,7 @@ func (e *coreEngine) Stop(ctx context.Context) error {
 	// Close all targets.
 	for i := range e.pipelines {
 		p := &e.pipelines[i]
-		if p.state != PipelineStopped {
+		if p.loadState() != PipelineStopped {
 			_ = p.target.OnClose(ctx, p.table)
 			e.transitionPipeline(i, PipelineStopped)
 		}
@@ -1192,7 +1287,7 @@ func (e *coreEngine) IsSourceReady(sourceID string) bool {
 			continue
 		}
 		found = true
-		if p.state != PipelineStreaming && p.state != PipelinePaused {
+		if p.loadState() != PipelineStreaming && p.loadState() != PipelinePaused {
 			return false
 		}
 	}
@@ -1224,7 +1319,7 @@ func (e *coreEngine) Reload(ctx context.Context, sourceID string, table TableIde
 	for i := range e.pipelines {
 		p := &e.pipelines[i]
 		if p.sourceID == sourceID && p.table == table &&
-			(p.state == PipelineStreaming || p.state == PipelinePaused) {
+			(p.loadState() == PipelineStreaming || p.loadState() == PipelinePaused) {
 			affectedIdxs = append(affectedIdxs, i)
 		}
 	}
@@ -1253,7 +1348,7 @@ func (e *coreEngine) Reload(ctx context.Context, sourceID string, table TableIde
 	// Fire baseline started observer events.
 	for _, idx := range affectedIdxs {
 		p := &e.pipelines[idx]
-		if p.state == PipelineBaselining {
+		if p.loadState() == PipelineBaselining {
 			e.observer.OnBaselineStarted(p.id, p.table)
 		}
 	}
@@ -1280,7 +1375,7 @@ func (e *coreEngine) Reload(ctx context.Context, sourceID string, table TableIde
 	// Notify baseline complete.
 	for _, idx := range affectedIdxs {
 		p := &e.pipelines[idx]
-		if p.state != PipelineBaselining {
+		if p.loadState() != PipelineBaselining {
 			continue
 		}
 		if err := p.target.OnBaselineComplete(ctx, p.table); err != nil {
@@ -1293,7 +1388,7 @@ func (e *coreEngine) Reload(ctx context.Context, sourceID string, table TableIde
 	// Transition back to STREAMING.
 	for _, idx := range affectedIdxs {
 		p := &e.pipelines[idx]
-		if p.state == PipelineBaselining {
+		if p.loadState() == PipelineBaselining {
 			e.transitionPipeline(idx, PipelineStreaming)
 		}
 	}
@@ -1328,7 +1423,7 @@ func (e *coreEngine) Pause(ctx context.Context, sourceID string) error {
 	// Transition STREAMING pipelines to PAUSED.
 	for i := range e.pipelines {
 		p := &e.pipelines[i]
-		if p.sourceID == sourceID && p.state == PipelineStreaming {
+		if p.sourceID == sourceID && p.loadState() == PipelineStreaming {
 			e.transitionPipeline(i, PipelinePaused)
 		}
 	}
@@ -1358,7 +1453,7 @@ func (e *coreEngine) Resume(ctx context.Context, sourceID string) error {
 	// Transition PAUSED pipelines back to STREAMING.
 	for i := range e.pipelines {
 		p := &e.pipelines[i]
-		if p.sourceID == sourceID && p.state == PipelinePaused {
+		if p.sourceID == sourceID && p.loadState() == PipelinePaused {
 			e.transitionPipeline(i, PipelineStreaming)
 		}
 	}
@@ -1406,7 +1501,7 @@ func (e *coreEngine) doSnapshot(ctx context.Context, userMeta map[string]Value) 
 
 	for i := range e.pipelines {
 		p := &e.pipelines[i]
-		if p.state != PipelinePaused && p.state != PipelineStreaming {
+		if p.loadState() != PipelinePaused && p.loadState() != PipelineStreaming {
 			continue
 		}
 

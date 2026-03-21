@@ -70,8 +70,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `Block` policy — backpressure to source (default Go channel blocking)
 - [x] `DropOldest` policy — `SendDropOldest()` drops oldest item when full
 - [x] `Error` policy — `TrySend()` returns false when full (caller marks ERROR)
-- [ ] Observer notifications on depth changes and policy triggers
-- [ ] Wire ChangeBuffer into engine dispatch path (per-pipeline consumer goroutines)
+- [x] Observer notifications on depth changes and policy triggers
+- [x] Wire ChangeBuffer into engine dispatch path (per-pipeline consumer goroutines)
 
 ### 2.4 ACK Coordination
 
@@ -114,7 +114,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 ### 2.9 Graceful Shutdown
 
 - [x] Stop accepting new work
-- [ ] Flush all pipeline buffers
+- [x] Flush all pipeline buffers
 - [x] Take snapshot if `snapshotOnShutdown` is configured
 - [x] Close all targets
 - [x] ACK final positions

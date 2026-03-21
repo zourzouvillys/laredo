@@ -1,5 +1,7 @@
 package engine
 
+import "context"
+
 // ChangeBuffer is a bounded buffer between the source dispatcher and a pipeline's
 // target. It decouples the source read speed from the target write speed.
 //
@@ -27,6 +29,23 @@ func (b *ChangeBuffer[T]) Send(item T) bool {
 	defer func() { recover() }() //nolint:errcheck // catch send on closed channel
 	b.ch <- item
 	return true
+}
+
+// SendCtx adds an item to the buffer, blocking if full (Block policy).
+// Returns false if the context is cancelled or the buffer has been closed.
+// Unlike Send, this method is context-aware and will unblock on cancellation.
+func (b *ChangeBuffer[T]) SendCtx(ctx context.Context, item T) (ok bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	select {
+	case b.ch <- item:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // TrySend attempts a non-blocking send. Returns false if the buffer is full

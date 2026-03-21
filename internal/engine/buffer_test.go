@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -172,6 +173,99 @@ func TestChangeBuffer_SendDropOldest_NoDropNeeded(t *testing.T) {
 	}
 	if buf.Len() != 1 {
 		t.Errorf("expected len 1, got %d", buf.Len())
+	}
+}
+
+func TestChangeBuffer_SendCtx_Success(t *testing.T) {
+	buf := NewChangeBuffer[int](3)
+	ctx := context.Background()
+
+	if !buf.SendCtx(ctx, 1) {
+		t.Error("expected SendCtx to succeed on empty buffer")
+	}
+	if !buf.SendCtx(ctx, 2) {
+		t.Error("expected SendCtx to succeed on non-full buffer")
+	}
+	if buf.Len() != 2 {
+		t.Errorf("expected len 2, got %d", buf.Len())
+	}
+}
+
+func TestChangeBuffer_SendCtx_BlocksAndUnblocks(t *testing.T) {
+	buf := NewChangeBuffer[int](1)
+	ctx := context.Background()
+
+	buf.SendCtx(ctx, 1) // fills the buffer
+
+	done := make(chan bool)
+	go func() {
+		done <- buf.SendCtx(ctx, 2) // blocks
+	}()
+
+	// Verify it's blocked.
+	select {
+	case <-done:
+		t.Fatal("expected SendCtx to block")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Read to unblock.
+	<-buf.Receive()
+
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Error("expected SendCtx to return true after unblock")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected SendCtx to unblock after read")
+	}
+}
+
+func TestChangeBuffer_SendCtx_CancelledContext(t *testing.T) {
+	buf := NewChangeBuffer[int](1)
+	buf.Send(1) // fill it
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan bool)
+	go func() {
+		done <- buf.SendCtx(ctx, 2) // blocks until cancelled
+	}()
+
+	// Verify blocked.
+	select {
+	case <-done:
+		t.Fatal("expected SendCtx to block")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Cancel context.
+	cancel()
+
+	select {
+	case ok := <-done:
+		if ok {
+			t.Error("expected SendCtx to return false on cancelled context")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected SendCtx to unblock after cancel")
+	}
+
+	// Original item should still be in buffer.
+	got := <-buf.Receive()
+	if got != 1 {
+		t.Errorf("expected 1, got %d", got)
+	}
+}
+
+func TestChangeBuffer_SendCtx_ClosedBuffer(t *testing.T) {
+	buf := NewChangeBuffer[int](5)
+	buf.Close()
+
+	ok := buf.SendCtx(context.Background(), 1)
+	if ok {
+		t.Error("expected false for SendCtx after close")
 	}
 }
 
