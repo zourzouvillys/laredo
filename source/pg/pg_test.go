@@ -139,3 +139,54 @@ func TestSource_StateTransitions(t *testing.T) {
 		t.Errorf("expected SourceClosed after Close, got %v", src.State())
 	}
 }
+
+func TestFormatTableSpec(t *testing.T) {
+	tests := []struct {
+		name string
+		opts map[string]TablePublicationConfig
+		want string
+	}{
+		{
+			name: "no options",
+			opts: nil,
+			want: `"public"."users"`,
+		},
+		{
+			name: "row filter",
+			opts: map[string]TablePublicationConfig{
+				"public.users": {RowFilter: "active = true"},
+			},
+			want: `"public"."users" WHERE (active = true)`,
+		},
+		{
+			name: "column list",
+			opts: map[string]TablePublicationConfig{
+				"public.users": {Columns: []string{"id", "name"}},
+			},
+			want: `"public"."users" ("id", "name")`,
+		},
+		{
+			name: "both",
+			opts: map[string]TablePublicationConfig{
+				"public.users": {
+					Columns:   []string{"id", "name"},
+					RowFilter: "id > 0",
+				},
+			},
+			want: `"public"."users" ("id", "name") WHERE (id > 0)`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := New(Publication(PublicationConfig{
+				Create:       true,
+				TableOptions: tt.opts,
+			}))
+			got := src.formatTableSpec(laredo.Table("public", "users"))
+			if got != tt.want {
+				t.Errorf("formatTableSpec = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

@@ -143,6 +143,7 @@ func (s *Source) Init(ctx context.Context, config laredo.SourceConfig) (map[lare
 // ensurePublication creates or syncs the publication for the configured tables.
 // If the publication doesn't exist, it creates it. If it does exist, it adds
 // missing tables and removes extra tables to match the configured set.
+// Supports PG 15+ row filters and column lists via TableOptions.
 func (s *Source) ensurePublication(ctx context.Context, pubName string, tables []laredo.TableIdentifier) error {
 	conn := s.conn.queryConn
 
@@ -162,7 +163,7 @@ func (s *Source) ensurePublication(ctx context.Context, pubName string, tables [
 		// Create publication with all configured tables.
 		tableList := make([]string, 0, len(tables))
 		for _, t := range tables {
-			tableList = append(tableList, pgQuoteIdent(t.Schema)+"."+pgQuoteIdent(t.Table))
+			tableList = append(tableList, s.formatTableSpec(t))
 		}
 		query := fmt.Sprintf("CREATE PUBLICATION %s FOR TABLE %s",
 			pgQuoteIdent(pubName), strings.Join(tableList, ", "))
@@ -180,7 +181,7 @@ func (s *Source) ensurePublication(ctx context.Context, pubName string, tables [
 	var toAdd []string
 	for key, t := range desired {
 		if !current[key] {
-			toAdd = append(toAdd, pgQuoteIdent(t.Schema)+"."+pgQuoteIdent(t.Table))
+			toAdd = append(toAdd, s.formatTableSpec(t))
 		}
 	}
 
@@ -210,6 +211,34 @@ func (s *Source) ensurePublication(ctx context.Context, pubName string, tables [
 	}
 
 	return nil
+}
+
+// formatTableSpec formats a table identifier with optional column list and
+// row filter for use in CREATE/ALTER PUBLICATION statements (PostgreSQL 15+).
+func (s *Source) formatTableSpec(t laredo.TableIdentifier) string {
+	spec := pgQuoteIdent(t.Schema) + "." + pgQuoteIdent(t.Table)
+
+	key := t.Schema + "." + t.Table
+	opts, hasOpts := s.cfg.publication.TableOptions[key]
+	if !hasOpts {
+		return spec
+	}
+
+	// Column list: schema.table (col1, col2)
+	if len(opts.Columns) > 0 {
+		quoted := make([]string, len(opts.Columns))
+		for i, c := range opts.Columns {
+			quoted[i] = pgQuoteIdent(c)
+		}
+		spec += " (" + strings.Join(quoted, ", ") + ")"
+	}
+
+	// Row filter: schema.table WHERE (condition)
+	if opts.RowFilter != "" {
+		spec += " WHERE (" + opts.RowFilter + ")"
+	}
+
+	return spec
 }
 
 // publicationTables returns the set of tables in a publication as "schema.table" keys.

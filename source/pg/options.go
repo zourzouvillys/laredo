@@ -25,6 +25,22 @@ type PublicationConfig struct {
 	// Create controls whether the source creates the publication on startup.
 	// If false, the publication must already exist.
 	Create bool
+
+	// TableOptions provides per-table publication settings (PostgreSQL 15+).
+	// Key is "schema.table". If a table is not listed, it is added without
+	// row filters or column lists.
+	TableOptions map[string]TablePublicationConfig
+}
+
+// TablePublicationConfig controls per-table publication settings (PostgreSQL 15+).
+type TablePublicationConfig struct {
+	// RowFilter is a SQL WHERE clause for row filtering (e.g., "id > 0").
+	// Empty means no filter (all rows published).
+	RowFilter string
+
+	// Columns restricts the publication to specific columns.
+	// Empty means all columns are published.
+	Columns []string
 }
 
 // ReconnectConfig controls reconnection behavior on transient failures.
