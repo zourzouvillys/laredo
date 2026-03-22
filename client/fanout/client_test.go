@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -743,6 +744,137 @@ func TestClient_StopBeforeReady(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Stop did not return within 5s")
+	}
+}
+
+func TestClient_LocalSnapshot(t *testing.T) {
+	// Tests save/restore of local snapshot: first client populates data,
+	// second client loads it and requests delta instead of full snapshot.
+	ts := &testServer{}
+
+	// First connection: full snapshot with 2 rows.
+	ts.setSyncFn(func(ctx context.Context, req *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
+		callNum := ts.syncCnt.Load()
+
+		if callNum == 1 {
+			if err := stream.Send(&v1.SyncResponse{
+				Message: &v1.SyncResponse_Handshake{
+					Handshake: &v1.SyncHandshake{Mode: v1.SyncMode_SYNC_MODE_FULL_SNAPSHOT, ServerCurrentSequence: 5},
+				},
+			}); err != nil {
+				return err
+			}
+			if err := stream.Send(&v1.SyncResponse{
+				Message: &v1.SyncResponse_SnapshotBegin{SnapshotBegin: &v1.SnapshotBegin{SnapshotId: "s1", Sequence: 5, RowCount: 2}},
+			}); err != nil {
+				return err
+			}
+			if err := stream.Send(&v1.SyncResponse{
+				Message: &v1.SyncResponse_SnapshotRow{SnapshotRow: &v1.SnapshotRow{Row: makeRow(t, map[string]any{"id": "1", "name": "a"})}},
+			}); err != nil {
+				return err
+			}
+			if err := stream.Send(&v1.SyncResponse{
+				Message: &v1.SyncResponse_SnapshotRow{SnapshotRow: &v1.SnapshotRow{Row: makeRow(t, map[string]any{"id": "2", "name": "b"})}},
+			}); err != nil {
+				return err
+			}
+			if err := stream.Send(&v1.SyncResponse{
+				Message: &v1.SyncResponse_SnapshotEnd{SnapshotEnd: &v1.SnapshotEnd{Sequence: 5, RowsSent: 2}},
+			}); err != nil {
+				return err
+			}
+			<-ctx.Done()
+			return ctx.Err()
+		}
+
+		// Second connection: verify client sends lastSeq=5 (loaded from snapshot).
+		lastSeq := req.Msg.GetLastKnownSequence()
+		if lastSeq != 5 {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("expected lastSeq=5, got %d", lastSeq))
+		}
+
+		// Send delta with one new row.
+		if err := stream.Send(&v1.SyncResponse{
+			Message: &v1.SyncResponse_Handshake{
+				Handshake: &v1.SyncHandshake{
+					Mode: v1.SyncMode_SYNC_MODE_DELTA, ServerCurrentSequence: 6,
+					JournalOldestSequence: 1, ResumeFromSequence: 5,
+				},
+			},
+		}); err != nil {
+			return err
+		}
+		if err := stream.Send(&v1.SyncResponse{
+			Message: &v1.SyncResponse_JournalEntry{
+				JournalEntry: &v1.ReplicationJournalEntry{
+					Sequence: 6, Action: "INSERT",
+					NewValues: makeRow(t, map[string]any{"id": "3", "name": "c"}),
+				},
+			},
+		}); err != nil {
+			return err
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	})
+
+	addr := startTestServer(t, ts)
+	snapPath := filepath.Join(t.TempDir(), "snapshot.json")
+
+	// First client: populate data, then stop (saves snapshot).
+	c1 := New(ServerAddress(addr), Table("public", "t"), LocalSnapshotPath(snapPath))
+	ctx := context.Background()
+	if err := c1.Start(ctx); err != nil {
+		t.Fatalf("start c1: %v", err)
+	}
+	if !c1.AwaitReady(5 * time.Second) {
+		t.Fatal("c1 not ready")
+	}
+	if c1.Count() != 2 {
+		t.Fatalf("c1: expected 2 rows, got %d", c1.Count())
+	}
+	c1.Stop() // Saves snapshot to snapPath.
+
+	// Second client: loads snapshot, requests delta, gets 1 new row.
+	c2 := New(ServerAddress(addr), Table("public", "t"), LocalSnapshotPath(snapPath))
+	if err := c2.Start(ctx); err != nil {
+		t.Fatalf("start c2: %v", err)
+	}
+	t.Cleanup(c2.Stop)
+
+	// Wait for delta to be applied.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if c2.Count() >= 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if c2.Count() != 3 {
+		t.Errorf("c2: expected 3 rows, got %d", c2.Count())
+	}
+	if c2.LastSequence() != 6 {
+		t.Errorf("c2: expected lastSeq=6, got %d", c2.LastSequence())
+	}
+
+	// Verify original rows were loaded from snapshot.
+	row, ok := c2.Get("1")
+	if !ok {
+		t.Fatal("row 1 not found (should come from snapshot)")
+	}
+	if row["name"] != "a" {
+		t.Errorf("row 1: expected name=a, got %v", row["name"])
+	}
+
+	// Verify new row from delta.
+	row, ok = c2.Get("3")
+	if !ok {
+		t.Fatal("row 3 not found (should come from delta)")
+	}
+	if row["name"] != "c" {
+		t.Errorf("row 3: expected name=c, got %v", row["name"])
 	}
 }
 

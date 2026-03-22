@@ -6,8 +6,10 @@ package fanout
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -35,10 +37,11 @@ type Client struct {
 }
 
 type config struct {
-	serverAddress string
-	schema        string
-	table         string
-	clientID      string
+	serverAddress     string
+	schema            string
+	table             string
+	clientID          string
+	localSnapshotPath string
 }
 
 // Option configures the fan-out client.
@@ -59,6 +62,14 @@ func ClientID(id string) Option {
 	return func(c *config) { c.clientID = id }
 }
 
+// LocalSnapshotPath sets the path for saving/restoring client state.
+// On start, if the file exists, the client loads it and requests a delta
+// from the server instead of a full snapshot. On stop, the client saves
+// its current state so the next start is faster.
+func LocalSnapshotPath(path string) Option {
+	return func(c *config) { c.localSnapshotPath = path }
+}
+
 // New creates a new fan-out client.
 func New(opts ...Option) *Client {
 	cfg := config{}
@@ -73,8 +84,13 @@ func New(opts ...Option) *Client {
 }
 
 // Start connects to the server and begins receiving data.
-// Non-blocking — runs in the background.
+// Non-blocking — runs in the background. If LocalSnapshotPath is configured
+// and the file exists, the client loads it before connecting.
 func (c *Client) Start(ctx context.Context) error {
+	if c.cfg.localSnapshotPath != "" {
+		c.loadSnapshot()
+	}
+
 	runCtx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
 
@@ -161,11 +177,16 @@ func (c *Client) All() []laredo.Row {
 }
 
 // Stop disconnects from the server and stops the client.
+// If LocalSnapshotPath is configured, saves the current state to disk.
 func (c *Client) Stop() {
 	if c.cancel != nil {
 		c.cancel()
 	}
 	<-c.done
+
+	if c.cfg.localSnapshotPath != "" {
+		c.saveSnapshot()
+	}
 }
 
 func (c *Client) runWithReconnect(ctx context.Context) {
@@ -319,4 +340,45 @@ func rowKey(row laredo.Row) string {
 	}
 	// Fallback: use all values concatenated.
 	return fmt.Sprintf("%v", row)
+}
+
+// localSnapshot is the on-disk format for the client's saved state.
+type localSnapshot struct {
+	LastSeq int64                 `json:"last_seq"`
+	Rows    map[string]laredo.Row `json:"rows"`
+}
+
+func (c *Client) saveSnapshot() {
+	c.mu.RLock()
+	snap := localSnapshot{
+		LastSeq: c.lastSeq,
+		Rows:    make(map[string]laredo.Row, len(c.store)),
+	}
+	for k, v := range c.store {
+		snap.Rows[k] = v
+	}
+	c.mu.RUnlock()
+
+	data, err := json.Marshal(snap)
+	if err != nil {
+		return // Best effort — don't block stop.
+	}
+	_ = os.WriteFile(c.cfg.localSnapshotPath, data, 0o600)
+}
+
+func (c *Client) loadSnapshot() {
+	data, err := os.ReadFile(c.cfg.localSnapshotPath)
+	if err != nil {
+		return // File doesn't exist yet — normal on first start.
+	}
+
+	var snap localSnapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return // Corrupted — start fresh.
+	}
+
+	c.mu.Lock()
+	c.store = snap.Rows
+	c.lastSeq = snap.LastSeq
+	c.mu.Unlock()
 }
