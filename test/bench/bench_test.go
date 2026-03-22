@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/zourzouvillys/laredo"
 	"github.com/zourzouvillys/laredo/internal/engine"
 	"github.com/zourzouvillys/laredo/snapshot/jsonl"
+	"github.com/zourzouvillys/laredo/target/fanout"
 	"github.com/zourzouvillys/laredo/target/memory"
 	"github.com/zourzouvillys/laredo/test/testutil"
 )
@@ -177,4 +179,76 @@ func (b *bytesReader) Read(p []byte) (int, error) {
 	n := copy(p, *b)
 	*b = (*b)[n:]
 	return n, nil
+}
+
+// --- Fan-out target benchmarks ---
+
+func BenchmarkFanOut_Insert(b *testing.B) {
+	for _, clients := range []int{0, 1, 10, 100} {
+		b.Run(fmt.Sprintf("clients=%d", clients), func(b *testing.B) {
+			target := fanout.New(
+				fanout.JournalMaxEntries(b.N+1000),
+				fanout.HeartbeatInterval(time.Hour), // Disable heartbeat.
+			)
+			_ = target.OnInit(context.Background(), testutil.SampleTable(), testutil.SampleColumns())
+
+			// Register clients.
+			for i := range clients {
+				target.RegisterClient(fmt.Sprintf("client-%d", i))
+			}
+
+			// Baseline a few rows so the target has state.
+			for i := range 10 {
+				_ = target.OnBaselineRow(context.Background(), testutil.SampleTable(),
+					laredo.Row{"id": i, "name": fmt.Sprintf("user-%d", i)})
+			}
+			_ = target.OnBaselineComplete(context.Background(), testutil.SampleTable())
+
+			b.ResetTimer()
+			for i := range b.N {
+				_ = target.OnInsert(context.Background(), testutil.SampleTable(),
+					laredo.Row{"id": 1000 + i, "name": fmt.Sprintf("bench-%d", i)})
+			}
+
+			// Cleanup clients.
+			for i := range clients {
+				target.UnregisterClient(fmt.Sprintf("client-%d", i))
+			}
+		})
+	}
+}
+
+func BenchmarkFanOut_JournalRead(b *testing.B) {
+	target := fanout.New(fanout.JournalMaxEntries(100000))
+	_ = target.OnInit(context.Background(), testutil.SampleTable(), testutil.SampleColumns())
+	_ = target.OnBaselineComplete(context.Background(), testutil.SampleTable())
+
+	// Fill journal with entries.
+	for i := range 10000 {
+		_ = target.OnInsert(context.Background(), testutil.SampleTable(),
+			laredo.Row{"id": i, "name": fmt.Sprintf("user-%d", i)})
+	}
+
+	b.ResetTimer()
+	for range b.N {
+		// Read last 100 entries — simulates a client catching up.
+		seq := target.JournalSequence() - 100
+		entries := target.JournalEntriesSince(seq)
+		_ = entries
+	}
+}
+
+func BenchmarkFanOut_Snapshot(b *testing.B) {
+	target := fanout.New(fanout.SnapshotKeepCount(10))
+	_ = target.OnInit(context.Background(), testutil.SampleTable(), testutil.SampleColumns())
+	for i := range 1000 {
+		_ = target.OnBaselineRow(context.Background(), testutil.SampleTable(),
+			laredo.Row{"id": i, "name": fmt.Sprintf("user-%d", i)})
+	}
+	_ = target.OnBaselineComplete(context.Background(), testutil.SampleTable())
+
+	b.ResetTimer()
+	for range b.N {
+		_ = target.TakeSnapshot()
+	}
 }
