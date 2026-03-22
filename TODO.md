@@ -711,7 +711,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 ### 16.4 Packaging
 
 - [x] `go.sum` — populated with all dependencies
-- [ ] License file (choose license)
+- [x] License file (choose license)
 - [x] `CONTRIBUTING.md`
 - [x] `CHANGELOG.md` — start tracking changes
 - [ ] GitHub repository settings: branch protection, required checks, release drafts
