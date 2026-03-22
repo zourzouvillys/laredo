@@ -526,9 +526,10 @@ func TestOAM_UnimplementedRPCs(t *testing.T) {
 	client := startTestServer(t, eng, nil)
 
 	// RPCs that are still unimplemented should return CodeUnimplemented.
-	_, err := client.ResetSource(context.Background(), connect.NewRequest(&v1.ResetSourceRequest{}))
+	// (Most RPCs are now implemented; test a remaining one.)
+	_, err := client.ReloadAll(context.Background(), connect.NewRequest(&v1.ReloadAllRequest{}))
 	if connect.CodeOf(err) != connect.CodeUnimplemented {
-		t.Errorf("ResetSource: expected CodeUnimplemented, got %v", connect.CodeOf(err))
+		t.Errorf("ReloadAll: expected CodeUnimplemented, got %v", connect.CodeOf(err))
 	}
 }
 
