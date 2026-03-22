@@ -34,6 +34,10 @@ jobs:
         with:
           name: coverage
           path: coverage.txt
+      - name: Report coverage
+        run: |
+          total=$(go tool cover -func=coverage.txt | grep total | awk '{print $3}')
+          echo "### Code Coverage: ${total}" >> "$GITHUB_STEP_SUMMARY"
 
   build:
     runs-on: ubuntu-latest

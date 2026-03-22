@@ -527,8 +527,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] CI: lint + test + build (GitHub Actions)
 - [x] Release: GoReleaser on tag push (GitHub Actions)
 - [x] Add integration test job (testcontainers: PostgreSQL + LocalStack)
-- [ ] Add documentation build/deploy job (GitHub Pages)
-- [ ] Code coverage reporting
+- [x] Add documentation build/deploy job (GitHub Pages)
+- [x] Code coverage reporting
 
 ---
 
@@ -608,7 +608,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 - [x] Choose static site generator (Docusaurus 3.9.2)
 - [x] `docs/` directory structure for documentation source
-- [ ] GitHub Actions workflow: build docs on push to main, deploy to GitHub Pages
+- [x] GitHub Actions workflow: build docs on push to main, deploy to GitHub Pages
 - [ ] Custom domain setup (optional)
 - [x] Site navigation: sidebar, search, versioning (sidebars.ts)
 
