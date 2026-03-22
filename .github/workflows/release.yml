@@ -18,7 +18,9 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.26"
+      - name: Install syft (for SBOM generation)
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: latest
