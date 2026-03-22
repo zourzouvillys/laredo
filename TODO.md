@@ -678,7 +678,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 - [ ] Design specification (link to `docs/spec.md` or rendered version)
 - [ ] Architecture decision records (ADRs) for key choices
-- [ ] Contributing guide
+- [x] Contributing guide
 - [ ] Changelog / release notes process
 
 ---
@@ -712,7 +712,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 - [x] `go.sum` — populated with all dependencies
 - [ ] License file (choose license)
-- [ ] `CONTRIBUTING.md`
+- [x] `CONTRIBUTING.md`
 - [ ] `CHANGELOG.md` — start tracking changes
 - [ ] GitHub repository settings: branch protection, required checks, release drafts
 - [ ] Go module proxy: verify `go install github.com/zourzouvillys/laredo/cmd/laredo@latest` works after first tag
