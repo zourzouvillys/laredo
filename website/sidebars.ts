@@ -33,6 +33,8 @@ const sidebars: SidebarsConfig = {
         'guides/http-sync',
         'guides/fan-out',
         'guides/fan-out-client',
+        'guides/custom-source',
+        'guides/custom-target',
         'guides/filters-and-transforms',
         'guides/snapshots',
         'guides/error-handling',
@@ -49,6 +51,8 @@ const sidebars: SidebarsConfig = {
         'reference/grpc-api',
         'reference/metrics',
         'reference/health-endpoints',
+        'reference/environment-variables',
+        'reference/error-codes',
       ],
     },
     {

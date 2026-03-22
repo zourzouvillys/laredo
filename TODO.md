@@ -647,8 +647,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Monitoring with OpenTelemetry (monitoring.md + library-usage.md)
 - [x] Deploying with Docker (docker.md)
 - [x] Deploying on Kubernetes (kubernetes.md)
-- [ ] Custom source implementation guide
-- [ ] Custom target implementation guide
+- [x] Custom source implementation guide
+- [x] Custom target implementation guide
 
 ### 15.5 Reference
 
@@ -660,8 +660,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [ ] Go library API reference (godoc-generated or hand-written)
 - [x] HTTP health endpoints reference (health-endpoints.md)
 - [x] Metrics reference (metrics.md)
-- [ ] Environment variables reference
-- [ ] Error codes reference (validation errors, gRPC status codes)
+- [x] Environment variables reference
+- [x] Error codes reference (validation errors, gRPC status codes)
 
 ### 15.6 Operations
 
