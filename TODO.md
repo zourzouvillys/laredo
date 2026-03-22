@@ -436,8 +436,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `laredo query --index <name> [key_values...]` — lookup by named index
 - [x] `laredo query --pk <id>` — lookup by primary key
 - [x] `laredo query --all --limit N` — paginated listing
-- [ ] `laredo watch [schema.table]` — stream status events / row changes
-- [ ] `laredo watch --verbose` — include full row data
+- [x] `laredo watch [schema.table]` — poll-based status monitoring
+- [x] `laredo watch --verbose` — include row counts
 - [x] `laredo reload <schema.table>` / `laredo reload --all` / `laredo reload --source <id> --all`
 - [x] `laredo pause [--source <id>]` / `laredo resume [--source <id>]`
 - [x] `laredo reset-source <source_id>` with confirmation prompt

@@ -62,6 +62,8 @@ func main() {
 		tablesCmd(args)
 	case "schema":
 		schemaCmd(args)
+	case "watch":
+		watchCmd(args)
 	case "query":
 		queryCmd(args)
 	case "reload":
@@ -439,6 +441,70 @@ func snapshotRestoreCmd(args []string) {
 	} else {
 		fmt.Fprintf(os.Stderr, "restore failed: %s\n", resp.Msg.GetMessage())
 		os.Exit(1)
+	}
+}
+
+// --- watch ---
+
+func watchCmd(args []string) {
+	fs := flag.NewFlagSet("watch", flag.ExitOnError)
+	table := fs.String("table", "", "filter by table (schema.table)")
+	verbose := fs.Bool("verbose", false, "include row counts and details")
+	interval := fs.Duration("interval", 2*time.Second, "poll interval")
+	parseGlobalFlags(fs, args)
+
+	// Also accept table as positional arg.
+	if remaining := fs.Args(); len(remaining) > 0 && *table == "" {
+		*table = remaining[0]
+	}
+
+	var lastState string
+	var lastPipelineStates map[string]string
+
+	for {
+		resp, err := oamClient().GetStatus(ctx(), connect.NewRequest(&v1.GetStatusRequest{}))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			time.Sleep(*interval)
+			continue
+		}
+
+		// Detect state changes.
+		currentState := resp.Msg.GetState().String()
+		if currentState != lastState {
+			fmt.Printf("[%s] Service state: %s\n", time.Now().Format(time.TimeOnly), currentState)
+			lastState = currentState
+		}
+
+		if lastPipelineStates == nil {
+			lastPipelineStates = make(map[string]string)
+		}
+
+		for _, p := range resp.Msg.GetPipelines() {
+			// Filter by table if specified.
+			if *table != "" {
+				pTable := p.GetSchema() + "." + p.GetTable()
+				if pTable != *table {
+					continue
+				}
+			}
+
+			pState := p.GetState().String()
+			prevState := lastPipelineStates[p.GetPipelineId()]
+			if pState != prevState {
+				fmt.Printf("[%s] Pipeline %s: %s", time.Now().Format(time.TimeOnly), p.GetPipelineId(), pState)
+				if *verbose {
+					fmt.Printf(" (rows: %d)", p.GetRowCount())
+				}
+				fmt.Println()
+				lastPipelineStates[p.GetPipelineId()] = pState
+			} else if *verbose && prevState != "" {
+				// In verbose mode, always show row count changes.
+				fmt.Printf("[%s] Pipeline %s: rows=%d\n", time.Now().Format(time.TimeOnly), p.GetPipelineId(), p.GetRowCount())
+			}
+		}
+
+		time.Sleep(*interval)
 	}
 }
 
