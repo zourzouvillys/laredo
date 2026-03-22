@@ -702,9 +702,9 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 16.3 Performance
 
-- [ ] Profile baseline loading with large tables (1M+ rows)
-- [ ] Profile streaming throughput (sustained changes/sec)
-- [ ] Profile memory usage for in-memory targets at scale
+- [x] Profile baseline loading with large tables (1M+ rows)
+- [x] Profile streaming throughput (sustained changes/sec)
+- [x] Profile memory usage for in-memory targets at scale
 - [ ] Optimize hot paths identified by benchmarks
 - [x] Document resource requirements and sizing guidance
 
