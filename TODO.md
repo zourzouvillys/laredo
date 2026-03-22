@@ -666,12 +666,12 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 ### 15.6 Operations
 
 - [x] Runbook: handling slot lag warnings (slot-lag.md)
-- [ ] Runbook: recovering from slot invalidation
+- [x] Runbook: recovering from slot invalidation
 - [x] Runbook: dealing with dead letters (dead-letters.md)
 - [x] Runbook: forcing a re-baseline (re-baseline.md)
-- [ ] Runbook: resetting a source (decommissioning)
-- [ ] Runbook: restoring from a snapshot after data loss
-- [ ] Runbook: scaling fan-out clients
+- [x] Runbook: resetting a source (decommissioning)
+- [x] Runbook: restoring from a snapshot after data loss
+- [x] Runbook: scaling fan-out clients
 - [x] Troubleshooting guide (troubleshooting.md)
 
 ### 15.7 Design & Internals
