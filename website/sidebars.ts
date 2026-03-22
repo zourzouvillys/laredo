@@ -76,6 +76,7 @@ const sidebars: SidebarsConfig = {
         'operations/reset-source',
         'operations/snapshot-restore',
         'operations/scaling-fan-out',
+        'operations/resource-sizing',
       ],
     },
   ],

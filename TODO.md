@@ -706,7 +706,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [ ] Profile streaming throughput (sustained changes/sec)
 - [ ] Profile memory usage for in-memory targets at scale
 - [ ] Optimize hot paths identified by benchmarks
-- [ ] Document resource requirements and sizing guidance
+- [x] Document resource requirements and sizing guidance
 
 ### 16.4 Packaging
 
