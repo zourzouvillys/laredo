@@ -140,22 +140,96 @@ func (s *Source) Init(ctx context.Context, config laredo.SourceConfig) (map[lare
 	return schemas, nil
 }
 
-// ensurePublication creates or updates the publication for the configured tables.
+// ensurePublication creates or syncs the publication for the configured tables.
+// If the publication doesn't exist, it creates it. If it does exist, it adds
+// missing tables and removes extra tables to match the configured set.
 func (s *Source) ensurePublication(ctx context.Context, pubName string, tables []laredo.TableIdentifier) error {
 	conn := s.conn.queryConn
-	// Drop existing publication (ignore error if not exists).
-	_, _ = conn.Exec(ctx, fmt.Sprintf("DROP PUBLICATION IF EXISTS %s", pgQuoteIdent(pubName)))
 
-	// Build table list.
-	tableList := make([]string, 0, len(tables))
+	// Check if publication exists.
+	var exists bool
+	_ = conn.QueryRow(ctx,
+		"SELECT EXISTS(SELECT 1 FROM pg_publication WHERE pubname = $1)", pubName,
+	).Scan(&exists)
+
+	// Build the desired table set.
+	desired := make(map[string]laredo.TableIdentifier, len(tables))
 	for _, t := range tables {
-		tableList = append(tableList, pgQuoteIdent(t.Schema)+"."+pgQuoteIdent(t.Table))
+		desired[t.Schema+"."+t.Table] = t
 	}
 
-	query := fmt.Sprintf("CREATE PUBLICATION %s FOR TABLE %s",
-		pgQuoteIdent(pubName), strings.Join(tableList, ", "))
-	_, err := conn.Exec(ctx, query)
-	return err
+	if !exists {
+		// Create publication with all configured tables.
+		tableList := make([]string, 0, len(tables))
+		for _, t := range tables {
+			tableList = append(tableList, pgQuoteIdent(t.Schema)+"."+pgQuoteIdent(t.Table))
+		}
+		query := fmt.Sprintf("CREATE PUBLICATION %s FOR TABLE %s",
+			pgQuoteIdent(pubName), strings.Join(tableList, ", "))
+		_, err := conn.Exec(ctx, query)
+		return err
+	}
+
+	// Publication exists — sync tables.
+	current, err := s.publicationTables(ctx, pubName)
+	if err != nil {
+		return fmt.Errorf("list publication tables: %w", err)
+	}
+
+	// Find tables to add (in desired but not in current).
+	var toAdd []string
+	for key, t := range desired {
+		if !current[key] {
+			toAdd = append(toAdd, pgQuoteIdent(t.Schema)+"."+pgQuoteIdent(t.Table))
+		}
+	}
+
+	// Find tables to remove (in current but not in desired).
+	var toRemove []string
+	for key := range current {
+		if _, ok := desired[key]; !ok {
+			schema, table, _ := strings.Cut(key, ".")
+			toRemove = append(toRemove, pgQuoteIdent(schema)+"."+pgQuoteIdent(table))
+		}
+	}
+
+	if len(toAdd) > 0 {
+		query := fmt.Sprintf("ALTER PUBLICATION %s ADD TABLE %s",
+			pgQuoteIdent(pubName), strings.Join(toAdd, ", "))
+		if _, err := conn.Exec(ctx, query); err != nil {
+			return fmt.Errorf("add tables to publication: %w", err)
+		}
+	}
+
+	if len(toRemove) > 0 {
+		query := fmt.Sprintf("ALTER PUBLICATION %s DROP TABLE %s",
+			pgQuoteIdent(pubName), strings.Join(toRemove, ", "))
+		if _, err := conn.Exec(ctx, query); err != nil {
+			return fmt.Errorf("remove tables from publication: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// publicationTables returns the set of tables in a publication as "schema.table" keys.
+func (s *Source) publicationTables(ctx context.Context, pubName string) (map[string]bool, error) {
+	rows, err := s.conn.queryConn.Query(ctx,
+		"SELECT schemaname, tablename FROM pg_publication_tables WHERE pubname = $1", pubName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]bool)
+	for rows.Next() {
+		var schema, table string
+		if err := rows.Scan(&schema, &table); err != nil {
+			return nil, err
+		}
+		result[schema+"."+table] = true
+	}
+	return result, rows.Err()
 }
 
 //nolint:revive // implements SyncSource.
