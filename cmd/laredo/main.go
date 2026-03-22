@@ -66,6 +66,8 @@ func main() {
 		sourceCmd(args)
 	case "replay":
 		replayCmd(args)
+	case "reset-source":
+		resetSourceCmd(args)
 	case "dead-letters":
 		deadLettersCmd(args)
 	case "help", "--help", "-h":
@@ -101,6 +103,7 @@ Commands:
   query lookup       Lookup by index values
   source             Show source details
   replay             Replay a snapshot into targets
+  reset-source       Reset a source (drop/recreate slot)
   dead-letters       List dead letters for a pipeline
   dead-letters purge Purge dead letters
   version            Print version
@@ -829,6 +832,48 @@ func replayCmd(args []string) {
 		default:
 			// Still running — continue polling.
 		}
+	}
+}
+
+// --- reset-source ---
+
+func resetSourceCmd(args []string) {
+	fs := flag.NewFlagSet("reset-source", flag.ExitOnError)
+	dropPub := fs.Bool("drop-publication", false, "also drop the publication")
+	parseGlobalFlags(fs, args)
+
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: laredo reset-source <source-id> [--drop-publication]")
+		os.Exit(1)
+	}
+
+	sourceID := remaining[0]
+
+	// Confirmation prompt.
+	fmt.Fprintf(os.Stderr, "This will reset source %q (drop and recreate replication slot).\n", sourceID) //nolint:gosec // CLI
+	fmt.Fprint(os.Stderr, "Continue? [y/N] ")
+	var confirm string
+	fmt.Scanln(&confirm) //nolint:errcheck // best effort
+	if confirm != "y" && confirm != "Y" {
+		fmt.Fprintln(os.Stderr, "cancelled")
+		os.Exit(0)
+	}
+
+	resp, err := oamClient().ResetSource(ctx(), connect.NewRequest(&v1.ResetSourceRequest{
+		SourceId:        sourceID,
+		Confirm:         true,
+		DropPublication: *dropPub,
+	}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	if resp.Msg.GetAccepted() {
+		fmt.Println(resp.Msg.GetMessage())
+	} else {
+		fmt.Fprintf(os.Stderr, "reset failed: %s\n", resp.Msg.GetMessage())
+		os.Exit(1)
 	}
 }
 

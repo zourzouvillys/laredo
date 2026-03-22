@@ -58,6 +58,15 @@ type Engine interface {
 
 	// SourceInfo returns runtime information about a source.
 	SourceInfo(sourceID string) (SourceRunInfo, bool)
+
+	// ResetSource resets a source by dropping/recreating its slot and optionally
+	// its publication. Only supported for sources that implement the Resettable interface.
+	ResetSource(ctx context.Context, sourceID string, dropPublication bool) error
+}
+
+// Resettable is an optional interface for sources that support reset operations.
+type Resettable interface {
+	ResetSource(ctx context.Context, dropPublication bool) error
 }
 
 // SourceRunInfo describes the runtime state of a source.
@@ -1763,6 +1772,24 @@ func (e *coreEngine) SourceInfo(sourceID string) (SourceRunInfo, bool) {
 		State:             src.State(),
 		Lag:               src.GetLag(),
 	}, true
+}
+
+//nolint:revive // Engine interface implementation.
+func (e *coreEngine) ResetSource(ctx context.Context, sourceID string, dropPublication bool) error {
+	e.mu.RLock()
+	src, ok := e.sources[sourceID]
+	e.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("unknown source: %s", sourceID)
+	}
+
+	resettable, ok := src.(Resettable)
+	if !ok {
+		return fmt.Errorf("source %s does not support reset", sourceID)
+	}
+
+	return resettable.ResetSource(ctx, dropPublication)
 }
 
 // GetTarget retrieves a typed target from the engine for direct querying.

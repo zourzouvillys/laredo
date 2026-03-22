@@ -315,6 +315,29 @@ func orderingGuaranteeStr(g laredo.OrderingGuarantee) string {
 	}
 }
 
+// ResetSource drops and recreates a source's replication slot.
+func (s *Service) ResetSource(ctx context.Context, req *connect.Request[v1.ResetSourceRequest]) (*connect.Response[v1.ResetSourceResponse], error) {
+	sourceID := req.Msg.GetSourceId()
+	if sourceID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("source_id is required"))
+	}
+	if !req.Msg.GetConfirm() {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("confirm=true is required for destructive operation"))
+	}
+
+	if err := s.engine.ResetSource(ctx, sourceID, req.Msg.GetDropPublication()); err != nil {
+		return connect.NewResponse(&v1.ResetSourceResponse{
+			Accepted: false,
+			Message:  err.Error(),
+		}), nil
+	}
+
+	return connect.NewResponse(&v1.ResetSourceResponse{
+		Accepted: true,
+		Message:  fmt.Sprintf("source %s reset successfully", sourceID),
+	}), nil
+}
+
 // ListTables returns the configured tables derived from pipeline information.
 func (s *Service) ListTables(_ context.Context, _ *connect.Request[v1.ListTablesRequest]) (*connect.Response[v1.ListTablesResponse], error) {
 	pipelines := s.engine.Pipelines()

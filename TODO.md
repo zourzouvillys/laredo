@@ -374,7 +374,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `GetSourceInfo` — source details including source-specific metadata
 - [x] `ReloadTable` / `ReloadAll` — trigger re-baseline
 - [x] `PauseSync` / `ResumeSync`
-- [ ] `ResetSource` — drop/recreate slot and optionally publication
+- [x] `ResetSource` — drop/recreate slot and optionally publication
 - [x] `ListTables` / `GetTableSchema` — `ListTables` implemented; `GetTableSchema` deferred (needs column info in pipeline state)
 - [x] `CreateSnapshot` / `ListSnapshots` / `InspectSnapshot` / `RestoreSnapshot` / `DeleteSnapshot` / `PruneSnapshots` (`RestoreSnapshot` deferred — needs engine method)
 - [x] `ListDeadLetters` / `ReplayDeadLetters` / `PurgeDeadLetters` (`ListDeadLetters` + `PurgeDeadLetters` implemented; `ReplayDeadLetters` deferred — needs target lookup by pipeline ID)
@@ -440,8 +440,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [ ] `laredo watch --verbose` — include full row data
 - [x] `laredo reload <schema.table>` / `laredo reload --all` / `laredo reload --source <id> --all`
 - [x] `laredo pause [--source <id>]` / `laredo resume [--source <id>]`
-- [ ] `laredo reset-source <source_id>` with confirmation prompt
-- [ ] `laredo reset-source <source_id> --drop-publication` for decommissioning
+- [x] `laredo reset-source <source_id>` with confirmation prompt
+- [x] `laredo reset-source <source_id> --drop-publication` for decommissioning
 - [x] `laredo snapshot create [--meta key=value ...]`
 - [x] `laredo snapshot list`
 - [x] `laredo snapshot inspect <id>`
