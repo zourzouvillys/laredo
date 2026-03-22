@@ -563,7 +563,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] PostgreSQL source: stateful mode — baseline, stream, restart, resume from LSN
 - [x] PostgreSQL source: publication management — auto-create (row filters deferred to PG 15+ feature)
 - [x] PostgreSQL source: reconnect — simulate connection loss, verify reconnect and resume
-- [ ] PostgreSQL source: slot invalidation — exceed `max_slot_wal_keep_size`, verify re-baseline
+- [x] PostgreSQL source: slot invalidation — exceed `max_slot_wal_keep_size`, verify re-baseline
 - [x] Engine + PG source + indexed memory target: end-to-end pipeline
 - [x] Engine + PG source + HTTP target: end-to-end with httptest server
 - [x] Engine + PG source + fan-out target + fan-out client: full replication chain

@@ -95,6 +95,50 @@ func (pg *PGContainer) CreateTestTable(t *testing.T) {
 	}
 }
 
+// NewTestPostgresWithWALLimit starts a PostgreSQL testcontainer with a small
+// max_slot_wal_keep_size for testing slot invalidation scenarios.
+func NewTestPostgresWithWALLimit(t *testing.T, walKeepSize string) *PGContainer {
+	t.Helper()
+	ctx := context.Background()
+
+	pgContainer, err := postgres.Run(ctx,
+		"postgres:16-alpine",
+		postgres.WithDatabase("laredo_test"),
+		postgres.WithUsername("laredo"),
+		postgres.WithPassword("laredo"),
+		postgres.BasicWaitStrategies(),
+		testcontainers.CustomizeRequest(testcontainers.GenericContainerRequest{
+			ContainerRequest: testcontainers.ContainerRequest{
+				Cmd: []string{
+					"-c", "wal_level=logical",
+					"-c", "max_replication_slots=10",
+					"-c", "max_wal_senders=10",
+					"-c", "max_slot_wal_keep_size=" + walKeepSize,
+				},
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("start postgres container: %v", err)
+	}
+
+	t.Cleanup(func() {
+		if err := pgContainer.Terminate(ctx); err != nil {
+			t.Logf("terminate postgres: %v", err)
+		}
+	})
+
+	connStr, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		t.Fatalf("get connection string: %v", err)
+	}
+
+	return &PGContainer{
+		Container: pgContainer,
+		ConnStr:   connStr,
+	}
+}
+
 // InsertTestRows inserts N sample rows into the test_users table.
 func (pg *PGContainer) InsertTestRows(t *testing.T, count int) {
 	t.Helper()
