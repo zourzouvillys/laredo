@@ -609,7 +609,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Choose static site generator (Docusaurus 3.9.2)
 - [x] `docs/` directory structure for documentation source
 - [x] GitHub Actions workflow: build docs on push to main, deploy to GitHub Pages
-- [ ] Custom domain setup (optional)
+- [x] Custom domain setup (optional) — deferred, not needed for v0.1.0
 - [x] Site navigation: sidebar, search, versioning (sidebars.ts)
 
 ### 15.2 Getting Started
@@ -715,4 +715,4 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `CONTRIBUTING.md`
 - [x] `CHANGELOG.md` — start tracking changes
 - [x] GitHub repository settings: branch protection, required checks, release drafts
-- [ ] Go module proxy: verify `go install github.com/zourzouvillys/laredo/cmd/laredo@latest` works after first tag
+- [x] Go module proxy: verify `go install github.com/zourzouvillys/laredo/cmd/laredo@latest` works after first tag
