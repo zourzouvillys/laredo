@@ -24,6 +24,7 @@ type journal struct {
 	maxEntries int
 	maxAge     time.Duration
 	nextSeq    int64
+	pins       map[string]int64 // clientID → minimum sequence to retain
 }
 
 func newJournal(maxEntries int, maxAge time.Duration) *journal {
@@ -31,7 +32,22 @@ func newJournal(maxEntries int, maxAge time.Duration) *journal {
 		maxEntries: maxEntries,
 		maxAge:     maxAge,
 		nextSeq:    1,
+		pins:       make(map[string]int64),
 	}
+}
+
+// pin prevents pruning entries at or after the given sequence for a client.
+func (j *journal) pin(clientID string, seq int64) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.pins[clientID] = seq
+}
+
+// unpin removes a client's journal pin.
+func (j *journal) unpin(clientID string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	delete(j.pins, clientID)
 }
 
 // append adds a new entry to the journal and returns its sequence number.
@@ -100,11 +116,37 @@ func (j *journal) clear() {
 }
 
 // pruneLocked removes entries that exceed max_entries or max_age.
+// Respects active pins — never prunes entries at or after the lowest pin.
 // Must be called with mu held.
 func (j *journal) pruneLocked() {
+	// Find the lowest pin sequence.
+	var minPin int64
+	for _, seq := range j.pins {
+		if minPin == 0 || seq < minPin {
+			minPin = seq
+		}
+	}
+
 	// Prune by size.
 	if j.maxEntries > 0 && len(j.entries) > j.maxEntries {
 		excess := len(j.entries) - j.maxEntries
+		// Don't prune past the pin.
+		if minPin > 0 {
+			for excess > 0 && len(j.entries) > 0 && j.entries[0].Sequence < minPin {
+				excess--
+			}
+			if excess <= 0 {
+				// All prunable entries are before the pin — prune up to the pin.
+				i := 0
+				for i < len(j.entries) && j.entries[i].Sequence < minPin && len(j.entries)-i > j.maxEntries {
+					i++
+				}
+				if i > 0 {
+					j.entries = j.entries[i:]
+				}
+				return
+			}
+		}
 		j.entries = j.entries[excess:]
 	}
 
@@ -113,6 +155,10 @@ func (j *journal) pruneLocked() {
 		cutoff := time.Now().Add(-j.maxAge)
 		i := 0
 		for i < len(j.entries) && j.entries[i].Timestamp.Before(cutoff) {
+			// Don't prune past the pin.
+			if minPin > 0 && j.entries[i].Sequence >= minPin {
+				break
+			}
 			i++
 		}
 		if i > 0 {

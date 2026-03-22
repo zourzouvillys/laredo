@@ -390,6 +390,17 @@ func (t *Target) ClientList() []ClientInfo {
 	return t.clients.list()
 }
 
+// PinJournal prevents journal pruning past the given sequence for a client.
+// Use this before sending a snapshot to ensure the journal catch-up has no gaps.
+func (t *Target) PinJournal(clientID string, seq int64) {
+	t.j.pin(clientID, seq)
+}
+
+// UnpinJournal releases a client's journal pin.
+func (t *Target) UnpinJournal(clientID string) {
+	t.j.unpin(clientID)
+}
+
 // buildKey creates a composite key from the row's PK columns.
 func (t *Target) buildKey(row laredo.Row) string {
 	var parts []string

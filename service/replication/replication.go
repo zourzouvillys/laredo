@@ -240,6 +240,10 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 	// Full snapshot if needed.
 	if mode == v1.SyncMode_SYNC_MODE_FULL_SNAPSHOT {
 		snap := ft.TakeSnapshot()
+		// Pin the journal at the snapshot's sequence to prevent pruning
+		// entries needed for catch-up after the snapshot is sent.
+		ft.PinJournal(clientID, snap.Sequence)
+		defer ft.UnpinJournal(clientID)
 		if err := stream.Send(&v1.SyncResponse{
 			Message: &v1.SyncResponse_SnapshotBegin{
 				SnapshotBegin: &v1.SnapshotBegin{
