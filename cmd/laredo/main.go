@@ -269,6 +269,8 @@ func snapshotCmd(args []string) {
 		snapshotInspectCmd(subArgs)
 	case "prune":
 		snapshotPruneCmd(subArgs)
+	case "restore":
+		snapshotRestoreCmd(subArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown snapshot command: %s\n", sub) //nolint:gosec // CLI output
 		os.Exit(1)
@@ -394,6 +396,44 @@ func snapshotPruneCmd(args []string) {
 	}
 
 	fmt.Printf("pruned %d snapshots\n", resp.Msg.GetDeletedCount())
+}
+
+func snapshotRestoreCmd(args []string) {
+	fs := flag.NewFlagSet("snapshot restore", flag.ExitOnError)
+	parseGlobalFlags(fs, args)
+
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: laredo snapshot restore <snapshot-id>")
+		os.Exit(1)
+	}
+
+	snapshotID := remaining[0]
+
+	// Confirmation prompt.
+	fmt.Fprintf(os.Stderr, "This will restore snapshot %q, replacing current pipeline state.\n", snapshotID) //nolint:gosec // CLI
+	fmt.Fprint(os.Stderr, "Continue? [y/N] ")
+	var confirm string
+	fmt.Scanln(&confirm) //nolint:errcheck // best effort
+	if confirm != "y" && confirm != "Y" {
+		fmt.Fprintln(os.Stderr, "cancelled")
+		os.Exit(0)
+	}
+
+	resp, err := oamClient().RestoreSnapshot(ctx(), connect.NewRequest(&v1.RestoreSnapshotRequest{
+		SnapshotId: snapshotID,
+		Confirm:    true,
+	}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	if resp.Msg.GetAccepted() {
+		fmt.Println(resp.Msg.GetMessage())
+	} else {
+		fmt.Fprintf(os.Stderr, "restore failed: %s\n", resp.Msg.GetMessage())
+		os.Exit(1)
+	}
 }
 
 // --- query ---
@@ -864,6 +904,8 @@ func fanoutCmd(args []string) {
 		fanoutClientsCmd(subArgs)
 	case "snapshots":
 		fanoutSnapshotsCmd(subArgs)
+	case "journal":
+		fanoutJournalCmd(subArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown fanout command: %s\n", sub) //nolint:gosec // CLI
 		os.Exit(1)
@@ -994,6 +1036,46 @@ func fanoutSnapshotsCmd(args []string) {
 	for _, s := range snaps {
 		fmt.Printf("%-40s  %-12d  %d\n", s.GetSnapshotId(), s.GetSequence(), s.GetRowCount())
 	}
+}
+
+func fanoutJournalCmd(args []string) {
+	fs := flag.NewFlagSet("fanout journal", flag.ExitOnError)
+	parseGlobalFlags(fs, args)
+
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: laredo fanout journal <schema.table>")
+		os.Exit(1)
+	}
+
+	schema, table, ok := strings.Cut(remaining[0], ".")
+	if !ok {
+		fmt.Fprintln(os.Stderr, "table must be in schema.table format")
+		os.Exit(1)
+	}
+
+	resp, err := replClient().GetReplicationStatus(ctx(), connect.NewRequest(&replv1.GetReplicationStatusRequest{
+		Schema: schema,
+		Table:  table,
+	}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if output == outputJSON {
+		printJSON(map[string]any{
+			"current_sequence": resp.Msg.GetCurrentSequence(),
+			"oldest_sequence":  resp.Msg.GetJournalOldestSequence(),
+			"entry_count":      resp.Msg.GetJournalEntryCount(),
+		})
+		return
+	}
+
+	fmt.Printf("Journal for %s.%s\n", schema, table)
+	fmt.Printf("  Current sequence: %d\n", resp.Msg.GetCurrentSequence())
+	fmt.Printf("  Oldest sequence:  %d\n", resp.Msg.GetJournalOldestSequence())
+	fmt.Printf("  Entry count:      %d\n", resp.Msg.GetJournalEntryCount())
 }
 
 // --- reset-source ---

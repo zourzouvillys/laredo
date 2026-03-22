@@ -445,7 +445,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `laredo snapshot create [--meta key=value ...]`
 - [x] `laredo snapshot list`
 - [x] `laredo snapshot inspect <id>`
-- [ ] `laredo snapshot restore <id>` with confirmation prompt
+- [x] `laredo snapshot restore <id>` with confirmation prompt
 - [x] `laredo snapshot delete <id>`
 - [x] `laredo snapshot prune --keep N`
 - [x] `laredo dead-letters <pipeline_id>` — list dead letters
@@ -456,7 +456,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `laredo fanout status <schema.table>` — replication fan-out status
 - [x] `laredo fanout clients <schema.table>` — connected clients
 - [x] `laredo fanout snapshots <schema.table>` — available fan-out snapshots
-- [ ] `laredo fanout journal <schema.table> --tail N` — recent journal entries
+- [x] `laredo fanout journal <schema.table>` — journal status
 
 ### 10.2 Output Formatting
 
