@@ -64,6 +64,7 @@ func (s *setFlags) Set(v string) error {
 func run() error {
 	configPath := flag.String("config", "", "path to HOCON config file (or set LAREDO_CONFIG)")
 	confDir := flag.String("conf-dir", "/etc/laredo/conf.d", "directory of *.conf files to merge")
+	initDir := flag.String("init-dir", "/docker-entrypoint-init.d", "directory of *.conf files to merge before conf-dir (Docker init pattern)")
 	healthPort := flag.Int("health-port", 8080, "HTTP port for health and metrics endpoints")
 	logLevel := flag.String("log-level", "info", "log level (debug, info, warn, error)")
 	var sets setFlags
@@ -86,6 +87,7 @@ func run() error {
 
 	// Load and validate config.
 	cfg, err := config.LoadWithOptions(cfgPath, config.LoadOptions{
+		InitDir:   *initDir,
 		ConfDir:   *confDir,
 		Overrides: sets,
 	})

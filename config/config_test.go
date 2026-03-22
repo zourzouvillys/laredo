@@ -380,6 +380,77 @@ tables = [{ source = pg, schema = public, table = users, targets = [{ type = ind
 	}
 }
 
+func TestLoadWithOptions_InitDir(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := dir + "/main.conf"
+	_ = os.WriteFile(mainPath, []byte(`
+sources { pg { type = postgresql, connection = "postgresql://localhost/db" } }
+tables = [{ source = pg, schema = public, table = users, targets = [{ type = indexed-memory }] }]
+grpc { port = 4001 }
+`), 0o600)
+
+	// Write init-dir file that overrides the gRPC port.
+	initDirPath := dir + "/init.d"
+	_ = os.Mkdir(initDirPath, 0o750)
+	_ = os.WriteFile(initDirPath+"/custom.conf", []byte(`grpc { port = 7777 }`), 0o600)
+
+	cfg, err := LoadWithOptions(mainPath, LoadOptions{InitDir: initDirPath})
+	if err != nil {
+		t.Fatalf("LoadWithOptions: %v", err)
+	}
+
+	if cfg.GRPC == nil || cfg.GRPC.Port != 7777 {
+		t.Errorf("expected grpc.port=7777 from init-dir, got %v", cfg.GRPC)
+	}
+}
+
+func TestLoadWithOptions_InitDir_Missing(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := dir + "/main.conf"
+	_ = os.WriteFile(mainPath, []byte(`
+sources { pg { type = postgresql, connection = "postgresql://localhost/db" } }
+tables = [{ source = pg, schema = public, table = users, targets = [{ type = indexed-memory }] }]
+`), 0o600)
+
+	// Non-existent init-dir should be silently ignored.
+	cfg, err := LoadWithOptions(mainPath, LoadOptions{InitDir: dir + "/nonexistent"})
+	if err != nil {
+		t.Fatalf("LoadWithOptions should not fail for missing init-dir: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected non-nil config")
+	}
+}
+
+func TestLoadWithOptions_InitDir_OverriddenByConfDir(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := dir + "/main.conf"
+	_ = os.WriteFile(mainPath, []byte(`
+sources { pg { type = postgresql, connection = "postgresql://localhost/db" } }
+tables = [{ source = pg, schema = public, table = users, targets = [{ type = indexed-memory }] }]
+grpc { port = 4001 }
+`), 0o600)
+
+	// init-dir sets port to 7777.
+	initDirPath := dir + "/init.d"
+	_ = os.Mkdir(initDirPath, 0o750)
+	_ = os.WriteFile(initDirPath+"/init.conf", []byte(`grpc { port = 7777 }`), 0o600)
+
+	// conf.d sets port to 9999 — should win because it's loaded after init-dir.
+	confDirPath := dir + "/conf.d"
+	_ = os.Mkdir(confDirPath, 0o750)
+	_ = os.WriteFile(confDirPath+"/override.conf", []byte(`grpc { port = 9999 }`), 0o600)
+
+	cfg, err := LoadWithOptions(mainPath, LoadOptions{InitDir: initDirPath, ConfDir: confDirPath})
+	if err != nil {
+		t.Fatalf("LoadWithOptions: %v", err)
+	}
+
+	if cfg.GRPC == nil || cfg.GRPC.Port != 9999 {
+		t.Errorf("expected grpc.port=9999 (conf.d wins over init-dir), got %v", cfg.GRPC)
+	}
+}
+
 func TestMaskSensitive(t *testing.T) {
 	cfg, err := Parse(basicConfig)
 	if err != nil {

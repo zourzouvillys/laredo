@@ -510,7 +510,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 - [x] Multi-stage build (builder + distroless production image)
 - [x] Distroless base image for production
-- [ ] Entrypoint wrapper: run init scripts from `/docker-entrypoint-init.d/`, merge config, validate, start
+- [x] Entrypoint wrapper: run init scripts from `/docker-entrypoint-init.d/`, merge config, validate, start
 - [x] HEALTHCHECK instruction (uses `laredo-server healthcheck`)
 - [x] Exposed ports: 4001 (gRPC), 8080 (health/metrics)
 - [x] Volumes: `/etc/laredo/`, `/etc/laredo/conf.d/`, `/var/lib/laredo/`

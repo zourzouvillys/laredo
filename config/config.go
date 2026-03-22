@@ -100,6 +100,11 @@ type GRPCConfig struct {
 
 // LoadOptions controls how configuration is loaded.
 type LoadOptions struct {
+	// InitDir is an optional directory of *.conf files to merge before ConfDir.
+	// Supports the Docker /docker-entrypoint-init.d/ pattern. Files are merged
+	// in alphabetical order. The directory is silently skipped if it doesn't exist.
+	InitDir string
+
 	// ConfDir is an optional directory of *.conf files to merge (alphabetical order).
 	// Later files override earlier files. Conf.d files override the main config.
 	ConfDir string
@@ -125,7 +130,16 @@ func LoadWithOptions(path string, opts LoadOptions) (*Config, error) {
 	}
 	combined := string(data)
 
-	// 2. Merge conf.d directory (if specified).
+	// 2. Merge init-dir directory (if specified, silently skipped if missing).
+	if opts.InitDir != "" {
+		extras, err := loadConfDir(opts.InitDir)
+		if err == nil {
+			combined += "\n" + extras
+		}
+		// Silently ignore missing init-dir — it's optional (Docker pattern).
+	}
+
+	// 3. Merge conf.d directory (if specified).
 	if opts.ConfDir != "" {
 		extras, err := loadConfDir(opts.ConfDir)
 		if err != nil {
@@ -134,7 +148,7 @@ func LoadWithOptions(path string, opts LoadOptions) (*Config, error) {
 		combined += "\n" + extras
 	}
 
-	// 3. Apply --set key=value overrides as HOCON.
+	// 4. Apply --set key=value overrides as HOCON.
 	for _, override := range opts.Overrides {
 		key, value, ok := strings.Cut(override, "=")
 		if !ok {
@@ -149,7 +163,7 @@ func LoadWithOptions(path string, opts LoadOptions) (*Config, error) {
 		return nil, err
 	}
 
-	// 4. Apply environment variable overrides.
+	// 5. Apply environment variable overrides.
 	cfg.ApplyEnvOverrides()
 	return cfg, nil
 }
