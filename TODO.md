@@ -714,5 +714,5 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] License file (choose license)
 - [x] `CONTRIBUTING.md`
 - [x] `CHANGELOG.md` — start tracking changes
-- [ ] GitHub repository settings: branch protection, required checks, release drafts
+- [x] GitHub repository settings: branch protection, required checks, release drafts
 - [ ] Go module proxy: verify `go install github.com/zourzouvillys/laredo/cmd/laredo@latest` works after first tag
