@@ -60,6 +60,8 @@ func main() {
 		pipelinesCmd(args)
 	case "tables":
 		tablesCmd(args)
+	case "schema":
+		schemaCmd(args)
 	case "query":
 		queryCmd(args)
 	case "reload":
@@ -437,6 +439,59 @@ func snapshotRestoreCmd(args []string) {
 	} else {
 		fmt.Fprintf(os.Stderr, "restore failed: %s\n", resp.Msg.GetMessage())
 		os.Exit(1)
+	}
+}
+
+// --- schema ---
+
+func schemaCmd(args []string) {
+	fs := flag.NewFlagSet("schema", flag.ExitOnError)
+	parseGlobalFlags(fs, args)
+
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: laredo schema <schema.table>")
+		os.Exit(1)
+	}
+
+	schema, table, ok := strings.Cut(remaining[0], ".")
+	if !ok {
+		fmt.Fprintln(os.Stderr, "table must be in schema.table format")
+		os.Exit(1)
+	}
+
+	resp, err := oamClient().GetTableSchema(ctx(), connect.NewRequest(&v1.GetTableSchemaRequest{
+		Schema: schema,
+		Table:  table,
+	}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	cols := resp.Msg.GetColumns()
+	if output == outputJSON || output == outputYAML {
+		printJSON(cols)
+		return
+	}
+
+	fmt.Printf("%-5s  %-30s  %-15s  %-8s  %s\n", "ORD", "COLUMN", "TYPE", "NULL", "PK")
+	for _, c := range cols {
+		nullable := "YES"
+		if c.GetNotNull() {
+			nullable = "NO"
+		}
+		pk := ""
+		if c.GetIsPrimaryKey() {
+			pk = fmt.Sprintf("PK(%d)", c.GetPrimaryKeyOrdinal())
+		}
+		fmt.Printf("%-5d  %-30s  %-15s  %-8s  %s\n",
+			c.GetOrdinalPosition(),
+			c.GetColumnName(),
+			c.GetDataType(),
+			nullable,
+			pk,
+		)
 	}
 }
 

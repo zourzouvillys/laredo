@@ -59,6 +59,9 @@ type Engine interface {
 	// SourceInfo returns runtime information about a source.
 	SourceInfo(sourceID string) (SourceRunInfo, bool)
 
+	// TableSchema returns the column definitions for a table, or nil if not found.
+	TableSchema(table TableIdentifier) []ColumnDefinition
+
 	// ResetSource resets a source by dropping/recreating its slot and optionally
 	// its publication. Only supported for sources that implement the Resettable interface.
 	ResetSource(ctx context.Context, sourceID string, dropPublication bool) error
@@ -513,6 +516,8 @@ type coreEngine struct {
 	shutdownTimeout    time.Duration
 	deadLetterStore    DeadLetterStore
 
+	schemas map[TableIdentifier][]ColumnDefinition // discovered column schemas
+
 	mu      sync.RWMutex
 	started bool
 	stopped bool
@@ -747,6 +752,16 @@ func (e *coreEngine) runSource(ctx context.Context, sourceID string, pipelineIdx
 	}
 
 	e.observer.OnSourceConnected(sourceID, reflect.TypeOf(source).String())
+
+	// Store discovered schemas for later querying.
+	e.mu.Lock()
+	if e.schemas == nil {
+		e.schemas = make(map[TableIdentifier][]ColumnDefinition)
+	}
+	for table, cols := range schemas {
+		e.schemas[table] = cols
+	}
+	e.mu.Unlock()
 
 	// Init each target with the column schema.
 	for _, idx := range pipelineIdxs {
@@ -1772,6 +1787,13 @@ func (e *coreEngine) SourceInfo(sourceID string) (SourceRunInfo, bool) {
 		State:             src.State(),
 		Lag:               src.GetLag(),
 	}, true
+}
+
+//nolint:revive // Engine interface implementation.
+func (e *coreEngine) TableSchema(table TableIdentifier) []ColumnDefinition {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.schemas[table]
 }
 
 //nolint:revive // Engine interface implementation.

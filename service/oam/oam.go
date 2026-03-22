@@ -315,6 +315,34 @@ func orderingGuaranteeStr(g laredo.OrderingGuarantee) string {
 	}
 }
 
+// GetTableSchema returns column definitions for a table.
+func (s *Service) GetTableSchema(_ context.Context, req *connect.Request[v1.GetTableSchemaRequest]) (*connect.Response[v1.GetTableSchemaResponse], error) {
+	schema := req.Msg.GetSchema()
+	table := req.Msg.GetTable()
+	if schema == "" || table == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("schema and table are required"))
+	}
+
+	cols := s.engine.TableSchema(laredo.Table(schema, table))
+	if cols == nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("no schema for %s.%s", schema, table))
+	}
+
+	var protoCols []*v1.ColumnDefinition
+	for _, c := range cols {
+		protoCols = append(protoCols, &v1.ColumnDefinition{
+			OrdinalPosition:   int32(c.OrdinalPosition), //nolint:gosec // won't overflow
+			ColumnName:        c.Name,
+			DataType:          c.Type,
+			NotNull:           !c.Nullable,
+			IsPrimaryKey:      c.PrimaryKey,
+			PrimaryKeyOrdinal: int32(c.PrimaryKeyOrdinal), //nolint:gosec // won't overflow
+		})
+	}
+
+	return connect.NewResponse(&v1.GetTableSchemaResponse{Columns: protoCols}), nil
+}
+
 // ResetSource drops and recreates a source's replication slot.
 func (s *Service) ResetSource(ctx context.Context, req *connect.Request[v1.ResetSourceRequest]) (*connect.Response[v1.ResetSourceResponse], error) {
 	sourceID := req.Msg.GetSourceId()

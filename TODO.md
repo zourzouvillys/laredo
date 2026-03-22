@@ -375,7 +375,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `ReloadTable` / `ReloadAll` — trigger re-baseline
 - [x] `PauseSync` / `ResumeSync`
 - [x] `ResetSource` — drop/recreate slot and optionally publication
-- [x] `ListTables` / `GetTableSchema` — `ListTables` implemented; `GetTableSchema` deferred (needs column info in pipeline state)
+- [x] `ListTables` / `GetTableSchema` — both implemented
 - [x] `CreateSnapshot` / `ListSnapshots` / `InspectSnapshot` / `RestoreSnapshot` / `DeleteSnapshot` / `PruneSnapshots` (`RestoreSnapshot` deferred — needs engine method)
 - [x] `ListDeadLetters` / `ReplayDeadLetters` / `PurgeDeadLetters` (`ListDeadLetters` + `PurgeDeadLetters` implemented; `ReplayDeadLetters` deferred — needs target lookup by pipeline ID)
 - [x] `StartReplay` / `GetReplayStatus` / `StopReplay`
@@ -431,7 +431,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `laredo source [source_id]` — source detail including source-specific metadata
 - [x] `laredo pipelines` — tabular list of all pipelines
 - [x] `laredo tables` — tabular list of configured tables
-- [ ] `laredo schema <schema.table>` — column definitions
+- [x] `laredo schema <schema.table>` — column definitions
 - [x] `laredo query <schema.table> [key_values...]` — lookup by primary index
 - [x] `laredo query --index <name> [key_values...]` — lookup by named index
 - [x] `laredo query --pk <id>` — lookup by primary key
