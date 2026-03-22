@@ -555,7 +555,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `deadletter/memory_test.go` + `deadletter/local_test.go` — write/read/replay/purge
 - [x] `service/oam/oam_test.go` — gRPC service handlers
 - [x] `service/query/query_test.go` — gRPC service handlers
-- [ ] `client/fanout/client_test.go` — connect, snapshot/delta, reconnect
+- [x] `client/fanout/client_test.go` — connect, snapshot/delta, reconnect
 
 ### 14.2 Integration Tests (Tier 2 — `test/integration/`)
 
