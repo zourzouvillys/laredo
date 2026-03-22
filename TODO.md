@@ -168,7 +168,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `ComparePositions` — compare composite positions
 - [x] ACK: Kinesis checkpoint (DynamoDB checkpoint table)
 - [x] Multi-shard: concurrent shard consumers, demux by table
-- [ ] Shard split/merge handling
+- [x] Shard split/merge handling
 - [x] `SupportsResume()` — true if checkpointing enabled
 - [x] Option builder: `BaselineBucket()`, `BaselinePrefix()`, `StreamName()`, `Region()`, `WithS3Client()`, `WithKinesisClient()`
 

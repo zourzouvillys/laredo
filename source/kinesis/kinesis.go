@@ -234,6 +234,8 @@ func (s *Source) Baseline(ctx context.Context, tables []laredo.TableIdentifier, 
 }
 
 // Stream reads change events from Kinesis shards and delivers them via handler.
+// Handles shard splits/merges by detecting closed shards and discovering new
+// child shards via DescribeStream.
 //
 //nolint:revive // implements SyncSource.
 func (s *Source) Stream(ctx context.Context, from laredo.Position, handler laredo.ChangeHandler) error {
@@ -243,14 +245,6 @@ func (s *Source) Stream(ctx context.Context, from laredo.Position, handler lared
 
 	s.setState(laredo.SourceStreaming)
 
-	// Describe stream to get shard list.
-	desc, err := s.cfg.kinesisClient.DescribeStream(ctx, &kinesis.DescribeStreamInput{
-		StreamName: aws.String(s.cfg.streamName),
-	})
-	if err != nil {
-		return fmt.Errorf("describe stream: %w", err)
-	}
-
 	// Get starting position from the Position if available.
 	var pos *Position
 	if from != nil {
@@ -259,27 +253,88 @@ func (s *Source) Stream(ctx context.Context, from laredo.Position, handler lared
 		}
 	}
 
-	// Start a consumer for each shard.
-	var wg sync.WaitGroup
-	errCh := make(chan error, len(desc.StreamDescription.Shards))
+	// Track which shards have been started to avoid duplicates.
+	started := make(map[string]bool)
+	// closedCh receives shard IDs when a consumer exits because the shard closed
+	// (split/merge). This triggers re-discovery.
+	closedCh := make(chan string, 16)
+	errCh := make(chan error, 1)
 
-	for _, shard := range desc.StreamDescription.Shards {
+	var wg sync.WaitGroup
+
+	// startShard launches a consumer goroutine for a shard if not already started.
+	startShard := func(shardID string) {
+		if started[shardID] {
+			return
+		}
+		started[shardID] = true
 		wg.Add(1)
-		go func(shardID string) {
+		go func() {
 			defer wg.Done()
-			if err := s.consumeShard(ctx, shardID, pos, handler); err != nil && ctx.Err() == nil {
-				errCh <- err
+			err := s.consumeShard(ctx, shardID, pos, handler)
+			if err != nil && ctx.Err() == nil {
+				select {
+				case errCh <- err:
+				default:
+				}
+				return
 			}
-		}(aws.ToString(shard.ShardId))
+			// Shard closed normally (split/merge) — notify for re-discovery.
+			if ctx.Err() == nil {
+				select {
+				case closedCh <- shardID:
+				default:
+				}
+			}
+		}()
 	}
 
-	wg.Wait()
-	close(errCh)
-
-	for err := range errCh {
+	// Initial shard discovery.
+	shards, err := s.listShards(ctx)
+	if err != nil {
 		return err
 	}
-	return ctx.Err()
+	for _, shardID := range shards {
+		startShard(shardID)
+	}
+
+	// Monitor for shard closures and discover new shards.
+	for {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return ctx.Err()
+		case err := <-errCh:
+			wg.Wait()
+			return err
+		case <-closedCh:
+			// A shard closed — re-describe to find child shards.
+			newShards, err := s.listShards(ctx)
+			if err != nil {
+				wg.Wait()
+				return err
+			}
+			for _, shardID := range newShards {
+				startShard(shardID)
+			}
+		}
+	}
+}
+
+// listShards returns all shard IDs for the configured stream.
+func (s *Source) listShards(ctx context.Context) ([]string, error) {
+	desc, err := s.cfg.kinesisClient.DescribeStream(ctx, &kinesis.DescribeStreamInput{
+		StreamName: aws.String(s.cfg.streamName),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("describe stream: %w", err)
+	}
+
+	ids := make([]string, 0, len(desc.StreamDescription.Shards))
+	for _, shard := range desc.StreamDescription.Shards {
+		ids = append(ids, aws.ToString(shard.ShardId))
+	}
+	return ids, nil
 }
 
 func (s *Source) consumeShard(ctx context.Context, shardID string, pos *Position, handler laredo.ChangeHandler) error {
