@@ -369,7 +369,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `GetStatus` — aggregate engine state, source statuses, pipeline statuses
 - [x] `GetTableStatus` — pipelines + indexes for a table
 - [x] `GetPipelineStatus` — single pipeline status + indexes
-- [ ] `WatchStatus` — server-streaming status events (state changes, row changes, source events)
+- [x] `WatchStatus` — server-streaming status events (state changes, row changes, source events)
 - [x] `CheckReady` — readiness check (global, per-source, per-table, per-pipeline)
 - [x] `GetSourceInfo` — source details including source-specific metadata
 - [x] `ReloadTable` / `ReloadAll` — trigger re-baseline

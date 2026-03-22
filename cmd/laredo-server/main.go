@@ -106,12 +106,15 @@ func run() error {
 	promReg.MustRegister(collectors.NewGoCollector())
 	observer := prom.New(promReg)
 
+	// Create OAM service early so its observer can capture engine events.
+	oamSvc := oam.New(nil)
+
 	// Build engine options from config.
 	opts, err := cfg.ToEngineOptions()
 	if err != nil {
 		return fmt.Errorf("build engine options: %w", err)
 	}
-	opts = append(opts, laredo.WithObserver(observer))
+	opts = append(opts, laredo.WithObserver(laredo.NewCompositeObserver(observer, oamSvc.Observer())))
 
 	// Create engine.
 	eng, errs := laredo.NewEngine(opts...)
@@ -121,6 +124,7 @@ func run() error {
 		}
 		return fmt.Errorf("engine creation failed (%d errors)", len(errs))
 	}
+	oamSvc.SetEngine(eng)
 
 	// Start engine.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -170,7 +174,6 @@ func run() error {
 	// Start gRPC server.
 	var grpcSrv *service.Server
 	if cfg.GRPC != nil && cfg.GRPC.Port > 0 {
-		oamSvc := oam.New(eng)
 		querySvc := query.New(eng)
 
 		grpcAddr := fmt.Sprintf(":%d", cfg.GRPC.Port)

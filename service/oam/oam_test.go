@@ -777,3 +777,175 @@ func TestOAM_ListSnapshots_NoStore(t *testing.T) {
 		t.Errorf("expected CodeFailedPrecondition, got %v", connect.CodeOf(err))
 	}
 }
+
+func TestOAM_WatchStatus(t *testing.T) {
+	src := testsource.New()
+	src.SetSchema(testutil.SampleTable(), testutil.SampleColumns())
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+
+	target := memory.NewIndexedTarget()
+	oamSvc := oam.New(nil) // engine set later
+	obs := oamSvc.Observer()
+
+	eng, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("engine errors: %v", errs)
+	}
+
+	// Set the engine on the service now that it's created.
+	oamSvc.SetEngine(eng)
+
+	ctx := context.Background()
+	if err := eng.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !eng.AwaitReady(5 * time.Second) {
+		t.Fatal("engine not ready")
+	}
+	t.Cleanup(func() { _ = eng.Stop(ctx) })
+
+	// Start the server with the OAM service.
+	srv := service.New(
+		service.WithAddress("127.0.0.1:0"),
+		service.EnableOAM(oamSvc),
+	)
+	go func() { _ = srv.Start() }()
+	time.Sleep(50 * time.Millisecond)
+	t.Cleanup(func() { _ = srv.Stop(ctx) })
+
+	client := laredov1connect.NewLaredoOAMServiceClient(
+		http.DefaultClient,
+		"http://"+srv.Addr(),
+	)
+
+	// Start watching — WatchStatus blocks until the server sends, so
+	// call it in a goroutine and emit events to unblock it.
+	watchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	events := make(chan *v1.WatchStatusResponse, 10)
+	streamErr := make(chan error, 1)
+	go func() {
+		stream, err := client.WatchStatus(watchCtx, connect.NewRequest(&v1.WatchStatusRequest{}))
+		if err != nil {
+			streamErr <- err
+			return
+		}
+		for stream.Receive() {
+			events <- stream.Msg()
+		}
+		streamErr <- stream.Err()
+	}()
+
+	// Give the stream time to connect, then emit a change.
+	time.Sleep(100 * time.Millisecond)
+	src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(2, "bob"))
+
+	timeout := time.After(5 * time.Second)
+	var gotRowChange bool
+	for !gotRowChange {
+		select {
+		case msg := <-events:
+			if rc := msg.GetRowChange(); rc != nil {
+				gotRowChange = true
+				if rc.GetAction() != "INSERT" {
+					t.Errorf("expected INSERT, got %s", rc.GetAction())
+				}
+				if rc.GetSchema() != "public" || rc.GetTable() != "test_table" {
+					t.Errorf("unexpected table: %s.%s", rc.GetSchema(), rc.GetTable())
+				}
+			}
+		case err := <-streamErr:
+			t.Fatalf("WatchStatus stream error: %v", err)
+		case <-timeout:
+			t.Fatal("timed out waiting for row change event")
+		}
+	}
+}
+
+func TestOAM_WatchStatus_FilterByTable(t *testing.T) {
+	src := testsource.New()
+	src.SetSchema(testutil.SampleTable(), testutil.SampleColumns())
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+
+	target := memory.NewIndexedTarget()
+	oamSvc := oam.New(nil)
+	obs := oamSvc.Observer()
+
+	eng, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+		laredo.WithObserver(obs),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("engine errors: %v", errs)
+	}
+	oamSvc.SetEngine(eng)
+
+	ctx := context.Background()
+	if err := eng.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !eng.AwaitReady(5 * time.Second) {
+		t.Fatal("engine not ready")
+	}
+	t.Cleanup(func() { _ = eng.Stop(ctx) })
+
+	srv := service.New(
+		service.WithAddress("127.0.0.1:0"),
+		service.EnableOAM(oamSvc),
+	)
+	go func() { _ = srv.Start() }()
+	time.Sleep(50 * time.Millisecond)
+	t.Cleanup(func() { _ = srv.Stop(ctx) })
+
+	client := laredov1connect.NewLaredoOAMServiceClient(
+		http.DefaultClient,
+		"http://"+srv.Addr(),
+	)
+
+	// Watch only for a table that doesn't match.
+	watchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	events := make(chan *v1.WatchStatusResponse, 10)
+	go func() {
+		stream, err := client.WatchStatus(watchCtx, connect.NewRequest(&v1.WatchStatusRequest{
+			Tables: []string{"other_schema.other_table"},
+		}))
+		if err != nil {
+			return
+		}
+		for stream.Receive() {
+			events <- stream.Msg()
+		}
+	}()
+
+	// Give the stream time to connect, then emit a change.
+	time.Sleep(100 * time.Millisecond)
+	src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(2, "bob"))
+
+	// Give time for event to propagate (or not).
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+
+	var got int
+	for {
+		select {
+		case msg := <-events:
+			if msg.GetRowChange() != nil {
+				got++
+			}
+		default:
+			goto done
+		}
+	}
+done:
+	if got != 0 {
+		t.Errorf("expected 0 row change events for filtered table, got %d", got)
+	}
+}

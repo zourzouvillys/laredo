@@ -449,8 +449,7 @@ func snapshotRestoreCmd(args []string) {
 func watchCmd(args []string) {
 	fs := flag.NewFlagSet("watch", flag.ExitOnError)
 	table := fs.String("table", "", "filter by table (schema.table)")
-	verbose := fs.Bool("verbose", false, "include row counts and details")
-	interval := fs.Duration("interval", 2*time.Second, "poll interval")
+	pipelineID := fs.String("pipeline", "", "filter by pipeline ID")
 	parseGlobalFlags(fs, args)
 
 	// Also accept table as positional arg.
@@ -458,53 +457,43 @@ func watchCmd(args []string) {
 		*table = remaining[0]
 	}
 
-	var lastState string
-	var lastPipelineStates map[string]string
+	req := &v1.WatchStatusRequest{}
+	if *table != "" {
+		req.Tables = []string{*table}
+	}
+	if *pipelineID != "" {
+		req.PipelineIds = []string{*pipelineID}
+	}
 
-	for {
-		resp, err := oamClient().GetStatus(ctx(), connect.NewRequest(&v1.GetStatusRequest{}))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			time.Sleep(*interval)
-			continue
+	stream, err := oamClient().WatchStatus(ctx(), connect.NewRequest(req))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	for stream.Receive() {
+		msg := stream.Msg()
+		ts := msg.GetTimestamp().AsTime().Format(time.TimeOnly)
+
+		switch {
+		case msg.GetPipelineStateChange() != nil:
+			ev := msg.GetPipelineStateChange()
+			fmt.Printf("[%s] Pipeline %s: %s → %s\n", ts, ev.GetPipelineId(), ev.GetOldState(), ev.GetNewState())
+		case msg.GetSourceStateChange() != nil:
+			ev := msg.GetSourceStateChange()
+			fmt.Printf("[%s] Source %s: %s — %s\n", ts, ev.GetSourceId(), ev.GetEventType(), ev.GetMessage())
+		case msg.GetRowChange() != nil:
+			ev := msg.GetRowChange()
+			fmt.Printf("[%s] %s %s.%s (pipeline=%s)\n", ts, ev.GetAction(), ev.GetSchema(), ev.GetTable(), ev.GetPipelineId())
+		case msg.GetServiceStateChange() != nil:
+			ev := msg.GetServiceStateChange()
+			fmt.Printf("[%s] Service: %s → %s\n", ts, ev.GetOldState(), ev.GetNewState())
 		}
+	}
 
-		// Detect state changes.
-		currentState := resp.Msg.GetState().String()
-		if currentState != lastState {
-			fmt.Printf("[%s] Service state: %s\n", time.Now().Format(time.TimeOnly), currentState)
-			lastState = currentState
-		}
-
-		if lastPipelineStates == nil {
-			lastPipelineStates = make(map[string]string)
-		}
-
-		for _, p := range resp.Msg.GetPipelines() {
-			// Filter by table if specified.
-			if *table != "" {
-				pTable := p.GetSchema() + "." + p.GetTable()
-				if pTable != *table {
-					continue
-				}
-			}
-
-			pState := p.GetState().String()
-			prevState := lastPipelineStates[p.GetPipelineId()]
-			if pState != prevState {
-				fmt.Printf("[%s] Pipeline %s: %s", time.Now().Format(time.TimeOnly), p.GetPipelineId(), pState)
-				if *verbose {
-					fmt.Printf(" (rows: %d)", p.GetRowCount())
-				}
-				fmt.Println()
-				lastPipelineStates[p.GetPipelineId()] = pState
-			} else if *verbose && prevState != "" {
-				// In verbose mode, always show row count changes.
-				fmt.Printf("[%s] Pipeline %s: rows=%d\n", time.Now().Format(time.TimeOnly), p.GetPipelineId(), p.GetRowCount())
-			}
-		}
-
-		time.Sleep(*interval)
+	if err := stream.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "stream error: %v\n", err)
+		os.Exit(1)
 	}
 }
 

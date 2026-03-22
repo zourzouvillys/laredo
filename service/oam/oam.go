@@ -28,8 +28,16 @@ type Service struct {
 	snapshotStore   laredo.SnapshotStore
 	deadLetterStore deadletter.Store
 
-	mu      sync.Mutex
-	replays map[string]*replayState
+	mu       sync.Mutex
+	replays  map[string]*replayState
+	watchers []*watcher
+}
+
+// watcher is a registered WatchStatus subscriber.
+type watcher struct {
+	ch          chan *v1.WatchStatusResponse
+	tables      map[string]bool // empty = all tables
+	pipelineIDs map[string]bool // empty = all pipelines
 }
 
 type replayState struct {
@@ -68,6 +76,12 @@ func New(engine laredo.Engine, opts ...Option) *Service {
 		opt(s)
 	}
 	return s
+}
+
+// SetEngine sets the engine after construction. Useful when the observer must
+// be registered before the engine starts.
+func (s *Service) SetEngine(engine laredo.Engine) {
+	s.engine = engine
 }
 
 // --- Status & Monitoring ---
@@ -150,6 +164,145 @@ func (s *Service) GetPipelineStatus(_ context.Context, req *connect.Request[v1.G
 	}
 
 	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("pipeline %s not found", pipelineID))
+}
+
+// WatchStatus streams engine events to the client in real time.
+func (s *Service) WatchStatus(ctx context.Context, req *connect.Request[v1.WatchStatusRequest], stream *connect.ServerStream[v1.WatchStatusResponse]) error {
+	w := &watcher{
+		ch:          make(chan *v1.WatchStatusResponse, 256),
+		tables:      make(map[string]bool),
+		pipelineIDs: make(map[string]bool),
+	}
+	for _, t := range req.Msg.GetTables() {
+		w.tables[t] = true
+	}
+	for _, pid := range req.Msg.GetPipelineIds() {
+		w.pipelineIDs[pid] = true
+	}
+
+	s.mu.Lock()
+	s.watchers = append(s.watchers, w)
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		for i, ww := range s.watchers {
+			if ww == w {
+				s.watchers = append(s.watchers[:i], s.watchers[i+1:]...)
+				break
+			}
+		}
+		s.mu.Unlock()
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case msg := <-w.ch:
+			if err := stream.Send(msg); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// Observer returns an EngineObserver that feeds events to connected WatchStatus clients.
+func (s *Service) Observer() laredo.EngineObserver {
+	return &serviceObserver{svc: s}
+}
+
+// serviceObserver implements EngineObserver to broadcast events to WatchStatus watchers.
+type serviceObserver struct {
+	laredo.NullObserver
+	svc *Service
+}
+
+//nolint:revive // EngineObserver implementation.
+func (o *serviceObserver) OnPipelineStateChanged(pipelineID string, oldState, newState laredo.PipelineState) {
+	o.svc.broadcast(pipelineID, "", &v1.WatchStatusResponse{
+		Timestamp: timestamppb.Now(),
+		Event: &v1.WatchStatusResponse_PipelineStateChange{
+			PipelineStateChange: &v1.PipelineStateChangeEvent{
+				PipelineId: pipelineID,
+				OldState:   pipelineStateToProto(oldState),
+				NewState:   pipelineStateToProto(newState),
+			},
+		},
+	})
+}
+
+//nolint:revive // EngineObserver implementation.
+func (o *serviceObserver) OnSourceConnected(sourceID, sourceType string) {
+	o.svc.broadcast("", "", &v1.WatchStatusResponse{
+		Timestamp: timestamppb.Now(),
+		Event: &v1.WatchStatusResponse_SourceStateChange{
+			SourceStateChange: &v1.SourceStateChange{
+				SourceId:  sourceID,
+				EventType: "connected",
+				Message:   fmt.Sprintf("source connected (type=%s)", sourceType),
+			},
+		},
+	})
+}
+
+//nolint:revive // EngineObserver implementation.
+func (o *serviceObserver) OnSourceDisconnected(sourceID, reason string) {
+	o.svc.broadcast("", "", &v1.WatchStatusResponse{
+		Timestamp: timestamppb.Now(),
+		Event: &v1.WatchStatusResponse_SourceStateChange{
+			SourceStateChange: &v1.SourceStateChange{
+				SourceId:  sourceID,
+				EventType: "disconnected",
+				Message:   reason,
+			},
+		},
+	})
+}
+
+//nolint:revive // EngineObserver implementation.
+func (o *serviceObserver) OnChangeApplied(pipelineID string, table laredo.TableIdentifier, action laredo.ChangeAction, _ time.Duration) {
+	o.svc.broadcast(pipelineID, table.Schema+"."+table.Table, &v1.WatchStatusResponse{
+		Timestamp: timestamppb.Now(),
+		Event: &v1.WatchStatusResponse_RowChange{
+			RowChange: &v1.RowChange{
+				PipelineId: pipelineID,
+				Schema:     table.Schema,
+				Table:      table.Table,
+				Action:     action.String(),
+			},
+		},
+	})
+}
+
+// broadcast sends an event to all matching watchers. Non-blocking: drops events
+// if a watcher's channel is full.
+func (s *Service) broadcast(pipelineID, tableKey string, msg *v1.WatchStatusResponse) {
+	s.mu.Lock()
+	watchers := make([]*watcher, len(s.watchers))
+	copy(watchers, s.watchers)
+	s.mu.Unlock()
+
+	for _, w := range watchers {
+		if !w.matches(pipelineID, tableKey) {
+			continue
+		}
+		select {
+		case w.ch <- msg:
+		default:
+			// Watcher is slow — drop event to avoid blocking engine goroutine.
+		}
+	}
+}
+
+func (w *watcher) matches(pipelineID, tableKey string) bool {
+	if len(w.pipelineIDs) > 0 && pipelineID != "" && !w.pipelineIDs[pipelineID] {
+		return false
+	}
+	if len(w.tables) > 0 && tableKey != "" && !w.tables[tableKey] {
+		return false
+	}
+	return true
 }
 
 func pipelineInfoToProto(p laredo.PipelineInfo) *v1.PipelineStatus {

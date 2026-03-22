@@ -68,12 +68,19 @@ laredo query public.config_document --all --limit 10
 
 ### `laredo watch [schema.table]`
 
-Stream status events or row changes in real time.
+Stream status events in real time via the `WatchStatus` server-streaming RPC. Shows pipeline state changes, source connect/disconnect events, and row changes as they happen.
 
 ```bash
-laredo watch
-laredo watch public.config_document --verbose
+laredo watch                              # all events
+laredo watch public.config_document       # filter by table
+laredo watch --pipeline pg/public.users   # filter by pipeline ID
 ```
+
+**Flags:**
+| Flag | Description |
+|---|---|
+| `--table` | Filter by table (`schema.table`) |
+| `--pipeline` | Filter by pipeline ID |
 
 ### `laredo reload`
 
