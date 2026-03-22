@@ -30,6 +30,7 @@ type Target struct {
 	mu        sync.RWMutex
 	store     map[string]laredo.Row // keyed by composite PK
 	j         *journal
+	clients   *clientRegistry
 	ready     bool
 	table     laredo.TableIdentifier
 	cols      []laredo.ColumnDefinition
@@ -42,6 +43,7 @@ type config struct {
 	snapshotInterval  time.Duration
 	snapshotKeepCount int
 	snapshotMaxAge    time.Duration
+	maxClients        int
 }
 
 // Option configures the fan-out target.
@@ -73,6 +75,11 @@ func SnapshotMaxAge(d time.Duration) Option {
 	return func(c *config) { c.snapshotMaxAge = d }
 }
 
+// MaxClients sets the maximum number of connected clients. Zero means unlimited.
+func MaxClients(n int) Option {
+	return func(c *config) { c.maxClients = n }
+}
+
 // New creates a new replication fan-out target.
 func New(opts ...Option) *Target {
 	cfg := config{
@@ -83,9 +90,10 @@ func New(opts ...Option) *Target {
 		opt(&cfg)
 	}
 	return &Target{
-		cfg:   cfg,
-		store: make(map[string]laredo.Row),
-		j:     newJournal(cfg.maxJournalEntries, cfg.maxJournalAge),
+		cfg:     cfg,
+		store:   make(map[string]laredo.Row),
+		j:       newJournal(cfg.maxJournalEntries, cfg.maxJournalAge),
+		clients: newClientRegistry(cfg.maxClients),
 	}
 }
 
@@ -324,6 +332,36 @@ func (t *Target) StartSnapshotScheduler(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// RegisterClient registers a new connected client. Returns false if at max capacity.
+func (t *Target) RegisterClient(clientID string) bool {
+	return t.clients.register(clientID)
+}
+
+// UnregisterClient removes a connected client.
+func (t *Target) UnregisterClient(clientID string) {
+	t.clients.unregister(clientID)
+}
+
+// UpdateClientSequence updates a client's current position.
+func (t *Target) UpdateClientSequence(clientID string, seq int64) {
+	t.clients.updateSequence(clientID, seq)
+}
+
+// SetClientState updates a client's state ("catching_up", "live", "backpressured").
+func (t *Target) SetClientState(clientID string, state string) {
+	t.clients.setState(clientID, state)
+}
+
+// ConnectedClients returns the number of connected clients.
+func (t *Target) ConnectedClients() int {
+	return t.clients.count()
+}
+
+// ClientList returns info about all connected clients.
+func (t *Target) ClientList() []ClientInfo {
+	return t.clients.list()
 }
 
 // buildKey creates a composite key from the row's PK columns.

@@ -37,12 +37,34 @@ func (s *Service) GetReplicationStatus(_ context.Context, req *connect.Request[v
 
 	for _, t := range targets {
 		if ft, ok := t.(*fanout.Target); ok {
-			return connect.NewResponse(&v1.GetReplicationStatusResponse{
+			resp := &v1.GetReplicationStatusResponse{
 				CurrentSequence:       ft.JournalSequence(),
 				JournalOldestSequence: ft.JournalOldestSequence(),
 				JournalEntryCount:     int64(ft.JournalLen()),
 				RowCount:              int64(ft.Count()),
-			}), nil
+				ConnectedClients:      int32(ft.ConnectedClients()), //nolint:gosec // won't overflow
+			}
+
+			// Add per-client state.
+			for _, ci := range ft.ClientList() {
+				resp.Clients = append(resp.Clients, &v1.ConnectedClient{
+					ClientId:        ci.ID,
+					CurrentSequence: ci.CurrentSequence,
+					State:           ci.State,
+					BufferDepth:     int32(ci.BufferDepth), //nolint:gosec // won't overflow
+				})
+			}
+
+			// Latest snapshot info.
+			if snap := ft.LatestSnapshot(); snap != nil {
+				resp.LatestSnapshot = &v1.ReplicationSnapshotInfo{
+					SnapshotId: snap.ID,
+					Sequence:   snap.Sequence,
+					RowCount:   snap.RowCount,
+				}
+			}
+
+			return connect.NewResponse(resp), nil
 		}
 	}
 
