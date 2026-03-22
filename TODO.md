@@ -449,7 +449,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `laredo snapshot delete <id>`
 - [x] `laredo snapshot prune --keep N`
 - [x] `laredo dead-letters <pipeline_id>` — list dead letters
-- [ ] `laredo dead-letters replay <pipeline_id>`
+- [x] `laredo dead-letters replay <pipeline_id>`
 - [x] `laredo dead-letters purge <pipeline_id>`
 - [x] `laredo replay <snapshot_id> [--pipeline <id>] [--speed full|realtime|Nx]`
 - [x] `laredo ready [--pipeline <id>]` — exit code 0 if ready, 1 if not
@@ -462,7 +462,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 - [x] Table formatter: aligned columns (basic printf-based)
 - [x] JSON output: structured, machine-readable
-- [ ] YAML output
+- [x] YAML output
 
 ---
 

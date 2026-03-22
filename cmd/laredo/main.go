@@ -13,6 +13,7 @@ import (
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/structpb"
+	"gopkg.in/yaml.v3"
 
 	"github.com/zourzouvillys/laredo"
 	replv1 "github.com/zourzouvillys/laredo/gen/laredo/replication/v1"
@@ -21,7 +22,10 @@ import (
 	"github.com/zourzouvillys/laredo/gen/laredo/v1/laredov1connect"
 )
 
-const outputJSON = "json"
+const (
+	outputJSON = "json"
+	outputYAML = "yaml"
+)
 
 var (
 	address = "localhost:4001"
@@ -1127,6 +1131,10 @@ func deadLettersCmd(args []string) {
 		deadLettersPurgeCmd(args[1:])
 		return
 	}
+	if len(args) > 0 && args[0] == "replay" {
+		deadLettersReplayCmd(args[1:])
+		return
+	}
 
 	fs := flag.NewFlagSet("dead-letters", flag.ExitOnError)
 	limit := fs.Int("limit", 0, "max entries to return")
@@ -1190,7 +1198,38 @@ func deadLettersPurgeCmd(args []string) {
 	fmt.Printf("purged %d dead letters\n", resp.Msg.GetPurged())
 }
 
+func deadLettersReplayCmd(args []string) {
+	fs := flag.NewFlagSet("dead-letters replay", flag.ExitOnError)
+	parseGlobalFlags(fs, args)
+
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: laredo dead-letters replay <pipeline-id>")
+		os.Exit(1)
+	}
+
+	resp, err := oamClient().ReplayDeadLetters(ctx(), connect.NewRequest(&v1.ReplayDeadLettersRequest{
+		PipelineId: remaining[0],
+	}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("replayed %d, succeeded %d, failed %d\n",
+		resp.Msg.GetReplayed(), resp.Msg.GetSucceeded(), resp.Msg.GetFailed())
+}
+
 func printJSON(v any) {
+	if output == outputYAML {
+		data, err := yaml.Marshal(v)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Print(string(data))
+		return
+	}
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
