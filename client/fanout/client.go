@@ -25,13 +25,14 @@ import (
 type Client struct {
 	cfg config
 
-	mu           sync.RWMutex
-	store        map[string]laredo.Row
-	indexes      map[string]*secondaryIndex // name → index
-	ready        bool
-	lastSeq      int64
-	lastReceived time.Time
-	listener     func(old, new laredo.Row)
+	mu             sync.RWMutex
+	store          map[string]laredo.Row
+	indexes        map[string]*secondaryIndex // name → index
+	ready          bool
+	lastSeq        int64
+	lastSnapshotID string
+	lastReceived   time.Time
+	listener       func(old, new laredo.Row)
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -281,6 +282,7 @@ func (c *Client) run(ctx context.Context) error {
 
 	c.mu.RLock()
 	lastSeq := c.lastSeq
+	lastSnapID := c.lastSnapshotID
 	c.mu.RUnlock()
 
 	stream, err := rpcClient.Sync(ctx, connect.NewRequest(&v1.SyncRequest{
@@ -288,6 +290,7 @@ func (c *Client) run(ctx context.Context) error {
 		Table:             c.cfg.table,
 		ClientId:          c.cfg.clientID,
 		LastKnownSequence: lastSeq,
+		LastSnapshotId:    lastSnapID,
 	}))
 	if err != nil {
 		return fmt.Errorf("sync: %w", err)
@@ -309,6 +312,7 @@ func (c *Client) run(ctx context.Context) error {
 			c.mu.Lock()
 			c.store = make(map[string]laredo.Row)
 			c.clearIndexes()
+			c.lastSnapshotID = m.SnapshotBegin.GetSnapshotId()
 			c.mu.Unlock()
 
 		case *v1.SyncResponse_SnapshotRow:
@@ -467,15 +471,17 @@ func indexKey(_ []string, values []any) string {
 
 // localSnapshot is the on-disk format for the client's saved state.
 type localSnapshot struct {
-	LastSeq int64                 `json:"last_seq"`
-	Rows    map[string]laredo.Row `json:"rows"`
+	LastSeq    int64                 `json:"last_seq"`
+	SnapshotID string                `json:"snapshot_id,omitempty"`
+	Rows       map[string]laredo.Row `json:"rows"`
 }
 
 func (c *Client) saveSnapshot() {
 	c.mu.RLock()
 	snap := localSnapshot{
-		LastSeq: c.lastSeq,
-		Rows:    make(map[string]laredo.Row, len(c.store)),
+		LastSeq:    c.lastSeq,
+		SnapshotID: c.lastSnapshotID,
+		Rows:       make(map[string]laredo.Row, len(c.store)),
 	}
 	for k, v := range c.store {
 		snap.Rows[k] = v
@@ -503,5 +509,6 @@ func (c *Client) loadSnapshot() {
 	c.mu.Lock()
 	c.store = snap.Rows
 	c.lastSeq = snap.LastSeq
+	c.lastSnapshotID = snap.SnapshotID
 	c.mu.Unlock()
 }

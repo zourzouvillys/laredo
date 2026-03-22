@@ -12,5 +12,5 @@ Items not yet implemented. Everything else from the original v1.0 roadmap has be
 
 ## Fan-Out Replication Protocol
 
-- [ ] Delta-from-snapshot mode: tell client to use local snapshot, send journal delta → live
+- [x] Delta-from-snapshot mode: tell client to use local snapshot, send journal delta → live
 - [ ] Atomic handoff: pin journal during snapshot send, no gaps

@@ -189,14 +189,34 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 	// Determine sync mode.
 	oldestSeq := ft.JournalOldestSequence()
 	currentSeq := ft.JournalSequence()
+	snapshotID := req.Msg.GetLastSnapshotId()
 
 	var mode v1.SyncMode
 	var resumeSeq int64
+	var handshakeSnapshotID string
 
-	if lastSeq > 0 && lastSeq >= oldestSeq {
+	switch {
+	case lastSeq > 0 && lastSeq >= oldestSeq:
+		// Client has a recent sequence — send journal delta.
 		mode = v1.SyncMode_SYNC_MODE_DELTA
 		resumeSeq = lastSeq
-	} else {
+
+	case snapshotID != "":
+		// Client has a local snapshot — check if we can send delta from its sequence.
+		for _, snap := range ft.ListSnapshots() {
+			if snap.ID == snapshotID && snap.Sequence >= oldestSeq {
+				mode = v1.SyncMode_SYNC_MODE_DELTA_FROM_SNAPSHOT
+				resumeSeq = snap.Sequence
+				handshakeSnapshotID = snap.ID
+				break
+			}
+		}
+		if mode == v1.SyncMode_SYNC_MODE_UNSPECIFIED {
+			// Snapshot not found or too old — fall back to full snapshot.
+			mode = v1.SyncMode_SYNC_MODE_FULL_SNAPSHOT
+		}
+
+	default:
 		mode = v1.SyncMode_SYNC_MODE_FULL_SNAPSHOT
 	}
 
@@ -208,6 +228,7 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 				ServerCurrentSequence: currentSeq,
 				JournalOldestSequence: oldestSeq,
 				ResumeFromSequence:    resumeSeq,
+				SnapshotId:            handshakeSnapshotID,
 			},
 		},
 	}); err != nil {
