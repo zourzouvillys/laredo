@@ -1,0 +1,16 @@
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY laredo-server /usr/local/bin/laredo-server
+COPY laredo /usr/local/bin/laredo
+
+ENV LAREDO_CONFIG=/etc/laredo/laredo.conf
+
+EXPOSE 4001
+EXPOSE 8080
+
+VOLUME ["/etc/laredo", "/var/lib/laredo"]
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=3 \
+    CMD ["laredo-server", "healthcheck"]
+
+ENTRYPOINT ["laredo-server"]

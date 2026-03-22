@@ -39,7 +39,10 @@ dockers:
   - image_templates:
       - "ghcr.io/zourzouvillys/laredo-server:{{ .Version }}"
       - "ghcr.io/zourzouvillys/laredo-server:latest"
-    dockerfile: Dockerfile
+    dockerfile: Dockerfile.goreleaser
+    ids:
+      - laredo-server
+      - laredo
     build_flag_templates:
       - "--label=org.opencontainers.image.version={{.Version}}"
 
