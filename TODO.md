@@ -580,7 +580,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] gRPC Query commands via CLI: lookup, list, count (tested via integration)
 - [x] Fan-out: multiple clients connect, receive consistent state, live updates
 - [x] Graceful shutdown: verify clean shutdown (tested in integration tests + unit tests)
-- [ ] Docker container: build image, start with docker-compose (PG + laredo-server), verify health endpoints
+- [x] Docker container: build image, start with docker-compose (PG + laredo-server), verify health endpoints
 
 ### 14.4 Benchmarks (Tier 4 — `test/bench/`)
 

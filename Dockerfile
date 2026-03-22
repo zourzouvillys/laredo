@@ -24,7 +24,7 @@ EXPOSE 4001
 EXPOSE 8080
 
 # Volumes for config and data
-VOLUME ["/etc/laredo", "/etc/laredo/conf.d", "/var/lib/laredo"]
+VOLUME ["/etc/laredo", "/var/lib/laredo"]
 
 # Health check using the built-in healthcheck subcommand
 HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=3 \
