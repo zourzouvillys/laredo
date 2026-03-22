@@ -252,10 +252,10 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 #### 4.4.1 gRPC Replication Server (embedded in fan-out target)
 
-- [ ] `Sync` RPC — primary server-streaming replication call:
-  - [ ] Handshake: determine sync mode (FULL_SNAPSHOT / DELTA / DELTA_FROM_SNAPSHOT)
-  - [ ] Full snapshot mode: send SnapshotBegin → SnapshotRow* → SnapshotEnd → journal catch-up → live
-  - [ ] Delta mode: send journal entries from client's sequence → live
+- [x] `Sync` RPC — primary server-streaming replication call:
+  - [x] Handshake: determine sync mode (FULL_SNAPSHOT / DELTA)
+  - [x] Full snapshot mode: send SnapshotBegin → SnapshotRow* → SnapshotEnd → journal catch-up → live
+  - [x] Delta mode: send journal entries from client's sequence → live
   - [ ] Delta-from-snapshot mode: tell client to use local snapshot, send journal delta → live
   - [ ] Atomic handoff: pin journal during snapshot send, no gaps
 - [x] `ListSnapshots` RPC — list available snapshots for client bootstrapping
