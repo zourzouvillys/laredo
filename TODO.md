@@ -657,7 +657,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] gRPC API reference: OAM service (grpc-api.md)
 - [x] gRPC API reference: Query service (grpc-api.md)
 - [x] gRPC API reference: Replication service
-- [ ] Go library API reference (godoc-generated or hand-written)
+- [x] Go library API reference (godoc-generated or hand-written)
 - [x] HTTP health endpoints reference (health-endpoints.md)
 - [x] Metrics reference (metrics.md)
 - [x] Environment variables reference
@@ -676,8 +676,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 15.7 Design & Internals
 
-- [ ] Design specification (link to `docs/spec.md` or rendered version)
-- [ ] Architecture decision records (ADRs) for key choices
+- [x] Design specification (link to `docs/spec.md` or rendered version)
+- [x] Architecture decision records (ADRs) for key choices
 - [x] Contributing guide
 - [x] Changelog / release notes process
 

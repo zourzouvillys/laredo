@@ -53,6 +53,15 @@ const sidebars: SidebarsConfig = {
         'reference/health-endpoints',
         'reference/environment-variables',
         'reference/error-codes',
+        'reference/go-api',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Internals',
+      items: [
+        'internals/design-spec',
+        'internals/adrs',
       ],
     },
     {
