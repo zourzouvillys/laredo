@@ -23,11 +23,12 @@ import (
 type Client struct {
 	cfg config
 
-	mu       sync.RWMutex
-	store    map[string]laredo.Row
-	ready    bool
-	lastSeq  int64
-	listener func(old, new laredo.Row)
+	mu           sync.RWMutex
+	store        map[string]laredo.Row
+	ready        bool
+	lastSeq      int64
+	lastReceived time.Time
+	listener     func(old, new laredo.Row)
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -216,10 +217,13 @@ func (c *Client) run(ctx context.Context) error {
 	defer func() { _ = stream.Close() }()
 
 	for stream.Receive() {
+		c.mu.Lock()
+		c.lastReceived = time.Now()
+		c.mu.Unlock()
+
 		msg := stream.Msg()
 		switch m := msg.GetMessage().(type) {
 		case *v1.SyncResponse_Handshake:
-			// Handshake received — mode determined by server.
 			_ = m
 
 		case *v1.SyncResponse_SnapshotBegin:

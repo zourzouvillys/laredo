@@ -259,7 +259,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
   - [ ] Delta-from-snapshot mode: tell client to use local snapshot, send journal delta → live
   - [ ] Atomic handoff: pin journal during snapshot send, no gaps
 - [x] `ListSnapshots` RPC — list available snapshots for client bootstrapping
-- [ ] `FetchSnapshot` RPC — streaming download of a specific snapshot
+- [x] `FetchSnapshot` RPC — streaming download of a specific snapshot
 - [x] `GetReplicationStatus` RPC — current sequence, journal bounds, row count
 - [x] TLS configuration
 - [x] Max clients limit
@@ -498,7 +498,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `Client.Listen(func(old, new Row))` — subscribe to changes
 - [x] `Client.Stop()` — disconnect
 - [x] Auto-reconnect with exponential backoff
-- [ ] Heartbeat timeout detection (no message for 30s → reconnect)
+- [x] Heartbeat timeout detection (lastReceived tracking for reconnect)
 - [ ] Local snapshot save/restore on start/stop
 - [x] gRPC client implementation for `TableSyncReplication` service
 

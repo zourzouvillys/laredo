@@ -103,6 +103,64 @@ func (s *Service) ListSnapshots(_ context.Context, req *connect.Request[v1.ListS
 	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("no fan-out target for %s.%s", schema, table))
 }
 
+// FetchSnapshot streams a specific snapshot's data to the client.
+func (s *Service) FetchSnapshot(_ context.Context, req *connect.Request[v1.FetchSnapshotRequest], stream *connect.ServerStream[v1.FetchSnapshotResponse]) error {
+	snapshotID := req.Msg.GetSnapshotId()
+	if snapshotID == "" {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("snapshot_id is required"))
+	}
+
+	// Find the snapshot across all fan-out targets.
+	for _, sid := range s.engine.SourceIDs() {
+		for _, t := range s.engine.Targets(sid, laredo.TableIdentifier{}) {
+			ft, ok := t.(*fanout.Target)
+			if !ok {
+				continue
+			}
+			for _, snap := range ft.ListSnapshots() {
+				if snap.ID != snapshotID {
+					continue
+				}
+
+				// Found — stream it.
+				if err := stream.Send(&v1.FetchSnapshotResponse{
+					Chunk: &v1.FetchSnapshotResponse_Begin{
+						Begin: &v1.SnapshotBegin{
+							SnapshotId: snap.ID,
+							Sequence:   snap.Sequence,
+							RowCount:   snap.RowCount,
+						},
+					},
+				}); err != nil {
+					return err
+				}
+
+				for _, row := range snap.Rows {
+					rowStruct, _ := structpb.NewStruct(map[string]any(row))
+					if err := stream.Send(&v1.FetchSnapshotResponse{
+						Chunk: &v1.FetchSnapshotResponse_Row{
+							Row: &v1.SnapshotRow{Row: rowStruct},
+						},
+					}); err != nil {
+						return err
+					}
+				}
+
+				return stream.Send(&v1.FetchSnapshotResponse{
+					Chunk: &v1.FetchSnapshotResponse_End{
+						End: &v1.SnapshotEnd{
+							Sequence: snap.Sequence,
+							RowsSent: snap.RowCount,
+						},
+					},
+				})
+			}
+		}
+	}
+
+	return connect.NewError(connect.CodeNotFound, fmt.Errorf("snapshot %s not found", snapshotID))
+}
+
 // Sync implements the primary server-streaming replication call.
 // Protocol: handshake → snapshot (if needed) → journal catch-up → live streaming.
 func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
