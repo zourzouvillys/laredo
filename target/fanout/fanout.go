@@ -38,12 +38,14 @@ type Target struct {
 }
 
 type config struct {
-	maxJournalEntries int
-	maxJournalAge     time.Duration
-	snapshotInterval  time.Duration
-	snapshotKeepCount int
-	snapshotMaxAge    time.Duration
-	maxClients        int
+	maxJournalEntries  int
+	maxJournalAge      time.Duration
+	snapshotInterval   time.Duration
+	snapshotKeepCount  int
+	snapshotMaxAge     time.Duration
+	maxClients         int
+	clientBufferSize   int
+	clientBufferPolicy string // "drop_disconnect" or "slow_down"
 }
 
 // Option configures the fan-out target.
@@ -78,6 +80,17 @@ func SnapshotMaxAge(d time.Duration) Option {
 // MaxClients sets the maximum number of connected clients. Zero means unlimited.
 func MaxClients(n int) Option {
 	return func(c *config) { c.maxClients = n }
+}
+
+// ClientBufferSize sets the per-client send buffer size.
+func ClientBufferSize(n int) Option {
+	return func(c *config) { c.clientBufferSize = n }
+}
+
+// ClientBufferPolicy sets the backpressure policy: "drop_disconnect" (default)
+// disconnects slow clients; "slow_down" applies backpressure.
+func ClientBufferPolicy(policy string) Option {
+	return func(c *config) { c.clientBufferPolicy = policy }
 }
 
 // New creates a new replication fan-out target.

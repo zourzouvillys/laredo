@@ -247,7 +247,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `OnClose` — cleanup state
 - [x] `IsDurable()` — always `true`
 - [x] Export/restore snapshot
-- [ ] Per-client backpressure: configurable `max_size`, `drop_disconnect` / `slow_down` policies
+- [x] Per-client backpressure: configurable `max_size`, `drop_disconnect` / `slow_down` policies
 - [ ] Heartbeats: periodic heartbeat messages on idle connections (default 5s)
 
 #### 4.4.1 gRPC Replication Server (embedded in fan-out target)
@@ -258,7 +258,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
   - [ ] Delta mode: send journal entries from client's sequence → live
   - [ ] Delta-from-snapshot mode: tell client to use local snapshot, send journal delta → live
   - [ ] Atomic handoff: pin journal during snapshot send, no gaps
-- [ ] `ListSnapshots` RPC — list available snapshots for client bootstrapping
+- [x] `ListSnapshots` RPC — list available snapshots for client bootstrapping
 - [ ] `FetchSnapshot` RPC — streaming download of a specific snapshot
 - [x] `GetReplicationStatus` RPC — current sequence, journal bounds, row count
 - [x] TLS configuration

@@ -70,3 +70,32 @@ func (s *Service) GetReplicationStatus(_ context.Context, req *connect.Request[v
 
 	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("no fan-out target for %s.%s", schema, table))
 }
+
+// ListSnapshots returns available fan-out snapshots for client bootstrapping.
+func (s *Service) ListSnapshots(_ context.Context, req *connect.Request[v1.ListSnapshotsRequest]) (*connect.Response[v1.ListSnapshotsResponse], error) {
+	schema := req.Msg.GetSchema()
+	table := req.Msg.GetTable()
+	if schema == "" || table == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("schema and table are required"))
+	}
+
+	tid := laredo.Table(schema, table)
+	targets := s.engine.Targets("", tid)
+
+	for _, t := range targets {
+		if ft, ok := t.(*fanout.Target); ok {
+			snaps := ft.ListSnapshots()
+			var result []*v1.ReplicationSnapshotInfo
+			for _, snap := range snaps {
+				result = append(result, &v1.ReplicationSnapshotInfo{
+					SnapshotId: snap.ID,
+					Sequence:   snap.Sequence,
+					RowCount:   snap.RowCount,
+				})
+			}
+			return connect.NewResponse(&v1.ListSnapshotsResponse{Snapshots: result}), nil
+		}
+	}
+
+	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("no fan-out target for %s.%s", schema, table))
+}
