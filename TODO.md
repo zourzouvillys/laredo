@@ -589,7 +589,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Change buffer throughput: block + trysend policies
 - [x] Snapshot serialization: JSONL write/read speed (1K rows)
 - [x] Fan-out broadcast: throughput with 1, 10, 100 connected clients
-- [ ] PostgreSQL source: baseline rows/sec, streaming changes/sec
+- [x] PostgreSQL source: baseline rows/sec, streaming changes/sec
 
 ### 14.5 Test Infrastructure
 
