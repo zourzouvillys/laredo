@@ -15,6 +15,8 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/zourzouvillys/laredo"
+	replv1 "github.com/zourzouvillys/laredo/gen/laredo/replication/v1"
+	"github.com/zourzouvillys/laredo/gen/laredo/replication/v1/replicationv1connect"
 	v1 "github.com/zourzouvillys/laredo/gen/laredo/v1"
 	"github.com/zourzouvillys/laredo/gen/laredo/v1/laredov1connect"
 )
@@ -68,6 +70,8 @@ func main() {
 		replayCmd(args)
 	case "reset-source":
 		resetSourceCmd(args)
+	case "fanout":
+		fanoutCmd(args)
 	case "dead-letters":
 		deadLettersCmd(args)
 	case "help", "--help", "-h":
@@ -130,6 +134,13 @@ func oamClient() laredov1connect.LaredoOAMServiceClient {
 
 func queryClient() laredov1connect.LaredoQueryServiceClient {
 	return laredov1connect.NewLaredoQueryServiceClient(
+		http.DefaultClient,
+		"http://"+address,
+	)
+}
+
+func replClient() replicationv1connect.LaredoReplicationServiceClient {
+	return replicationv1connect.NewLaredoReplicationServiceClient(
 		http.DefaultClient,
 		"http://"+address,
 	)
@@ -833,6 +844,63 @@ func replayCmd(args []string) {
 			// Still running — continue polling.
 		}
 	}
+}
+
+// --- fanout ---
+
+func fanoutCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: laredo fanout <status> <schema.table>")
+		os.Exit(1)
+	}
+
+	sub := args[0]
+	subArgs := args[1:]
+
+	switch sub {
+	case "status":
+		fanoutStatusCmd(subArgs)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown fanout command: %s\n", sub) //nolint:gosec // CLI
+		os.Exit(1)
+	}
+}
+
+func fanoutStatusCmd(args []string) {
+	fs := flag.NewFlagSet("fanout status", flag.ExitOnError)
+	parseGlobalFlags(fs, args)
+
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: laredo fanout status <schema.table>")
+		os.Exit(1)
+	}
+
+	schema, table, ok := strings.Cut(remaining[0], ".")
+	if !ok {
+		fmt.Fprintln(os.Stderr, "table must be in schema.table format")
+		os.Exit(1)
+	}
+
+	resp, err := replClient().GetReplicationStatus(ctx(), connect.NewRequest(&replv1.GetReplicationStatusRequest{
+		Schema: schema,
+		Table:  table,
+	}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if output == outputJSON {
+		printJSON(resp.Msg)
+		return
+	}
+
+	fmt.Printf("Current sequence:  %d\n", resp.Msg.GetCurrentSequence())
+	fmt.Printf("Oldest sequence:   %d\n", resp.Msg.GetJournalOldestSequence())
+	fmt.Printf("Journal entries:   %d\n", resp.Msg.GetJournalEntryCount())
+	fmt.Printf("Row count:         %d\n", resp.Msg.GetRowCount())
+	fmt.Printf("Connected clients: %d\n", resp.Msg.GetConnectedClients())
 }
 
 // --- reset-source ---

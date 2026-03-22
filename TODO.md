@@ -260,7 +260,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
   - [ ] Atomic handoff: pin journal during snapshot send, no gaps
 - [ ] `ListSnapshots` RPC — list available snapshots for client bootstrapping
 - [ ] `FetchSnapshot` RPC — streaming download of a specific snapshot
-- [ ] `GetReplicationStatus` RPC — current sequence, journal bounds, client count, per-client state
+- [x] `GetReplicationStatus` RPC — current sequence, journal bounds, row count
 - [x] TLS configuration
 - [ ] Max clients limit
 
@@ -453,7 +453,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `laredo dead-letters purge <pipeline_id>`
 - [x] `laredo replay <snapshot_id> [--pipeline <id>] [--speed full|realtime|Nx]`
 - [x] `laredo ready [--pipeline <id>]` — exit code 0 if ready, 1 if not
-- [ ] `laredo fanout status <schema.table>` — replication fan-out status
+- [x] `laredo fanout status <schema.table>` — replication fan-out status
 - [ ] `laredo fanout clients <schema.table>` — connected clients
 - [ ] `laredo fanout snapshots <schema.table>` — available fan-out snapshots
 - [ ] `laredo fanout journal <schema.table> --tail N` — recent journal entries
