@@ -237,8 +237,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] In-memory state: `map[primaryKey]Row`
 - [x] Change journal: bounded circular buffer of `JournalEntry` with monotonic sequence numbers
 - [x] Journal pruning: by `max_entries` and `max_age`
-- [ ] Periodic snapshot scheduler: serialize in-memory state at current sequence, tag with journal position
-- [ ] Snapshot retention: `keep_count`, `max_age`
+- [x] Periodic snapshot scheduler: serialize in-memory state at current sequence, tag with journal position
+- [x] Snapshot retention: `keep_count`, `max_age`
 - [ ] Client registry: track connected clients, their sequence position, backpressure state
 - [x] `OnBaselineRow` — insert into state + append INSERT to journal
 - [x] `OnBaselineComplete` — mark READY

@@ -12,23 +12,36 @@ import (
 	"github.com/zourzouvillys/laredo"
 )
 
+// Snapshot represents a point-in-time snapshot of the fan-out state.
+type Snapshot struct {
+	ID        string
+	Sequence  int64
+	RowCount  int64
+	Rows      []laredo.Row
+	CreatedAt time.Time
+}
+
 // Target implements laredo.SyncTarget as a replication fan-out multiplexer.
 // It maintains an in-memory copy of all rows and a bounded change journal
 // that clients can use to catch up.
 type Target struct {
 	cfg config
 
-	mu    sync.RWMutex
-	store map[string]laredo.Row // keyed by composite PK
-	j     *journal
-	ready bool
-	table laredo.TableIdentifier
-	cols  []laredo.ColumnDefinition
+	mu        sync.RWMutex
+	store     map[string]laredo.Row // keyed by composite PK
+	j         *journal
+	ready     bool
+	table     laredo.TableIdentifier
+	cols      []laredo.ColumnDefinition
+	snapshots []Snapshot // ordered newest-first
 }
 
 type config struct {
 	maxJournalEntries int
 	maxJournalAge     time.Duration
+	snapshotInterval  time.Duration
+	snapshotKeepCount int
+	snapshotMaxAge    time.Duration
 }
 
 // Option configures the fan-out target.
@@ -42,6 +55,22 @@ func JournalMaxEntries(n int) Option {
 // JournalMaxAge sets the maximum age of journal entries before pruning.
 func JournalMaxAge(d time.Duration) Option {
 	return func(c *config) { c.maxJournalAge = d }
+}
+
+// SnapshotInterval sets how often periodic snapshots are taken.
+// Zero (default) disables periodic snapshots.
+func SnapshotInterval(d time.Duration) Option {
+	return func(c *config) { c.snapshotInterval = d }
+}
+
+// SnapshotKeepCount sets the maximum number of snapshots to retain.
+func SnapshotKeepCount(n int) Option {
+	return func(c *config) { c.snapshotKeepCount = n }
+}
+
+// SnapshotMaxAge sets the maximum age for snapshot retention.
+func SnapshotMaxAge(d time.Duration) Option {
+	return func(c *config) { c.snapshotMaxAge = d }
 }
 
 // New creates a new replication fan-out target.
@@ -210,6 +239,91 @@ func (t *Target) JournalLen() int {
 // JournalEntriesSince returns journal entries after the given sequence.
 func (t *Target) JournalEntriesSince(afterSeq int64) []JournalEntry {
 	return t.j.entriesSince(afterSeq)
+}
+
+// TakeSnapshot captures the current in-memory state tagged with the current
+// journal sequence. Used for client bootstrapping and retention.
+func (t *Target) TakeSnapshot() Snapshot {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	rows := make([]laredo.Row, 0, len(t.store))
+	for _, row := range t.store {
+		rows = append(rows, row)
+	}
+
+	snap := Snapshot{
+		ID:        fmt.Sprintf("fanout-%d-%d", t.j.currentSequence(), time.Now().UnixMilli()),
+		Sequence:  t.j.currentSequence(),
+		RowCount:  int64(len(rows)),
+		Rows:      rows,
+		CreatedAt: time.Now(),
+	}
+
+	// Insert at front (newest first) and prune.
+	t.snapshots = append([]Snapshot{snap}, t.snapshots...)
+	t.pruneSnapshots()
+
+	return snap
+}
+
+// ListSnapshots returns available snapshots (newest first).
+func (t *Target) ListSnapshots() []Snapshot {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	result := make([]Snapshot, len(t.snapshots))
+	copy(result, t.snapshots)
+	return result
+}
+
+// LatestSnapshot returns the most recent snapshot, or nil if none.
+func (t *Target) LatestSnapshot() *Snapshot {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if len(t.snapshots) == 0 {
+		return nil
+	}
+	snap := t.snapshots[0]
+	return &snap
+}
+
+// pruneSnapshots removes old snapshots based on keep_count and max_age.
+// Must be called with mu held for write.
+func (t *Target) pruneSnapshots() {
+	if t.cfg.snapshotKeepCount > 0 && len(t.snapshots) > t.cfg.snapshotKeepCount {
+		t.snapshots = t.snapshots[:t.cfg.snapshotKeepCount]
+	}
+	if t.cfg.snapshotMaxAge > 0 {
+		cutoff := time.Now().Add(-t.cfg.snapshotMaxAge)
+		for i, s := range t.snapshots {
+			if s.CreatedAt.Before(cutoff) {
+				t.snapshots = t.snapshots[:i]
+				break
+			}
+		}
+	}
+}
+
+// StartSnapshotScheduler starts a background goroutine that periodically
+// takes snapshots. Blocks until the context is cancelled.
+func (t *Target) StartSnapshotScheduler(ctx context.Context) {
+	if t.cfg.snapshotInterval <= 0 {
+		return
+	}
+
+	ticker := time.NewTicker(t.cfg.snapshotInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if t.IsReady() {
+				t.TakeSnapshot()
+			}
+		}
+	}
 }
 
 // buildKey creates a composite key from the row's PK columns.
