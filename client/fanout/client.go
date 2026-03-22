@@ -79,7 +79,7 @@ func (c *Client) Start(ctx context.Context) error {
 
 	go func() {
 		defer close(c.done)
-		_ = c.run(runCtx)
+		c.runWithReconnect(runCtx)
 	}()
 
 	return nil
@@ -135,12 +135,63 @@ func (c *Client) LastSequence() int64 {
 	return c.lastSeq
 }
 
+// Lookup returns a row by looking up a field value. Scans all rows (O(n)).
+func (c *Client) Lookup(field string, value any) (laredo.Row, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	valStr := fmt.Sprintf("%v", value)
+	for _, row := range c.store {
+		if fmt.Sprintf("%v", row[field]) == valStr {
+			return row, true
+		}
+	}
+	return nil, false
+}
+
+// All returns all rows in the local replica.
+func (c *Client) All() []laredo.Row {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	rows := make([]laredo.Row, 0, len(c.store))
+	for _, row := range c.store {
+		rows = append(rows, row)
+	}
+	return rows
+}
+
 // Stop disconnects from the server and stops the client.
 func (c *Client) Stop() {
 	if c.cancel != nil {
 		c.cancel()
 	}
 	<-c.done
+}
+
+func (c *Client) runWithReconnect(ctx context.Context) {
+	backoff := 1 * time.Second
+	const maxBackoff = 30 * time.Second
+
+	for {
+		err := c.run(ctx)
+		if ctx.Err() != nil {
+			return // Clean shutdown.
+		}
+		if err == nil {
+			return
+		}
+
+		// Exponential backoff before reconnect.
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
 }
 
 func (c *Client) run(ctx context.Context) error {

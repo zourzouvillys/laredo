@@ -494,10 +494,10 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [ ] `WithIndexedState()` — configure client-side indexed in-memory store
 - [x] `Client.Start()` — connect, receive snapshot/delta, populate local state
 - [x] `Client.AwaitReady(timeout)` — block until initial state loaded
-- [ ] `Client.Lookup(keyValues...)` / `Client.LookupAll(indexName, keyValues...)`
+- [x] `Client.Lookup(field, value)` / `Client.All()`
 - [x] `Client.Listen(func(old, new Row))` — subscribe to changes
 - [x] `Client.Stop()` — disconnect
-- [ ] Auto-reconnect with exponential backoff
+- [x] Auto-reconnect with exponential backoff
 - [ ] Heartbeat timeout detection (no message for 30s → reconnect)
 - [ ] Local snapshot save/restore on start/stop
 - [x] gRPC client implementation for `TableSyncReplication` service
