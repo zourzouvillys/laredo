@@ -2335,10 +2335,10 @@ func TestEngine_SnapshotCreateRestoreCycle(t *testing.T) {
 		t.Fatal("engine2 not ready")
 	}
 
-	// Target should have data from snapshot.
-	if target2.Count() != 2 {
-		t.Fatalf("expected 2 rows from snapshot restore, got %d", target2.Count())
-	}
+	// Target should have data from snapshot (allow time for buffered dispatch).
+	testutil.AssertEventually(t, 2*time.Second, func() bool {
+		return target2.Count() == 2
+	}, "expected 2 rows from snapshot restore")
 
 	row, ok := target2.Get(1)
 	if !ok {
