@@ -387,7 +387,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `GetRow` — direct primary key access
 - [x] `ListRows` — paginated listing
 - [x] `CountRows`
-- [ ] `Subscribe` — server-streaming change events with optional replay of existing rows
+- [x] `Subscribe` — server-streaming change events with optional replay of existing rows
 
 ### 8.4 Server Setup (`service/server.go`)
 

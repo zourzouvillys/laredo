@@ -231,3 +231,161 @@ func TestQuery_MissingTable(t *testing.T) {
 		t.Errorf("expected CodeInvalidArgument, got %v", connect.CodeOf(err))
 	}
 }
+
+func TestQuery_Subscribe_ReplayAndLive(t *testing.T) {
+	src := testsource.New()
+	src.SetSchema(testutil.SampleTable(), testutil.SampleColumns())
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(2, "bob"))
+
+	target := memory.NewIndexedTarget(memory.LookupFields("name"))
+	eng, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("engine errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := eng.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !eng.AwaitReady(5 * time.Second) {
+		t.Fatal("engine not ready")
+	}
+	t.Cleanup(func() { _ = eng.Stop(ctx) })
+
+	client := startQueryServer(t, eng)
+
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	events := make(chan *v1.SubscribeResponse, 20)
+	streamErr := make(chan error, 1)
+	go func() {
+		stream, err := client.Subscribe(subCtx, connect.NewRequest(&v1.SubscribeRequest{
+			Schema:         "public",
+			Table:          "test_table",
+			ReplayExisting: true,
+		}))
+		if err != nil {
+			streamErr <- err
+			return
+		}
+		for stream.Receive() {
+			events <- stream.Msg()
+		}
+		streamErr <- stream.Err()
+	}()
+
+	// Wait for replay events (2 existing rows).
+	timeout := time.After(5 * time.Second)
+	var replayed int
+	for replayed < 2 {
+		select {
+		case msg := <-events:
+			if msg.GetAction() != "INSERT" {
+				t.Errorf("replay: expected INSERT, got %s", msg.GetAction())
+			}
+			if msg.GetNewValues() == nil {
+				t.Error("replay: expected new_values")
+			}
+			replayed++
+		case err := <-streamErr:
+			t.Fatalf("stream error during replay: %v", err)
+		case <-timeout:
+			t.Fatalf("timed out waiting for replay (got %d of 2)", replayed)
+		}
+	}
+
+	// Emit a live change.
+	time.Sleep(50 * time.Millisecond)
+	src.EmitInsert(testutil.SampleTable(), testutil.SampleRow(3, "charlie"))
+
+	// Wait for live INSERT event.
+	timeout = time.After(5 * time.Second)
+	select {
+	case msg := <-events:
+		if msg.GetAction() != "INSERT" {
+			t.Errorf("live: expected INSERT, got %s", msg.GetAction())
+		}
+		vals := msg.GetNewValues().AsMap()
+		if vals["name"] != "charlie" {
+			t.Errorf("live: expected name=charlie, got %v", vals["name"])
+		}
+	case err := <-streamErr:
+		t.Fatalf("stream error waiting for live event: %v", err)
+	case <-timeout:
+		t.Fatal("timed out waiting for live event")
+	}
+}
+
+func TestQuery_Subscribe_LiveOnly(t *testing.T) {
+	src := testsource.New()
+	src.SetSchema(testutil.SampleTable(), testutil.SampleColumns())
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+
+	target := memory.NewIndexedTarget()
+	eng, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src),
+		laredo.WithPipeline("pg", testutil.SampleTable(), target),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("engine errors: %v", errs)
+	}
+
+	ctx := context.Background()
+	if err := eng.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !eng.AwaitReady(5 * time.Second) {
+		t.Fatal("engine not ready")
+	}
+	t.Cleanup(func() { _ = eng.Stop(ctx) })
+
+	client := startQueryServer(t, eng)
+
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	events := make(chan *v1.SubscribeResponse, 20)
+	go func() {
+		stream, err := client.Subscribe(subCtx, connect.NewRequest(&v1.SubscribeRequest{
+			Schema:         "public",
+			Table:          "test_table",
+			ReplayExisting: false,
+		}))
+		if err != nil {
+			return
+		}
+		for stream.Receive() {
+			events <- stream.Msg()
+		}
+	}()
+
+	// Give time for the subscription to be established.
+	time.Sleep(100 * time.Millisecond)
+
+	// Emit a live update.
+	src.EmitUpdate(testutil.SampleTable(), testutil.SampleRow(1, "alice-updated"), testutil.SampleRow(1, "alice"))
+
+	timeout := time.After(5 * time.Second)
+	select {
+	case msg := <-events:
+		if msg.GetAction() != "UPDATE" {
+			t.Errorf("expected UPDATE, got %s", msg.GetAction())
+		}
+	case <-timeout:
+		t.Fatal("timed out waiting for live UPDATE event")
+	}
+
+	// No replay events should have been sent — just the live UPDATE.
+	// Check there are no extra events.
+	select {
+	case msg := <-events:
+		t.Errorf("unexpected extra event: %s", msg.GetAction())
+	default:
+		// Good — no extra events.
+	}
+}
