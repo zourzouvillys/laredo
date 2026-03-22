@@ -518,9 +518,9 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 ### 13.2 GoReleaser (already scaffolded)
 
 - [x] Verify cross-compilation: linux/darwin amd64/arm64 (configured in .goreleaser.yml)
-- [ ] Docker image push to `ghcr.io/zourzouvillys/laredo-server`
-- [ ] Checksums, SBOMs
-- [ ] Changelog generation
+- [x] Docker image push to `ghcr.io/zourzouvillys/laredo-server`
+- [x] Checksums, SBOMs
+- [x] Changelog generation
 
 ### 13.3 GitHub Actions
 

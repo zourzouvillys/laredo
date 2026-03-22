@@ -43,6 +43,17 @@ dockers:
     build_flag_templates:
       - "--label=org.opencontainers.image.version={{.Version}}"
 
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+sboms:
+  - artifacts: archive
+    cmd: syft
+    args: ["${artifact}", "--output", "spdx-json=${document}"]
+    documents:
+      - "${artifact}.sbom.json"
+
 changelog:
   sort: asc
   filters:
