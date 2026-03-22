@@ -248,7 +248,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `IsDurable()` — always `true`
 - [x] Export/restore snapshot
 - [x] Per-client backpressure: configurable `max_size`, `drop_disconnect` / `slow_down` policies
-- [ ] Heartbeats: periodic heartbeat messages on idle connections (default 5s)
+- [x] Heartbeats: periodic heartbeat messages on idle connections (default 5s)
 
 #### 4.4.1 gRPC Replication Server (embedded in fan-out target)
 
@@ -454,8 +454,8 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `laredo replay <snapshot_id> [--pipeline <id>] [--speed full|realtime|Nx]`
 - [x] `laredo ready [--pipeline <id>]` — exit code 0 if ready, 1 if not
 - [x] `laredo fanout status <schema.table>` — replication fan-out status
-- [ ] `laredo fanout clients <schema.table>` — connected clients
-- [ ] `laredo fanout snapshots <schema.table>` — available fan-out snapshots
+- [x] `laredo fanout clients <schema.table>` — connected clients
+- [x] `laredo fanout snapshots <schema.table>` — available fan-out snapshots
 - [ ] `laredo fanout journal <schema.table> --tail N` — recent journal entries
 
 ### 10.2 Output Formatting

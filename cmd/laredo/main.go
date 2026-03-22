@@ -860,6 +860,10 @@ func fanoutCmd(args []string) {
 	switch sub {
 	case "status":
 		fanoutStatusCmd(subArgs)
+	case "clients":
+		fanoutClientsCmd(subArgs)
+	case "snapshots":
+		fanoutSnapshotsCmd(subArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown fanout command: %s\n", sub) //nolint:gosec // CLI
 		os.Exit(1)
@@ -901,6 +905,95 @@ func fanoutStatusCmd(args []string) {
 	fmt.Printf("Journal entries:   %d\n", resp.Msg.GetJournalEntryCount())
 	fmt.Printf("Row count:         %d\n", resp.Msg.GetRowCount())
 	fmt.Printf("Connected clients: %d\n", resp.Msg.GetConnectedClients())
+}
+
+func fanoutClientsCmd(args []string) {
+	fs := flag.NewFlagSet("fanout clients", flag.ExitOnError)
+	parseGlobalFlags(fs, args)
+
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: laredo fanout clients <schema.table>")
+		os.Exit(1)
+	}
+
+	schema, table, ok := strings.Cut(remaining[0], ".")
+	if !ok {
+		fmt.Fprintln(os.Stderr, "table must be in schema.table format")
+		os.Exit(1)
+	}
+
+	resp, err := replClient().GetReplicationStatus(ctx(), connect.NewRequest(&replv1.GetReplicationStatusRequest{
+		Schema: schema,
+		Table:  table,
+	}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	clients := resp.Msg.GetClients()
+	if output == outputJSON {
+		printJSON(clients)
+		return
+	}
+
+	if len(clients) == 0 {
+		fmt.Println("no connected clients")
+		return
+	}
+
+	fmt.Printf("%-30s  %-12s  %-10s  %s\n", "CLIENT", "SEQUENCE", "BUFFER", "STATE")
+	for _, c := range clients {
+		fmt.Printf("%-30s  %-12d  %-10d  %s\n",
+			c.GetClientId(),
+			c.GetCurrentSequence(),
+			c.GetBufferDepth(),
+			c.GetState(),
+		)
+	}
+}
+
+func fanoutSnapshotsCmd(args []string) {
+	fs := flag.NewFlagSet("fanout snapshots", flag.ExitOnError)
+	parseGlobalFlags(fs, args)
+
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: laredo fanout snapshots <schema.table>")
+		os.Exit(1)
+	}
+
+	schema, table, ok := strings.Cut(remaining[0], ".")
+	if !ok {
+		fmt.Fprintln(os.Stderr, "table must be in schema.table format")
+		os.Exit(1)
+	}
+
+	resp, err := replClient().ListSnapshots(ctx(), connect.NewRequest(&replv1.ListSnapshotsRequest{
+		Schema: schema,
+		Table:  table,
+	}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	snaps := resp.Msg.GetSnapshots()
+	if output == outputJSON {
+		printJSON(snaps)
+		return
+	}
+
+	if len(snaps) == 0 {
+		fmt.Println("no snapshots")
+		return
+	}
+
+	fmt.Printf("%-40s  %-12s  %s\n", "ID", "SEQUENCE", "ROWS")
+	for _, s := range snaps {
+		fmt.Printf("%-40s  %-12d  %d\n", s.GetSnapshotId(), s.GetSequence(), s.GetRowCount())
+	}
 }
 
 // --- reset-source ---

@@ -46,6 +46,7 @@ type config struct {
 	maxClients         int
 	clientBufferSize   int
 	clientBufferPolicy string // "drop_disconnect" or "slow_down"
+	heartbeatInterval  time.Duration
 }
 
 // Option configures the fan-out target.
@@ -93,11 +94,18 @@ func ClientBufferPolicy(policy string) Option {
 	return func(c *config) { c.clientBufferPolicy = policy }
 }
 
+// HeartbeatInterval sets the interval for periodic heartbeat messages on idle
+// connections (default 5s). Clients treat a 30s gap as connection failure.
+func HeartbeatInterval(d time.Duration) Option {
+	return func(c *config) { c.heartbeatInterval = d }
+}
+
 // New creates a new replication fan-out target.
 func New(opts ...Option) *Target {
 	cfg := config{
 		maxJournalEntries: 100000,
 		maxJournalAge:     24 * time.Hour,
+		heartbeatInterval: 5 * time.Second,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -345,6 +353,11 @@ func (t *Target) StartSnapshotScheduler(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// HeartbeatInterval returns the configured heartbeat interval.
+func (t *Target) HeartbeatInterval() time.Duration {
+	return t.cfg.heartbeatInterval
 }
 
 // RegisterClient registers a new connected client. Returns false if at max capacity.
