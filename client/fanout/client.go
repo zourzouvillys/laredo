@@ -27,6 +27,7 @@ type Client struct {
 
 	mu           sync.RWMutex
 	store        map[string]laredo.Row
+	indexes      map[string]*secondaryIndex // name → index
 	ready        bool
 	lastSeq      int64
 	lastReceived time.Time
@@ -36,12 +37,24 @@ type Client struct {
 	done   chan struct{}
 }
 
+// secondaryIndex maintains a mapping from field values to row keys.
+type secondaryIndex struct {
+	fields  []string
+	entries map[string][]string // index key → row keys
+}
+
+type indexConfig struct {
+	name   string
+	fields []string
+}
+
 type config struct {
 	serverAddress     string
 	schema            string
 	table             string
 	clientID          string
 	localSnapshotPath string
+	indexes           []indexConfig
 }
 
 // Option configures the fan-out client.
@@ -70,16 +83,34 @@ func LocalSnapshotPath(path string) Option {
 	return func(c *config) { c.localSnapshotPath = path }
 }
 
+// WithIndex adds a secondary index for fast lookups by the given fields.
+// Use LookupByIndex to query it.
+func WithIndex(name string, fields ...string) Option {
+	return func(c *config) {
+		c.indexes = append(c.indexes, indexConfig{name: name, fields: fields})
+	}
+}
+
 // New creates a new fan-out client.
 func New(opts ...Option) *Client {
 	cfg := config{}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+
+	indexes := make(map[string]*secondaryIndex, len(cfg.indexes))
+	for _, ic := range cfg.indexes {
+		indexes[ic.name] = &secondaryIndex{
+			fields:  ic.fields,
+			entries: make(map[string][]string),
+		}
+	}
+
 	return &Client{
-		cfg:   cfg,
-		store: make(map[string]laredo.Row),
-		done:  make(chan struct{}),
+		cfg:     cfg,
+		store:   make(map[string]laredo.Row),
+		indexes: indexes,
+		done:    make(chan struct{}),
 	}
 }
 
@@ -176,6 +207,32 @@ func (c *Client) All() []laredo.Row {
 	return rows
 }
 
+// LookupByIndex returns all rows matching the given values on a named secondary index.
+// Returns nil if the index doesn't exist or no rows match.
+func (c *Client) LookupByIndex(indexName string, values ...any) []laredo.Row {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	idx, ok := c.indexes[indexName]
+	if !ok {
+		return nil
+	}
+
+	key := indexKey(idx.fields, values)
+	rowKeys := idx.entries[key]
+	if len(rowKeys) == 0 {
+		return nil
+	}
+
+	rows := make([]laredo.Row, 0, len(rowKeys))
+	for _, rk := range rowKeys {
+		if row, ok := c.store[rk]; ok {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
 // Stop disconnects from the server and stops the client.
 // If LocalSnapshotPath is configured, saves the current state to disk.
 func (c *Client) Stop() {
@@ -251,6 +308,7 @@ func (c *Client) run(ctx context.Context) error {
 			// Clear local state for full snapshot.
 			c.mu.Lock()
 			c.store = make(map[string]laredo.Row)
+			c.clearIndexes()
 			c.mu.Unlock()
 
 		case *v1.SyncResponse_SnapshotRow:
@@ -259,6 +317,7 @@ func (c *Client) run(ctx context.Context) error {
 				key := rowKey(row)
 				c.mu.Lock()
 				c.store[key] = row
+				c.addToIndexes(key, row)
 				c.mu.Unlock()
 			}
 
@@ -299,6 +358,7 @@ func (c *Client) applyJournalEntry(entry *v1.ReplicationJournalEntry) {
 			row := laredo.Row(entry.GetNewValues().AsMap())
 			key := rowKey(row)
 			c.store[key] = row
+			c.addToIndexes(key, row)
 			c.notify(nil, row)
 		}
 	case "UPDATE":
@@ -306,7 +366,11 @@ func (c *Client) applyJournalEntry(entry *v1.ReplicationJournalEntry) {
 			row := laredo.Row(entry.GetNewValues().AsMap())
 			key := rowKey(row)
 			old := c.store[key]
+			if old != nil {
+				c.removeFromIndexes(key, old)
+			}
 			c.store[key] = row
+			c.addToIndexes(key, row)
 			c.notify(old, row)
 		}
 	case "DELETE":
@@ -314,11 +378,15 @@ func (c *Client) applyJournalEntry(entry *v1.ReplicationJournalEntry) {
 			row := laredo.Row(entry.GetOldValues().AsMap())
 			key := rowKey(row)
 			old := c.store[key]
+			if old != nil {
+				c.removeFromIndexes(key, old)
+			}
 			delete(c.store, key)
 			c.notify(old, nil)
 		}
 	case "TRUNCATE":
 		c.store = make(map[string]laredo.Row)
+		c.clearIndexes()
 		c.notify(nil, nil)
 	}
 
@@ -340,6 +408,61 @@ func rowKey(row laredo.Row) string {
 	}
 	// Fallback: use all values concatenated.
 	return fmt.Sprintf("%v", row)
+}
+
+// addToIndexes adds a row to all secondary indexes. Caller must hold c.mu.
+func (c *Client) addToIndexes(rk string, row laredo.Row) {
+	for _, idx := range c.indexes {
+		vals := make([]any, len(idx.fields))
+		for i, f := range idx.fields {
+			vals[i] = row[f]
+		}
+		key := indexKey(idx.fields, vals)
+		idx.entries[key] = append(idx.entries[key], rk)
+	}
+}
+
+// removeFromIndexes removes a row from all secondary indexes. Caller must hold c.mu.
+func (c *Client) removeFromIndexes(rk string, row laredo.Row) {
+	for _, idx := range c.indexes {
+		vals := make([]any, len(idx.fields))
+		for i, f := range idx.fields {
+			vals[i] = row[f]
+		}
+		key := indexKey(idx.fields, vals)
+		entries := idx.entries[key]
+		for i, k := range entries {
+			if k == rk {
+				idx.entries[key] = append(entries[:i], entries[i+1:]...)
+				break
+			}
+		}
+		if len(idx.entries[key]) == 0 {
+			delete(idx.entries, key)
+		}
+	}
+}
+
+// clearIndexes empties all secondary indexes. Caller must hold c.mu.
+func (c *Client) clearIndexes() {
+	for _, idx := range c.indexes {
+		idx.entries = make(map[string][]string)
+	}
+}
+
+// indexKey builds a composite key from field names and values.
+func indexKey(_ []string, values []any) string {
+	if len(values) == 1 {
+		return fmt.Sprintf("%v", values[0])
+	}
+	key := ""
+	for i, v := range values {
+		if i > 0 {
+			key += "\x00"
+		}
+		key += fmt.Sprintf("%v", v)
+	}
+	return key
 }
 
 // localSnapshot is the on-disk format for the client's saved state.

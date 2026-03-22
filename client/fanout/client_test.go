@@ -878,6 +878,101 @@ func TestClient_LocalSnapshot(t *testing.T) {
 	}
 }
 
+func TestClient_LookupByIndex(t *testing.T) {
+	ts := &testServer{}
+	ts.setSyncFn(func(ctx context.Context, _ *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
+		if err := stream.Send(&v1.SyncResponse{
+			Message: &v1.SyncResponse_Handshake{
+				Handshake: &v1.SyncHandshake{Mode: v1.SyncMode_SYNC_MODE_FULL_SNAPSHOT, ServerCurrentSequence: 3},
+			},
+		}); err != nil {
+			return err
+		}
+		if err := stream.Send(&v1.SyncResponse{
+			Message: &v1.SyncResponse_SnapshotBegin{SnapshotBegin: &v1.SnapshotBegin{SnapshotId: "s1", Sequence: 3, RowCount: 3}},
+		}); err != nil {
+			return err
+		}
+		for _, row := range []map[string]any{
+			{"id": "1", "dept": "eng", "name": "alice"},
+			{"id": "2", "dept": "eng", "name": "bob"},
+			{"id": "3", "dept": "sales", "name": "carol"},
+		} {
+			if err := stream.Send(&v1.SyncResponse{
+				Message: &v1.SyncResponse_SnapshotRow{SnapshotRow: &v1.SnapshotRow{Row: makeRow(t, row)}},
+			}); err != nil {
+				return err
+			}
+		}
+		if err := stream.Send(&v1.SyncResponse{
+			Message: &v1.SyncResponse_SnapshotEnd{SnapshotEnd: &v1.SnapshotEnd{Sequence: 3, RowsSent: 3}},
+		}); err != nil {
+			return err
+		}
+
+		// Send a journal entry: UPDATE bob's dept to sales.
+		if err := stream.Send(&v1.SyncResponse{
+			Message: &v1.SyncResponse_JournalEntry{
+				JournalEntry: &v1.ReplicationJournalEntry{
+					Sequence: 4, Action: "UPDATE",
+					NewValues: makeRow(t, map[string]any{"id": "2", "dept": "sales", "name": "bob"}),
+					OldValues: makeRow(t, map[string]any{"id": "2", "dept": "eng", "name": "bob"}),
+				},
+			},
+		}); err != nil {
+			return err
+		}
+
+		<-ctx.Done()
+		return ctx.Err()
+	})
+
+	addr := startTestServer(t, ts)
+
+	c := New(ServerAddress(addr), Table("public", "t"), WithIndex("by_dept", "dept"))
+	ctx := context.Background()
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(c.Stop)
+
+	// Wait for all data including the UPDATE.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if c.LastSequence() >= 4 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// After snapshot: eng=[alice, bob], sales=[carol].
+	// After UPDATE bob→sales: eng=[alice], sales=[carol, bob].
+	eng := c.LookupByIndex("by_dept", "eng")
+	if len(eng) != 1 {
+		t.Errorf("expected 1 eng row after update, got %d", len(eng))
+	}
+	if len(eng) > 0 && eng[0]["name"] != "alice" {
+		t.Errorf("expected alice in eng, got %v", eng[0]["name"])
+	}
+
+	sales := c.LookupByIndex("by_dept", "sales")
+	if len(sales) != 2 {
+		t.Errorf("expected 2 sales rows after update, got %d", len(sales))
+	}
+
+	// Lookup on non-existent index.
+	result := c.LookupByIndex("nonexistent", "x")
+	if result != nil {
+		t.Error("expected nil for non-existent index")
+	}
+
+	// Lookup with no matches.
+	result = c.LookupByIndex("by_dept", "hr")
+	if result != nil {
+		t.Error("expected nil for no matches")
+	}
+}
+
 func TestRowKey(t *testing.T) {
 	tests := []struct {
 		name string

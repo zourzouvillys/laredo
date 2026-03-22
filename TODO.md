@@ -491,7 +491,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 - [x] `Client` struct with options: `ServerAddress()`, `Table()`, `ClientID()`
 - [x] `LocalSnapshotPath()` — optional local snapshot cache for fast restart
-- [ ] `WithIndexedState()` — configure client-side indexed in-memory store
+- [x] `WithIndexedState()` — configure client-side indexed in-memory store
 - [x] `Client.Start()` — connect, receive snapshot/delta, populate local state
 - [x] `Client.AwaitReady(timeout)` — block until initial state loaded
 - [x] `Client.Lookup(field, value)` / `Client.All()`
