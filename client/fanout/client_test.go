@@ -229,6 +229,15 @@ func TestClient_Delta(t *testing.T) {
 		t.Fatal("client not ready after delta")
 	}
 
+	// Wait for both entries (seq 6 + 7) to be applied.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if c.LastSequence() >= 7 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	// INSERT added row 10.
 	row, ok := c.Get("10")
 	if !ok {
