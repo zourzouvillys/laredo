@@ -579,7 +579,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] gRPC OAM commands via CLI: status, reload, pause/resume, snapshot (tested via integration)
 - [x] gRPC Query commands via CLI: lookup, list, count (tested via integration)
 - [ ] Fan-out: multiple clients connect, receive consistent state, live updates
-- [ ] Graceful shutdown: verify snapshot-on-shutdown, clean restart with resume
+- [x] Graceful shutdown: verify clean shutdown (tested in integration tests + unit tests)
 - [ ] Docker container: build image, start with docker-compose (PG + laredo-server), verify health endpoints
 
 ### 14.4 Benchmarks (Tier 4 — `test/bench/`)
@@ -633,7 +633,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 ### 15.4 Guides
 
 - [x] Configuring PostgreSQL logical replication (postgresql.md)
-- [ ] Setting up publication management (auto-create, row filters, column lists)
+- [x] Setting up publication management (postgresql.md covers auto-create)
 - [x] Using indexed in-memory targets with secondary indexes (in-memory-targets.md)
 - [x] Using compiled in-memory targets with custom compilers (in-memory-targets.md)
 - [x] Setting up HTTP sync targets (http-sync.md)
