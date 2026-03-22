@@ -598,7 +598,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] `test/testutil/pg.go` — PostgreSQL testcontainer setup/teardown helper
 - [x] `test/testutil/grpc.go` — in-process gRPC server/client for service tests
 - [x] `test/testutil/httpserver.go` — configurable mock HTTP server for target tests
-- [ ] Test data generators: random rows, schemas, change events
+- [x] Test data generators: random rows, schemas, change events
 
 ---
 
