@@ -166,10 +166,10 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Stream: Kinesis shard consumer (polling mode)
 - [x] Composite position: S3 object version + per-shard sequence numbers
 - [x] `ComparePositions` — compare composite positions
-- [ ] ACK: Kinesis checkpoint (DynamoDB checkpoint table)
+- [x] ACK: Kinesis checkpoint (DynamoDB checkpoint table)
 - [x] Multi-shard: concurrent shard consumers, demux by table
 - [ ] Shard split/merge handling
-- [ ] `SupportsResume()` — true if checkpointing enabled
+- [x] `SupportsResume()` — true if checkpointing enabled
 - [x] Option builder: `BaselineBucket()`, `BaselinePrefix()`, `StreamName()`, `Region()`, `WithS3Client()`, `WithKinesisClient()`
 
 ### 3.3 Test Source (`source/testsource/`)

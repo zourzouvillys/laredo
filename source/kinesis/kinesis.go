@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	ddbTypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	kinTypes "github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -34,13 +36,15 @@ type Source struct {
 }
 
 type sourceConfig struct {
-	baselineBucket string
-	baselinePrefix string
-	manifestKey    string
-	streamName     string
-	region         string
-	s3Client       *s3.Client
-	kinesisClient  *kinesis.Client
+	baselineBucket  string
+	baselinePrefix  string
+	manifestKey     string
+	streamName      string
+	region          string
+	s3Client        *s3.Client
+	kinesisClient   *kinesis.Client
+	dynamoDBClient  *dynamodb.Client
+	checkpointTable string
 }
 
 // Option configures the Kinesis source.
@@ -82,6 +86,18 @@ func WithS3Client(client *s3.Client) Option {
 // WithKinesisClient sets a pre-configured Kinesis client (for LocalStack testing).
 func WithKinesisClient(client *kinesis.Client) Option {
 	return func(c *sourceConfig) { c.kinesisClient = client }
+}
+
+// WithDynamoDBClient sets a pre-configured DynamoDB client (for LocalStack testing).
+func WithDynamoDBClient(client *dynamodb.Client) Option {
+	return func(c *sourceConfig) { c.dynamoDBClient = client }
+}
+
+// CheckpointTable sets the DynamoDB table name for storing Kinesis checkpoints.
+// When configured, Ack writes the confirmed position to DynamoDB and
+// SupportsResume returns true.
+func CheckpointTable(table string) Option {
+	return func(c *sourceConfig) { c.checkpointTable = table }
 }
 
 // New creates a new S3+Kinesis source.
@@ -359,16 +375,77 @@ func (s *Source) consumeShard(ctx context.Context, shardID string, pos *Position
 }
 
 //nolint:revive // implements SyncSource.
-func (s *Source) Ack(_ context.Context, _ laredo.Position) error {
+func (s *Source) Ack(ctx context.Context, pos laredo.Position) error {
+	if !s.checkpointEnabled() {
+		return nil
+	}
+
+	p, ok := pos.(*Position)
+	if !ok {
+		return nil
+	}
+
+	posJSON, err := json.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("marshal checkpoint: %w", err)
+	}
+
+	_, err = s.cfg.dynamoDBClient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(s.cfg.checkpointTable),
+		Item: map[string]ddbTypes.AttributeValue{
+			"stream_name": &ddbTypes.AttributeValueMemberS{Value: s.cfg.streamName},
+			"position":    &ddbTypes.AttributeValueMemberS{Value: string(posJSON)},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("write checkpoint to DynamoDB: %w", err)
+	}
 	return nil
 }
 
 //nolint:revive // implements SyncSource.
-func (s *Source) SupportsResume() bool { return false }
+func (s *Source) SupportsResume() bool {
+	return s.checkpointEnabled()
+}
 
 //nolint:revive // implements SyncSource.
-func (s *Source) LastAckedPosition(_ context.Context) (laredo.Position, error) {
-	return nil, nil
+func (s *Source) LastAckedPosition(ctx context.Context) (laredo.Position, error) {
+	if !s.checkpointEnabled() {
+		return nil, nil
+	}
+
+	resp, err := s.cfg.dynamoDBClient.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(s.cfg.checkpointTable),
+		Key: map[string]ddbTypes.AttributeValue{
+			"stream_name": &ddbTypes.AttributeValueMemberS{Value: s.cfg.streamName},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read checkpoint from DynamoDB: %w", err)
+	}
+
+	if resp.Item == nil {
+		return nil, nil // No checkpoint yet.
+	}
+
+	posAttr, ok := resp.Item["position"]
+	if !ok {
+		return nil, nil
+	}
+	posStr, ok := posAttr.(*ddbTypes.AttributeValueMemberS)
+	if !ok {
+		return nil, nil
+	}
+
+	var pos Position
+	if err := json.Unmarshal([]byte(posStr.Value), &pos); err != nil {
+		return nil, fmt.Errorf("parse checkpoint: %w", err)
+	}
+	return &pos, nil
+}
+
+func (s *Source) checkpointEnabled() bool {
+	return s.cfg.dynamoDBClient != nil && s.cfg.checkpointTable != ""
 }
 
 //nolint:revive // implements SyncSource.

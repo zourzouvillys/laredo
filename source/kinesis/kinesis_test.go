@@ -138,8 +138,58 @@ func TestState_Lifecycle(t *testing.T) {
 }
 
 func TestSupportsResume(t *testing.T) {
+	t.Run("without checkpoint", func(t *testing.T) {
+		src := New()
+		if src.SupportsResume() {
+			t.Error("expected SupportsResume=false without checkpoint config")
+		}
+	})
+
+	t.Run("with checkpoint table only", func(t *testing.T) {
+		src := New(CheckpointTable("checkpoints"))
+		if src.SupportsResume() {
+			t.Error("expected SupportsResume=false without DynamoDB client")
+		}
+	})
+}
+
+func TestAck_NoCheckpoint(t *testing.T) {
+	// Ack is a no-op without checkpoint config.
 	src := New()
-	if src.SupportsResume() {
-		t.Error("expected SupportsResume=false")
+	pos := &Position{ShardSequences: map[string]string{"shard-1": "12345"}}
+	if err := src.Ack(t.Context(), pos); err != nil {
+		t.Errorf("Ack should succeed without checkpoint: %v", err)
+	}
+}
+
+func TestLastAckedPosition_NoCheckpoint(t *testing.T) {
+	src := New()
+	pos, err := src.LastAckedPosition(t.Context())
+	if err != nil {
+		t.Errorf("LastAckedPosition should succeed without checkpoint: %v", err)
+	}
+	if pos != nil {
+		t.Error("expected nil position without checkpoint")
+	}
+}
+
+func TestCheckpointEnabled(t *testing.T) {
+	tests := []struct {
+		name    string
+		opts    []Option
+		enabled bool
+	}{
+		{"no config", nil, false},
+		{"table only", []Option{CheckpointTable("t")}, false},
+		{"client only", []Option{WithDynamoDBClient(nil)}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := New(tt.opts...)
+			if src.checkpointEnabled() != tt.enabled {
+				t.Errorf("expected checkpointEnabled=%v", tt.enabled)
+			}
+		})
 	}
 }
