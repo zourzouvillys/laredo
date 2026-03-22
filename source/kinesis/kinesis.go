@@ -36,6 +36,7 @@ type Source struct {
 type sourceConfig struct {
 	baselineBucket string
 	baselinePrefix string
+	manifestKey    string
 	streamName     string
 	region         string
 	s3Client       *s3.Client
@@ -53,6 +54,14 @@ func BaselineBucket(bucket string) Option {
 // BaselinePrefix sets the S3 key prefix for baseline objects.
 func BaselinePrefix(prefix string) Option {
 	return func(c *sourceConfig) { c.baselinePrefix = prefix }
+}
+
+// ManifestKey sets the S3 key for the schema manifest file.
+// The manifest is a JSON file describing column definitions for each table.
+// If not set, Init returns empty schemas and the first baseline row defines
+// the schema implicitly.
+func ManifestKey(key string) Option {
+	return func(c *sourceConfig) { c.manifestKey = key }
 }
 
 // StreamName sets the Kinesis stream name.
@@ -86,12 +95,73 @@ func New(opts ...Option) *Source {
 
 var _ laredo.SyncSource = (*Source)(nil)
 
+// Manifest is the on-disk format for the S3 schema manifest file.
+type Manifest struct {
+	Tables map[string]ManifestTable `json:"tables"` // "schema.table" → definition
+}
+
+// ManifestTable describes a single table in the manifest.
+type ManifestTable struct {
+	Columns []ManifestColumn `json:"columns"`
+}
+
+// ManifestColumn describes a single column in the manifest.
+type ManifestColumn struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Nullable   bool   `json:"nullable"`
+	PrimaryKey bool   `json:"primary_key"`
+}
+
 //nolint:revive // implements SyncSource.
-func (s *Source) Init(_ context.Context, _ laredo.SourceConfig) (map[laredo.TableIdentifier][]laredo.ColumnDefinition, error) {
+func (s *Source) Init(ctx context.Context, _ laredo.SourceConfig) (map[laredo.TableIdentifier][]laredo.ColumnDefinition, error) {
 	s.setState(laredo.SourceConnected)
-	// Schema discovery from S3 would go here. For now, return empty schemas
-	// (the first baseline row will define the schema implicitly).
-	return make(map[laredo.TableIdentifier][]laredo.ColumnDefinition), nil
+
+	schemas := make(map[laredo.TableIdentifier][]laredo.ColumnDefinition)
+
+	// Load schema manifest from S3 if configured.
+	if s.cfg.manifestKey != "" && s.cfg.s3Client != nil {
+		manifest, err := s.loadManifest(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("load manifest: %w", err)
+		}
+		for tableKey, mt := range manifest.Tables {
+			schema, table, ok := strings.Cut(tableKey, ".")
+			if !ok {
+				continue
+			}
+			tid := laredo.Table(schema, table)
+			cols := make([]laredo.ColumnDefinition, len(mt.Columns))
+			for i, mc := range mt.Columns {
+				cols[i] = laredo.ColumnDefinition{
+					Name:       mc.Name,
+					Type:       mc.Type,
+					Nullable:   mc.Nullable,
+					PrimaryKey: mc.PrimaryKey,
+				}
+			}
+			schemas[tid] = cols
+		}
+	}
+
+	return schemas, nil
+}
+
+func (s *Source) loadManifest(ctx context.Context) (*Manifest, error) {
+	resp, err := s.cfg.s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.cfg.baselineBucket),
+		Key:    aws.String(s.cfg.manifestKey),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get manifest from s3://%s/%s: %w", s.cfg.baselineBucket, s.cfg.manifestKey, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var manifest Manifest
+	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+		return nil, fmt.Errorf("parse manifest: %w", err)
+	}
+	return &manifest, nil
 }
 
 //nolint:revive // implements SyncSource.

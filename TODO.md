@@ -162,7 +162,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 ### 3.2 S3 + Kinesis (`source/kinesis/`)
 
 - [x] Baseline: read S3 objects (JSONL), build rows
-- [ ] Schema discovery from S3 manifest or schema registry
+- [x] Schema discovery from S3 manifest or schema registry
 - [x] Stream: Kinesis shard consumer (polling mode)
 - [x] Composite position: S3 object version + per-shard sequence numbers
 - [x] `ComparePositions` — compare composite positions
