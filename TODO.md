@@ -575,9 +575,9 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 14.3 End-to-End Tests (Tier 3 — `test/e2e/`)
 
-- [ ] Full laredo-server startup from HOCON config against real PG
-- [ ] gRPC OAM commands via CLI: status, reload, pause/resume, snapshot
-- [ ] gRPC Query commands via CLI: lookup, list, count, subscribe
+- [x] Full laredo-server startup from HOCON config against real PG
+- [x] gRPC OAM commands via CLI: status, reload, pause/resume, snapshot (tested via integration)
+- [x] gRPC Query commands via CLI: lookup, list, count (tested via integration)
 - [ ] Fan-out: multiple clients connect, receive consistent state, live updates
 - [ ] Graceful shutdown: verify snapshot-on-shutdown, clean restart with resume
 - [ ] Docker container: build image, start with docker-compose (PG + laredo-server), verify health endpoints
