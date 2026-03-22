@@ -790,8 +790,10 @@ func (e *coreEngine) runSource(ctx context.Context, sourceID string, pipelineIdx
 				}
 			}
 
-			e.streamFromPosition(ctx, sourceID, source, pipelineIdxs, position)
-			return
+			if !e.streamFromPosition(ctx, sourceID, source, pipelineIdxs, position) {
+				return // normal exit or error
+			}
+			// Re-baseline needed — fall through to baseline path.
 		}
 	}
 
@@ -799,18 +801,25 @@ func (e *coreEngine) runSource(ctx context.Context, sourceID string, pipelineIdx
 	// the snapshot's source position.
 	if e.snapshotStore != nil {
 		if pos := e.trySnapshotRestore(ctx, sourceID, source, pipelineIdxs); pos != nil {
-			e.streamFromPosition(ctx, sourceID, source, pipelineIdxs, pos)
-			return
+			if !e.streamFromPosition(ctx, sourceID, source, pipelineIdxs, pos) {
+				return
+			}
+			// Re-baseline needed — fall through to baseline path.
 		}
 	}
 
-	// Full baseline path.
-	position = e.runBaseline(ctx, sourceID, source, tables, pipelineIdxs)
-	if position == nil {
-		return // baseline failed or context cancelled
-	}
+	// Full baseline path. Re-baseline loop handles ErrReBaselineRequired from streaming.
+	for {
+		position = e.runBaseline(ctx, sourceID, source, tables, pipelineIdxs)
+		if position == nil {
+			return // baseline failed or context cancelled
+		}
 
-	e.streamFromPosition(ctx, sourceID, source, pipelineIdxs, position)
+		if !e.streamFromPosition(ctx, sourceID, source, pipelineIdxs, position) {
+			return // normal exit or error (not re-baseline)
+		}
+		// streamFromPosition returned true → re-baseline needed. Loop.
+	}
 }
 
 // runBaseline performs the full baseline flow: transition to BASELINING, read all
@@ -986,7 +995,8 @@ func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source Sy
 // streamFromPosition starts streaming changes from the given position.
 // It creates per-pipeline change buffers and consumer goroutines. The source
 // dispatcher puts events into buffers; consumers read and apply changes to targets.
-func (e *coreEngine) streamFromPosition(ctx context.Context, sourceID string, source SyncSource, pipelineIdxs []int, position Position) {
+// Returns true if re-baseline is required (ErrReBaselineRequired).
+func (e *coreEngine) streamFromPosition(ctx context.Context, sourceID string, source SyncSource, pipelineIdxs []int, position Position) bool {
 	// Create a cancellable context for this source's streaming session.
 	// Consumer goroutines can cancel this to stop the source (e.g., ErrorStopSource).
 	streamCtx, streamCancel := context.WithCancel(ctx)
@@ -1020,8 +1030,14 @@ func (e *coreEngine) streamFromPosition(ctx context.Context, sourceID string, so
 
 	if err != nil && ctx.Err() == nil {
 		e.observer.OnSourceDisconnected(sourceID, fmt.Sprintf("stream error: %v", err))
+
+		// ErrReBaselineRequired: signal the caller to re-baseline instead of erroring.
+		if errors.Is(err, ErrReBaselineRequired) {
+			return true
+		}
 		e.transitionPipelines(pipelineIdxs, PipelineError)
 	}
+	return false
 }
 
 // tablesForPipelines returns the unique tables referenced by the given pipeline indices.

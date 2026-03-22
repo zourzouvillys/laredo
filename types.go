@@ -1,6 +1,7 @@
 package laredo
 
 import (
+	"errors"
 	"fmt"
 	"iter"
 	"maps"
@@ -8,6 +9,11 @@ import (
 	"strings"
 	"time"
 )
+
+// ErrReBaselineRequired is returned by SyncSource.Stream to signal that the
+// source's position is no longer valid and a full re-baseline is needed.
+// The engine will re-run the baseline when it receives this error.
+var ErrReBaselineRequired = errors.New("re-baseline required")
 
 // TableIdentifier identifies a table within a data source.
 type TableIdentifier struct {

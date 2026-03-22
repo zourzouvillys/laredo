@@ -8,7 +8,7 @@ Items not yet implemented. Everything else from the original v1.0 roadmap has be
 
 - [x] Sync publication on startup (add/remove tables, update publish operations)
 - [x] Row filters and column lists (PostgreSQL 15+)
-- [ ] Ephemeral mode reconnect: signal engine for full re-baseline
+- [x] Ephemeral mode reconnect: signal engine for full re-baseline
 
 ## Fan-Out Replication Protocol
 

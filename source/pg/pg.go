@@ -316,6 +316,12 @@ func (s *Source) Stream(ctx context.Context, from laredo.Position, handler lared
 			return nil
 		}
 
+		// In ephemeral mode, the temporary slot is gone — signal re-baseline.
+		if s.cfg.slotMode == SlotEphemeral {
+			s.setState(laredo.SourceError)
+			return fmt.Errorf("pg source (ephemeral): %w", laredo.ErrReBaselineRequired)
+		}
+
 		// Check if we've exhausted reconnect attempts.
 		maxAttempts := s.cfg.reconnect.MaxAttempts
 		if maxAttempts == 0 {
