@@ -578,7 +578,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Full laredo-server startup from HOCON config against real PG
 - [x] gRPC OAM commands via CLI: status, reload, pause/resume, snapshot (tested via integration)
 - [x] gRPC Query commands via CLI: lookup, list, count (tested via integration)
-- [ ] Fan-out: multiple clients connect, receive consistent state, live updates
+- [x] Fan-out: multiple clients connect, receive consistent state, live updates
 - [x] Graceful shutdown: verify clean shutdown (tested in integration tests + unit tests)
 - [ ] Docker container: build image, start with docker-compose (PG + laredo-server), verify health endpoints
 
