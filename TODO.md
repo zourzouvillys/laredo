@@ -705,7 +705,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Profile baseline loading with large tables (1M+ rows)
 - [x] Profile streaming throughput (sustained changes/sec)
 - [x] Profile memory usage for in-memory targets at scale
-- [ ] Optimize hot paths identified by benchmarks
+- [x] Optimize hot paths identified by benchmarks
 - [x] Document resource requirements and sizing guidance
 
 ### 16.4 Packaging

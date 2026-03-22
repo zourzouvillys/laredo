@@ -7,6 +7,7 @@ import (
 	"iter"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -86,21 +87,55 @@ func NewIndexedTarget(opts ...IndexedTargetOption) *IndexedTarget {
 var _ laredo.SyncTarget = (*IndexedTarget)(nil)
 
 // buildKey constructs a composite key by joining formatted values with \x00.
+// Optimized for the common single-field case to avoid slice allocation.
 func buildKey(row laredo.Row, fields []string) string {
-	parts := make([]string, len(fields))
-	for i, f := range fields {
-		parts[i] = fmt.Sprintf("%v", row[f])
+	if len(fields) == 1 {
+		return formatValue(row[fields[0]])
 	}
-	return strings.Join(parts, "\x00")
+	var b strings.Builder
+	for i, f := range fields {
+		if i > 0 {
+			b.WriteByte(0)
+		}
+		b.WriteString(formatValue(row[f]))
+	}
+	return b.String()
 }
 
 // buildKeyFromValues constructs a composite key from raw values.
 func buildKeyFromValues(values []laredo.Value) string {
-	parts := make([]string, len(values))
-	for i, v := range values {
-		parts[i] = fmt.Sprintf("%v", v)
+	if len(values) == 1 {
+		return formatValue(values[0])
 	}
-	return strings.Join(parts, "\x00")
+	var b strings.Builder
+	for i, v := range values {
+		if i > 0 {
+			b.WriteByte(0)
+		}
+		b.WriteString(formatValue(v))
+	}
+	return b.String()
+}
+
+// formatValue converts a value to its string key representation.
+// Uses type switches for common types to avoid fmt.Sprintf overhead.
+func formatValue(v any) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case int:
+		return strconv.Itoa(val)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case float64:
+		return strconv.FormatFloat(val, 'g', -1, 64)
+	case bool:
+		return strconv.FormatBool(val)
+	case nil:
+		return "<nil>"
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 // copyRow returns a shallow copy of a row.
