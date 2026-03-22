@@ -687,10 +687,10 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ### 16.1 API Stability
 
-- [ ] Review all exported types/interfaces for Go API compatibility promises
-- [ ] Ensure no unintentional public API surface (move internal types to `internal/`)
-- [ ] Document stability guarantees per package (stable, experimental, internal)
-- [ ] Consider adding `go doc` examples for key public functions
+- [x] Review all exported types/interfaces for Go API compatibility promises
+- [x] Ensure no unintentional public API surface (move internal types to `internal/`)
+- [x] Document stability guarantees per package (stable, experimental, internal)
+- [x] Consider adding `go doc` examples for key public functions
 
 ### 16.2 Security
 
