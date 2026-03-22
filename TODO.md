@@ -566,7 +566,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [ ] PostgreSQL source: slot invalidation — exceed `max_slot_wal_keep_size`, verify re-baseline
 - [x] Engine + PG source + indexed memory target: end-to-end pipeline
 - [x] Engine + PG source + HTTP target: end-to-end with httptest server
-- [ ] Engine + PG source + fan-out target + fan-out client: full replication chain
+- [x] Engine + PG source + fan-out target + fan-out client: full replication chain
 - [x] Snapshot create + restore cycle with real engine (local disk store, full round-trip)
 - [x] Multi-pipeline ACK coordination: verify minimum position across targets (TestEngine_AckCoordination)
 - [x] Error isolation: one pipeline fails, others continue (TestEngine_ErrorPolicyIsolate)
