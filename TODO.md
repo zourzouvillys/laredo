@@ -638,7 +638,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] Using compiled in-memory targets with custom compilers (in-memory-targets.md)
 - [x] Setting up HTTP sync targets (http-sync.md)
 - [x] Setting up replication fan-out (fan-out.md)
-- [ ] Fan-out client library usage (Go)
+- [x] Fan-out client library usage (Go)
 - [x] Pipeline filters and transforms (filters-and-transforms.md)
 - [x] Error handling and dead letter queues (error-handling.md)
 - [x] TTL / expiry configuration (covered in error-handling.md + monitoring.md)
@@ -656,7 +656,7 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 - [x] CLI reference (cli.md)
 - [x] gRPC API reference: OAM service (grpc-api.md)
 - [x] gRPC API reference: Query service (grpc-api.md)
-- [ ] gRPC API reference: Replication service
+- [x] gRPC API reference: Replication service
 - [ ] Go library API reference (godoc-generated or hand-written)
 - [x] HTTP health endpoints reference (health-endpoints.md)
 - [x] Metrics reference (metrics.md)

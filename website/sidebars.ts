@@ -32,6 +32,7 @@ const sidebars: SidebarsConfig = {
         'guides/in-memory-targets',
         'guides/http-sync',
         'guides/fan-out',
+        'guides/fan-out-client',
         'guides/filters-and-transforms',
         'guides/snapshots',
         'guides/error-handling',
