@@ -489,18 +489,18 @@ Everything needed to go from scaffolding to a production-ready, stable release w
 
 ## 12. Fan-Out Client Library (`client/fanout/`)
 
-- [ ] `Client` struct with options: `ServerAddress()`, `Table()`, `ClientID()`
+- [x] `Client` struct with options: `ServerAddress()`, `Table()`, `ClientID()`
 - [ ] `LocalSnapshotPath()` — optional local snapshot cache for fast restart
 - [ ] `WithIndexedState()` — configure client-side indexed in-memory store
-- [ ] `Client.Start()` — connect, receive snapshot/delta, populate local state
-- [ ] `Client.AwaitReady(timeout)` — block until initial state loaded
+- [x] `Client.Start()` — connect, receive snapshot/delta, populate local state
+- [x] `Client.AwaitReady(timeout)` — block until initial state loaded
 - [ ] `Client.Lookup(keyValues...)` / `Client.LookupAll(indexName, keyValues...)`
-- [ ] `Client.Listen(func(old, new Row))` — subscribe to changes
-- [ ] `Client.Stop()` — save local snapshot, disconnect
+- [x] `Client.Listen(func(old, new Row))` — subscribe to changes
+- [x] `Client.Stop()` — disconnect
 - [ ] Auto-reconnect with exponential backoff
 - [ ] Heartbeat timeout detection (no message for 30s → reconnect)
 - [ ] Local snapshot save/restore on start/stop
-- [ ] gRPC client implementation for `TableSyncReplication` service
+- [x] gRPC client implementation for `TableSyncReplication` service
 
 ---
 
