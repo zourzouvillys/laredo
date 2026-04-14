@@ -26,9 +26,8 @@ holds sub-components that the engine delegates to.
 | File | Owns |
 |---|---|
 | `engine.go` | Package doc only; main engine struct is in root `laredo` package |
-| `pipeline.go` | Per-pipeline goroutine: baseline → stream → dispatch to target |
 | `buffer.go` | Bounded change buffer with block/drop_oldest/error policies |
 | `ack.go` | ACK coordinator: minimum confirmed position across pipelines |
-| `ttl.go` | TTL scanner: periodic expiry of rows in in-memory targets |
 | `readiness.go` | Readiness tracker: per-pipeline, per-source, global |
-| `shutdown.go` | Graceful shutdown sequencing |
+
+Pipeline dispatch, TTL scanning, and graceful shutdown are currently implemented inside the root `laredo` package's engine, not as separate sub-components here.
