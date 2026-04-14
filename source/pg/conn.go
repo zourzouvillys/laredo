@@ -27,6 +27,14 @@ func (cm *connManager) connect(ctx context.Context) error {
 		return fmt.Errorf("parse connection string: %w", err)
 	}
 
+	if cm.cfg.beforeConnect != nil {
+		// pgx.ConnConfig embeds pgconn.Config by value; take its address so
+		// hook mutations are visible to the subsequent ConnectConfig call.
+		if err := cm.cfg.beforeConnect(ctx, &connCfg.Config); err != nil {
+			return fmt.Errorf("before connect hook: %w", err)
+		}
+	}
+
 	conn, err := pgx.ConnectConfig(ctx, connCfg)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)

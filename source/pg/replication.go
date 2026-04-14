@@ -30,6 +30,12 @@ func (rm *replicationManager) connect(ctx context.Context) error {
 	}
 	connCfg.RuntimeParams["replication"] = "database"
 
+	if rm.cfg.beforeConnect != nil {
+		if err := rm.cfg.beforeConnect(ctx, connCfg); err != nil {
+			return fmt.Errorf("before connect hook: %w", err)
+		}
+	}
+
 	conn, err := pgconn.ConnectConfig(ctx, connCfg)
 	if err != nil {
 		return fmt.Errorf("replication connect: %w", err)

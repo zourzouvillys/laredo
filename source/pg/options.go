@@ -1,6 +1,11 @@
 package pg
 
-import "time"
+import (
+	"context"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+)
 
 // SlotMode controls replication slot lifecycle.
 type SlotMode int
@@ -51,15 +56,34 @@ type ReconnectConfig struct {
 	Multiplier     float64
 }
 
+// BeforeConnectHook is invoked immediately before each PostgreSQL connection
+// is established. It receives the parsed *pgconn.Config and may mutate it —
+// typically to compute a short-lived password (for example an AWS RDS IAM
+// auth token) or adjust host/port for topology-aware routing.
+//
+// The hook runs for both the query connection (baseline SELECTs, schema
+// discovery) and the replication connection (logical replication stream).
+// Implementations can distinguish the two via
+// cfg.RuntimeParams["replication"] — "database" is set on the replication
+// connection, the query connection has no such entry.
+//
+// Returning an error aborts connection setup. The hook must be safe to
+// call from multiple goroutines if reconnection is enabled.
+//
+// The hook is intentionally minimal and cloud-agnostic so laredo itself
+// has no dependency on any specific auth provider.
+type BeforeConnectHook func(ctx context.Context, cfg *pgconn.Config) error
+
 // Option configures a PostgreSQL source.
 type Option func(*sourceConfig)
 
 type sourceConfig struct {
-	connString  string
-	slotMode    SlotMode
-	slotName    string
-	publication PublicationConfig
-	reconnect   ReconnectConfig
+	connString    string
+	slotMode      SlotMode
+	slotName      string
+	publication   PublicationConfig
+	reconnect     ReconnectConfig
+	beforeConnect BeforeConnectHook
 }
 
 func defaultConfig() sourceConfig {
@@ -110,5 +134,14 @@ func Publication(cfg PublicationConfig) Option {
 func Reconnect(cfg ReconnectConfig) Option {
 	return func(c *sourceConfig) {
 		c.reconnect = cfg
+	}
+}
+
+// BeforeConnect registers a hook invoked just before each connection is
+// opened. See BeforeConnectHook for semantics. Pass nil to clear a
+// previously-set hook.
+func BeforeConnect(h BeforeConnectHook) Option {
+	return func(c *sourceConfig) {
+		c.beforeConnect = h
 	}
 }

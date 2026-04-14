@@ -2,8 +2,10 @@ package pg
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/zourzouvillys/laredo"
 )
 
@@ -49,6 +51,43 @@ func TestNew_WithOptions(t *testing.T) {
 	}
 	if !src.SupportsResume() {
 		t.Error("expected SupportsResume() = true for stateful mode")
+	}
+}
+
+func TestBeforeConnect_SetsHookAndMutatesConfig(t *testing.T) {
+	var seen *pgconn.Config
+	hook := func(ctx context.Context, cfg *pgconn.Config) error {
+		seen = cfg
+		cfg.Password = "resolved-token"
+		return nil
+	}
+	src := New(
+		Connection("postgres://u@localhost/db"),
+		BeforeConnect(hook),
+	)
+	if src.cfg.beforeConnect == nil {
+		t.Fatal("expected beforeConnect hook to be registered")
+	}
+	cfg := &pgconn.Config{}
+	if err := src.cfg.beforeConnect(context.Background(), cfg); err != nil {
+		t.Fatalf("hook returned error: %v", err)
+	}
+	if seen == nil {
+		t.Fatal("hook did not receive config")
+	}
+	if cfg.Password != "resolved-token" {
+		t.Errorf("hook mutation not visible: password=%q", cfg.Password)
+	}
+}
+
+func TestBeforeConnect_ErrorIsReturned(t *testing.T) {
+	want := errors.New("token generation failed")
+	src := New(BeforeConnect(func(ctx context.Context, cfg *pgconn.Config) error {
+		return want
+	}))
+	got := src.cfg.beforeConnect(context.Background(), &pgconn.Config{})
+	if !errors.Is(got, want) {
+		t.Errorf("expected error %v, got %v", want, got)
 	}
 }
 
