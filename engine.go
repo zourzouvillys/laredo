@@ -1108,8 +1108,11 @@ type streamHandler struct {
 	onHeartbeat func(Position) error
 }
 
+// OnChange satisfies ChangeHandler by forwarding to the engine's change callback.
 func (h streamHandler) OnChange(event ChangeEvent) error { return h.onChange(event) }
-func (h streamHandler) OnHeartbeat(pos Position) error   { return h.onHeartbeat(pos) }
+
+// OnHeartbeat satisfies HeartbeatHandler by forwarding to the engine's position callback.
+func (h streamHandler) OnHeartbeat(pos Position) error { return h.onHeartbeat(pos) }
 
 // dispatchToBuffers sends a change event to all matching pipeline buffers.
 // The buffer policy determines behavior when a buffer is full:
