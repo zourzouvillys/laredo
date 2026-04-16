@@ -117,3 +117,49 @@ func TestAckTracker_UnknownSource(t *testing.T) {
 		t.Error("expected nil for unknown source")
 	}
 }
+
+func TestAckTracker_ConfirmAll_FillsUnconfirmedPipelines(t *testing.T) {
+	at := NewAckTracker()
+	at.RegisterPipeline("p1", "src1", intCompare)
+	at.RegisterPipeline("p2", "src1", intCompare)
+
+	// Heartbeat ahead of any event — both pipelines jump to 42.
+	at.ConfirmAll("src1", 42)
+
+	pos, advanced := at.AckPosition("src1")
+	if pos != 42 || !advanced {
+		t.Errorf("expected position=42 after heartbeat, got %v, %v", pos, advanced)
+	}
+}
+
+func TestAckTracker_ConfirmAll_AdvancesOnlyWhenAhead(t *testing.T) {
+	at := NewAckTracker()
+	at.RegisterPipeline("p1", "src1", intCompare)
+
+	at.Confirm("p1", 100)
+	// Regressing heartbeat — should not pull the pipeline backwards.
+	at.ConfirmAll("src1", 50)
+
+	pos, advanced := at.AckPosition("src1")
+	if pos != 100 || !advanced {
+		t.Errorf("expected position to stay at 100, got %v, %v", pos, advanced)
+	}
+}
+
+func TestAckTracker_ConfirmAll_IgnoresOtherSources(t *testing.T) {
+	at := NewAckTracker()
+	at.RegisterPipeline("p1", "src1", intCompare)
+	at.RegisterPipeline("p2", "src2", intCompare)
+
+	// Heartbeat on src1 must not touch src2's pipeline.
+	at.ConfirmAll("src1", 200)
+
+	if _, advanced := at.AckPosition("src2"); advanced {
+		t.Error("src2 should not advance on a src1 heartbeat")
+	}
+
+	pos, advanced := at.AckPosition("src1")
+	if pos != 200 || !advanced {
+		t.Errorf("src1: expected position=200, got %v, %v", pos, advanced)
+	}
+}
