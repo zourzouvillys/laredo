@@ -1004,23 +1004,32 @@ func (e *coreEngine) streamFromPosition(ctx context.Context, sourceID string, so
 
 	// Create per-pipeline buffers and start consumer goroutines.
 	var consumerWg sync.WaitGroup
-	buffers := make(map[int]*engine.ChangeBuffer[ChangeEvent], len(pipelineIdxs))
+	buffers := make(map[int]*engine.ChangeBuffer[pipelineItem], len(pipelineIdxs))
 
 	for _, idx := range pipelineIdxs {
 		p := &e.pipelines[idx]
 		if p.loadState() != PipelineStreaming {
 			continue
 		}
-		buf := engine.NewChangeBuffer[ChangeEvent](p.bufferSize)
+		buf := engine.NewChangeBuffer[pipelineItem](p.bufferSize)
 		buffers[idx] = buf
 		consumerWg.Add(1)
 		go e.runPipelineConsumer(streamCtx, streamCancel, sourceID, source, idx, pipelineIdxs, buf, &consumerWg)
 	}
 
-	// Stream changes — dispatcher sends events to per-pipeline buffers.
-	err := source.Stream(streamCtx, position, ChangeHandlerFunc(func(event ChangeEvent) error {
-		return e.dispatchToBuffers(streamCtx, sourceID, pipelineIdxs, buffers, event)
-	}))
+	// Stream changes — dispatcher sends events (and, for sources
+	// that support them, heartbeats) to per-pipeline buffers. The
+	// handler is a named type rather than a bare ChangeHandlerFunc
+	// so sources can discover HeartbeatHandler via type assertion.
+	handler := streamHandler{
+		onChange: func(event ChangeEvent) error {
+			return e.dispatchToBuffers(streamCtx, sourceID, pipelineIdxs, buffers, event)
+		},
+		onHeartbeat: func(pos Position) error {
+			return e.dispatchHeartbeatToBuffers(streamCtx, pipelineIdxs, buffers, pos)
+		},
+	}
+	err := source.Stream(streamCtx, position, handler)
 
 	// Close all buffers so consumers drain remaining items and exit.
 	for _, buf := range buffers {
@@ -1077,12 +1086,37 @@ func (e *coreEngine) dispatchBaselineRow(ctx context.Context, pipelineIdxs []int
 	}
 }
 
+// pipelineItem is the element type per-pipeline buffers carry. Each
+// item is either a ChangeEvent (applied to the target) or a
+// heartbeat position (Confirmed without any target work). Threading
+// heartbeats through the same buffer as events preserves ordering:
+// when a consumer dequeues a heartbeat it knows every prior event
+// for that pipeline has been applied, so confirming at the
+// heartbeat position can't overshoot unapplied work.
+type pipelineItem struct {
+	event       ChangeEvent // zero-valued when heartbeat is set
+	heartbeat   Position
+	isHeartbeat bool
+}
+
+// streamHandler is the engine's handler implementation passed to
+// source.Stream. It satisfies both ChangeHandler and
+// HeartbeatHandler so sources can route keepalive-style position
+// updates through the same pipeline as real events.
+type streamHandler struct {
+	onChange    func(ChangeEvent) error
+	onHeartbeat func(Position) error
+}
+
+func (h streamHandler) OnChange(event ChangeEvent) error { return h.onChange(event) }
+func (h streamHandler) OnHeartbeat(pos Position) error   { return h.onHeartbeat(pos) }
+
 // dispatchToBuffers sends a change event to all matching pipeline buffers.
 // The buffer policy determines behavior when a buffer is full:
 //   - BufferBlock: blocks until space is available (backpressure to source)
 //   - BufferDropOldest: drops the oldest item to make room
 //   - BufferError: fails immediately, triggering the pipeline's error policy
-func (e *coreEngine) dispatchToBuffers(ctx context.Context, sourceID string, pipelineIdxs []int, buffers map[int]*engine.ChangeBuffer[ChangeEvent], event ChangeEvent) error {
+func (e *coreEngine) dispatchToBuffers(ctx context.Context, sourceID string, pipelineIdxs []int, buffers map[int]*engine.ChangeBuffer[pipelineItem], event ChangeEvent) error {
 	for _, idx := range pipelineIdxs {
 		p := &e.pipelines[idx]
 		buf := buffers[idx]
@@ -1090,19 +1124,20 @@ func (e *coreEngine) dispatchToBuffers(ctx context.Context, sourceID string, pip
 			continue
 		}
 
+		item := pipelineItem{event: event}
 		switch p.bufferPolicy {
 		case BufferBlock:
-			if !buf.SendCtx(ctx, event) {
+			if !buf.SendCtx(ctx, item) {
 				// Context cancelled or buffer closed.
 				return ctx.Err()
 			}
 		case BufferDropOldest:
-			_, didDrop := buf.SendDropOldest(event)
+			_, didDrop := buf.SendDropOldest(item)
 			if didDrop {
 				e.observer.OnBufferPolicyTriggered(p.id, BufferDropOldest)
 			}
 		case BufferError:
-			if !buf.TrySend(event) {
+			if !buf.TrySend(item) {
 				e.observer.OnBufferPolicyTriggered(p.id, BufferError)
 				if e.applyErrorPolicy(ctx, idx, sourceID, pipelineIdxs) {
 					return fmt.Errorf("engine stopped due to buffer overflow error policy")
@@ -1117,6 +1152,31 @@ func (e *coreEngine) dispatchToBuffers(ctx context.Context, sourceID string, pip
 	return nil
 }
 
+// dispatchHeartbeatToBuffers sends a heartbeat marker to every
+// active pipeline on the source. Heartbeats use BufferBlock
+// semantics unconditionally — they're cheap (no target work) and
+// dropping them just defers the ACK advance, which is worse than
+// a brief backpressure.
+//
+// Per-pipeline filters (matching table identity) don't apply to
+// heartbeats because a heartbeat is a *source*-level position; the
+// source's pipelines all cover tables in the same publication, so
+// advancing the ACK on all of them at once is correct.
+func (e *coreEngine) dispatchHeartbeatToBuffers(ctx context.Context, pipelineIdxs []int, buffers map[int]*engine.ChangeBuffer[pipelineItem], pos Position) error {
+	for _, idx := range pipelineIdxs {
+		p := &e.pipelines[idx]
+		buf := buffers[idx]
+		if buf == nil || p.loadState() != PipelineStreaming {
+			continue
+		}
+		item := pipelineItem{heartbeat: pos, isHeartbeat: true}
+		if !buf.SendCtx(ctx, item) {
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
 // runPipelineConsumer reads change events from the pipeline's buffer and applies
 // them to the target. It handles retries, dead letters, error policies, and ACK
 // coordination. Runs as a goroutine for the lifetime of the streaming session.
@@ -1127,20 +1187,39 @@ func (e *coreEngine) runPipelineConsumer(
 	source SyncSource,
 	pipelineIdx int,
 	pipelineIdxs []int,
-	buf *engine.ChangeBuffer[ChangeEvent],
+	buf *engine.ChangeBuffer[pipelineItem],
 	wg *sync.WaitGroup,
 ) {
 	defer wg.Done()
 
 	p := &e.pipelines[pipelineIdx]
 
-	for event := range buf.Receive() {
+	for item := range buf.Receive() {
 		// Notify buffer depth after dequeue.
 		e.observer.OnBufferDepthChanged(p.id, buf.Len(), buf.Cap())
 
 		if p.loadState() != PipelineStreaming {
 			continue
 		}
+
+		if item.isHeartbeat {
+			// Heartbeat: no target work, just advance the confirmed
+			// position. Safe here because the buffer preserves order
+			// within a pipeline — any events ahead of this heartbeat
+			// in the source stream were already applied above before
+			// we dequeued it.
+			if p.target.IsDurable() {
+				e.ackTracker.Confirm(p.id, item.heartbeat)
+				if pos, advanced := e.ackTracker.AckPosition(sourceID); advanced {
+					if ackErr := source.Ack(ctx, pos); ackErr == nil {
+						e.observer.OnAckAdvanced(sourceID, pos)
+					}
+				}
+			}
+			continue
+		}
+
+		event := item.event
 
 		start := time.Now()
 		e.observer.OnChangeReceived(p.id, event.Table, event.Action, event.Position)

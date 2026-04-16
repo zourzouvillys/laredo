@@ -148,6 +148,27 @@ func (rm *replicationManager) startStreaming(ctx context.Context, slotName strin
 				if err != nil {
 					return fmt.Errorf("parse keepalive: %w", err)
 				}
+				// ServerWALEnd is the server's current WAL write
+				// position. It may be past currentLSN when the only
+				// WAL since our last event is non-publication traffic
+				// (checkpoints, autovacuum, writes to non-published
+				// tables). Advancing currentLSN to ServerWALEnd means
+				// the next standby status reply — and any downstream
+				// consumer watching OnAckAdvanced — reflects reality
+				// instead of stalling at the last event we happened
+				// to receive.
+				if LSN(pkm.ServerWALEnd) > currentLSN {
+					currentLSN = LSN(pkm.ServerWALEnd)
+				}
+				// Give heartbeat-aware handlers a chance to advance
+				// their ACK tracking even when no events are flowing.
+				// Non-aware handlers are unaffected (type assertion
+				// fails silently).
+				if hb, ok := handler.(laredo.HeartbeatHandler); ok {
+					if err := hb.OnHeartbeat(currentLSN); err != nil {
+						return fmt.Errorf("heartbeat handler: %w", err)
+					}
+				}
 				if pkm.ReplyRequested {
 					if err := rm.sendStandbyStatus(ctx, currentLSN); err != nil {
 						return fmt.Errorf("standby status reply: %w", err)

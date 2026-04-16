@@ -54,6 +54,32 @@ func (a *AckTracker) Confirm(pipelineID string, position any) {
 	a.positions[pipelineID] = position
 }
 
+// ConfirmAll advances every pipeline on the given source to the max of
+// its current confirmed position and `position`. Used for source-level
+// heartbeats where the source reports its upstream position in the
+// absence of events — e.g. a PrimaryKeepaliveMessage carrying
+// ServerWALEnd. The monotonic-max semantics mean a regressing
+// heartbeat (should never happen in practice) is a safe no-op.
+//
+// Unlike Confirm this is cross-pipeline, so callers don't need to
+// know which pipelines share a source. Pipelines that haven't yet
+// confirmed anything (no snapshot, no events applied) are promoted
+// to `position` — same logic as the per-pipeline path.
+func (a *AckTracker) ConfirmAll(sourceID string, position any) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	compare := a.comparators[sourceID]
+	for pid, sid := range a.pipelineSource {
+		if sid != sourceID {
+			continue
+		}
+		cur, ok := a.positions[pid]
+		if !ok || compare == nil || compare(position, cur) > 0 {
+			a.positions[pid] = position
+		}
+	}
+}
+
 // Skip marks a pipeline as skipped for minimum computation (e.g., ERROR state).
 func (a *AckTracker) Skip(pipelineID string) {
 	a.mu.Lock()

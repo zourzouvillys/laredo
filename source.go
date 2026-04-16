@@ -49,6 +49,31 @@ func (f ChangeHandlerFunc) OnChange(event ChangeEvent) error {
 	return f(event)
 }
 
+// HeartbeatHandler is an optional companion to ChangeHandler. A source
+// that knows its upstream position even when no events are in flight
+// (e.g. the PostgreSQL logical-replication source, which receives
+// PrimaryKeepaliveMessage frames carrying the server's current WAL
+// position) may call OnHeartbeat with that position.
+//
+// The engine uses heartbeats to advance the ACK position, and
+// consequently OnAckAdvanced, past stretches of WAL that produced no
+// publication-matching events — for example, a transaction touching
+// only non-published tables, a CHECKPOINT record, or an idle period.
+// Without heartbeats, a consumer waiting on "has Laredo caught up to
+// LSN X?" could block indefinitely any time X falls in such a gap.
+//
+// Sources call OnHeartbeat off the same goroutine as OnChange, so
+// the two are serialized — handlers don't need their own
+// synchronization to distinguish them.
+//
+// Handlers opt in via type assertion; sources detect support via
+// `handler.(HeartbeatHandler)` and skip the callback when absent, so
+// adding this interface is backwards-compatible with every existing
+// ChangeHandler implementation.
+type HeartbeatHandler interface {
+	OnHeartbeat(position Position) error
+}
+
 // SourceConfig holds configuration for source initialization.
 type SourceConfig struct {
 	Tables []TableIdentifier
