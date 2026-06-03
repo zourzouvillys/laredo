@@ -240,7 +240,6 @@ mirror `laredo-server`; on shutdown the writer flushes a final diff.
 - `client/fanout` — the subscription client (snapshot + resume + failover)
 - `snapshot/`, `snapshot/jsonl`, `snapshot/s3` — existing serialization/store patterns to model on
 - `source/kinesis` — existing `aws-sdk-go-v2` client + assume-role patterns
-- Clerk `zuul` EDRs — house style this document follows
 
 ## Changelog
 
