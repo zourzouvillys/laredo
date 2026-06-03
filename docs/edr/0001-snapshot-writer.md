@@ -71,10 +71,12 @@ The forces that shape the design:
 We build `laredo-snapshotter`: a single-table[^multi] materializer that turns a
 fan-out subscription into a base-plus-diff artifact stream with a manifest.
 
-[^multi]: One process materializes one table. Run N processes for N tables. A
-    multi-table process is a possible future optimization but is explicitly out
-    of scope here — it complicates the threshold engine and the manifest for no
-    near-term need.
+[^multi]: The core `Writer` is **per-table** — one subscription, one diff
+    buffer, one threshold engine, one manifest — which keeps that logic simple.
+    The binary, however, may host **several** per-table writers under a
+    supervisor (each with its own destinations/formats/thresholds), so a single
+    process can materialize multiple tables without the engine ever becoming
+    multi-table. Sharing one subscription across tables is not planned.
 
 ### Pipeline
 

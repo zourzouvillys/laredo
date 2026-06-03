@@ -188,6 +188,15 @@ func (c *Client) LastSequence() int64 {
 	return c.lastSeq
 }
 
+// LastSourcePosition returns the source position (e.g. PostgreSQL WAL LSN) of
+// the last applied change. Unlike LastSequence it is stable across server
+// instances. Empty until the first change carrying a position is applied.
+func (c *Client) LastSourcePosition() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastSourcePosition
+}
+
 // Lookup returns a row by looking up a field value. Scans all rows (O(n)).
 func (c *Client) Lookup(field string, value any) (laredo.Row, bool) {
 	c.mu.RLock()
