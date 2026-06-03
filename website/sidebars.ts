@@ -58,6 +58,13 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Design',
+      items: [
+        'design/snapshot-writer',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Internals',
       items: [
         'internals/design-spec',
@@ -77,6 +84,7 @@ const sidebars: SidebarsConfig = {
         'operations/snapshot-restore',
         'operations/scaling-fan-out',
         'operations/resource-sizing',
+        'operations/snapshot-writer-runbook',
       ],
     },
   ],
