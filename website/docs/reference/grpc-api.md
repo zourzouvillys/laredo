@@ -68,6 +68,7 @@ Each `WatchStatusResponse` contains a `timestamp` and exactly one of the followi
 | `PauseSync` | Pause sync (all or specific source) |
 | `ResumeSync` | Resume sync |
 | `ResetSource` | Drop and recreate replication slot (and optionally publication) |
+| `DrainReplication` | Tell fan-out clients to hand off to another instance (zero-downtime deploys). Empty `schema`/`table` drains all fan-out targets; `drain_deadline_seconds` caps how long drained streams are served |
 
 ### Configuration (read-only)
 
@@ -179,6 +180,7 @@ rpc Sync(SyncRequest) returns (stream SyncResponse);
 | `last_known_sequence` | `int64` | The last sequence number the client has processed. `0` means the client has no state. |
 | `last_snapshot_id` | `string` | ID of the last snapshot the client loaded (used for `DELTA_FROM_SNAPSHOT` mode). |
 | `client_id` | `string` | Unique identifier for this client. If empty, the server assigns an anonymous ID (`anon-<timestamp>`). |
+| `last_known_source_position` | `string` | The source position (e.g. WAL LSN) of the last change the client applied. Unlike `last_known_sequence` this is stable across server instances, so it is used to resume after failing over to a different instance. |
 
 #### Protocol phases
 
@@ -205,8 +207,10 @@ The server sends a single `SyncHandshake` message that tells the client which sy
 | `SYNC_MODE_DELTA` | Client's `last_known_sequence` is still within the journal window. Server sends only the journal entries since that sequence. |
 | `SYNC_MODE_DELTA_FROM_SNAPSHOT` | Client has a snapshot but needs journal entries applied on top of it. |
 
-The server selects the mode automatically:
-- If `last_known_sequence > 0` and the sequence is still in the journal (i.e., `>= journal_oldest_sequence`), the server uses `SYNC_MODE_DELTA`.
+The server selects the mode automatically (in priority order):
+- If `last_known_source_position` is set and still covered by the journal, the server uses `SYNC_MODE_DELTA` resumed from that position. This is the cross-instance failover path — the source position is stable across instances, unlike the sequence.
+- Else if `last_known_sequence > 0` and the sequence is still in the journal (i.e., `>= journal_oldest_sequence`), the server uses `SYNC_MODE_DELTA`.
+- Else if `last_snapshot_id` matches a retained snapshot, the server uses `SYNC_MODE_DELTA_FROM_SNAPSHOT`.
 - Otherwise, the server uses `SYNC_MODE_FULL_SNAPSHOT`.
 
 **2. Snapshot (only for `SYNC_MODE_FULL_SNAPSHOT`)**
@@ -238,6 +242,8 @@ Each `ReplicationJournalEntry` contains:
 
 **Schema changes:** If the table schema changes, the server sends a `SchemaChangeNotification` with `old_columns` and `new_columns`.
 
+**Draining / failover:** When the server is being drained (graceful shutdown or the `DrainReplication` admin RPC), it sends a `GoAway` message (`reason`, optional `drain_deadline_unix_ms`) and keeps the stream open so the client can overlap the cutover. The client re-dials its configured address — routed by a load balancer to a healthy instance — resumes with `last_known_source_position`, and closes this stream once the new one has caught up. See [Failover & zero-downtime deploys](../guides/fan-out.md#failover--zero-downtime-deploys).
+
 **Client lifecycle:** The server tracks each connected client's state. During catch-up, the client state is `"catching_up"`. Once all journal entries have been delivered and the client is receiving live changes, the state transitions to `"live"`. If the fan-out target has a `max_clients` limit configured and it has been reached, new `Sync` calls return `RESOURCE_EXHAUSTED`.
 
 #### Stream message types summary
@@ -251,6 +257,7 @@ Each `ReplicationJournalEntry` contains:
 | `ReplicationJournalEntry` | Catch-up / Live | A single change event. |
 | `SchemaChangeNotification` | Live | Table schema changed. |
 | `Heartbeat` | Live | Periodic keepalive during idle periods. |
+| `GoAway` | Live | Server is draining; client should fail over to another instance and resume by source position. |
 
 ### ListSnapshots
 

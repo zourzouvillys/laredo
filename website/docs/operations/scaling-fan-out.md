@@ -256,10 +256,33 @@ pipelines = [
 
 This isolates resource usage per table and allows independent scaling.
 
+## Zero-downtime deploys & failover
+
+When you run more than one fan-out instance behind a load balancer, a client can
+hand off from a draining instance to a healthy one **without a full re-sync**.
+The draining instance sends each client a `GoAway`; the client re-dials the
+load-balanced address and resumes from its last applied **source position** (WAL
+LSN) — a coordinate that is stable across instances, unlike the per-instance
+journal sequence.
+
+Operationally this means:
+
+- Point clients at a **load-balanced / headless** address, not individual pods.
+- Drain on shutdown with `laredo-server --drain-grace <duration>` (it marks
+  `/health/ready` unready so the LB deregisters it first), or on demand with the
+  OAM `DrainReplication` admin RPC.
+- Size the journal so a target retains entries back to the LSN of any client
+  that might fail over to it — otherwise that client re-snapshots (see
+  [Journal sizing](#journal-sizing)).
+
+See the [Failover & zero-downtime deploys](../guides/fan-out.md#failover--zero-downtime-deploys)
+guide for the full protocol and troubleshooting.
+
 ## Capacity planning checklist
 
 - **Memory**: row store size + (journal `max_entries` x average row size x 2) + (snapshot count x row store size)
 - **Connections**: `max_clients` + headroom for rolling deployments (typically 2x normal count during deploy)
+- **Drain grace**: `--drain-grace` ≥ LB deregistration delay + typical client catch-up, so failover completes before the instance stops
 - **Journal depth**: covers at least the longest expected client downtime (restart, deploy, network partition)
 - **Snapshot frequency**: frequent enough that new clients get a recent snapshot without waiting
 - **Client buffer size**: large enough to absorb short bursts; small enough to disconnect genuinely slow clients promptly

@@ -236,6 +236,23 @@ On reconnect, the client sends its `LastSequence` to the server. The server deci
 
 No application code is needed to handle reconnections. The client manages it transparently.
 
+## Failover across server instances
+
+The client also survives an individual `laredo-server` being drained for a
+deploy or replacement, **without a full re-sync**. When the server sends a
+`GoAway`, the client re-dials its configured address (a load balancer routes it
+to a healthy instance) and resumes from the **source position** (WAL LSN) of the
+last change it applied — not the per-instance sequence, which is not portable.
+It keeps the old stream open until the new one has caught up, then disconnects
+cleanly.
+
+This is transparent to application code. It requires that the instances tail the
+same PostgreSQL and that clients are pointed at a load-balanced address rather
+than individual instances. If `LocalSnapshotPath` is set, the persisted source
+position is reused across restarts too. See
+[Failover & zero-downtime deploys](./fan-out.md#failover--zero-downtime-deploys)
+for the server side.
+
 ## Monitoring with LastSequence
 
 `LastSequence` returns the last journal sequence number received from the server. Use it to monitor replication lag or to check that the client is keeping up.

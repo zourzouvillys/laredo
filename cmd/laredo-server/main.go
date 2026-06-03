@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -67,6 +68,7 @@ func run() error {
 	initDir := flag.String("init-dir", "/docker-entrypoint-init.d", "directory of *.conf files to merge before conf-dir (Docker init pattern)")
 	healthPort := flag.Int("health-port", 8080, "HTTP port for health and metrics endpoints")
 	logLevel := flag.String("log-level", "info", "log level (debug, info, warn, error)")
+	drainGrace := flag.Duration("drain-grace", 0, "on shutdown, mark unready and tell fan-out clients to hand off to another instance, then wait this long before stopping (0 disables)")
 	var sets setFlags
 	flag.Var(&sets, "set", "config override as key=value (repeatable)")
 	flag.Parse()
@@ -137,6 +139,10 @@ func run() error {
 	}
 	slog.Info("engine started")
 
+	// draining flips to true during graceful shutdown so readiness probes fail
+	// and load balancers deregister this instance before clients hand off.
+	var draining atomic.Bool
+
 	// Start health + metrics HTTP server.
 	healthMux := http.NewServeMux()
 	healthMux.HandleFunc("/health/live", func(w http.ResponseWriter, _ *http.Request) {
@@ -144,7 +150,9 @@ func run() error {
 		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
 	})
 	healthMux.HandleFunc("/health/ready", func(w http.ResponseWriter, _ *http.Request) {
-		ready := eng.IsReady()
+		// Report unready while draining so a load balancer deregisters this
+		// instance before clients are told to hand off.
+		ready := eng.IsReady() && !draining.Load()
 		status := http.StatusOK
 		if !ready {
 			status = http.StatusServiceUnavailable
@@ -199,6 +207,21 @@ func run() error {
 	sig := <-sigCh
 	slog.Info("received signal, shutting down", "signal", sig)
 
+	// Graceful drain: mark unready (LB deregisters), tell fan-out clients to
+	// hand off to another instance, then wait before stopping so they can
+	// resume on a healthy instance without a full re-sync.
+	if *drainGrace > 0 {
+		draining.Store(true)
+		deadline := time.Now().Add(*drainGrace)
+		n := drainFanoutTargets(eng, deadline)
+		slog.Info("draining fan-out clients", "targets", n, "grace", drainGrace.String()) //nolint:gosec // structured logging of a config flag, not string interpolation
+		select {
+		case <-time.After(*drainGrace):
+		case sig := <-sigCh:
+			slog.Info("second signal during drain, stopping now", "signal", sig)
+		}
+	}
+
 	// Graceful shutdown with timeout.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
@@ -222,6 +245,31 @@ func run() error {
 
 	slog.Info("shutdown complete")
 	return nil
+}
+
+// drainFanoutTargets tells every fan-out target's clients to hand off to
+// another instance, returning the number of targets drained. The drainer
+// interface is matched structurally so this command need not import the fanout
+// package.
+func drainFanoutTargets(eng laredo.Engine, deadline time.Time) int {
+	type drainer interface {
+		Drain(reason string, deadline time.Time)
+	}
+	seen := make(map[laredo.TableIdentifier]bool)
+	var n int
+	for _, p := range eng.Pipelines() {
+		if seen[p.Table] {
+			continue
+		}
+		seen[p.Table] = true
+		for _, t := range eng.Targets("", p.Table) {
+			if d, ok := t.(drainer); ok {
+				d.Drain("draining", deadline)
+				n++
+			}
+		}
+	}
+	return n
 }
 
 func validateCmd() {
