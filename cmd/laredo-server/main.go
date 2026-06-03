@@ -214,7 +214,7 @@ func run() error {
 		draining.Store(true)
 		deadline := time.Now().Add(*drainGrace)
 		n := drainFanoutTargets(eng, deadline)
-		slog.Info("draining fan-out clients", "targets", n, "grace", drainGrace.String())
+		slog.Info("draining fan-out clients", "targets", n, "grace", drainGrace.String()) //nolint:gosec // structured logging of a config flag, not string interpolation
 		select {
 		case <-time.After(*drainGrace):
 		case sig := <-sigCh:
