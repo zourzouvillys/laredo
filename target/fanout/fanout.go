@@ -35,6 +35,18 @@ type Target struct {
 	table     laredo.TableIdentifier
 	cols      []laredo.ColumnDefinition
 	snapshots []Snapshot // ordered newest-first
+	// curPos is the source position of the change currently being applied,
+	// set by the engine via SetChangePosition immediately before each On* call.
+	curPos laredo.Position
+
+	// Drain state. When draining, connected Sync streams are told (via GoAway)
+	// to hand off to another instance, but keep serving until the client leaves
+	// or the deadline passes, so the cutover is gapless.
+	drainMu       sync.Mutex
+	drainCh       chan struct{}
+	draining      bool
+	drainReason   string
+	drainDeadline time.Time
 }
 
 type config struct {
@@ -118,7 +130,65 @@ func New(opts ...Option) *Target {
 	}
 }
 
-var _ laredo.SyncTarget = (*Target)(nil)
+var (
+	_ laredo.SyncTarget       = (*Target)(nil)
+	_ laredo.PositionedTarget = (*Target)(nil)
+)
+
+// SetChangePosition records the source position of the next change to be
+// applied, so it can be stored on the journal entry for cross-instance resume.
+//
+//nolint:revive // implements PositionedTarget.
+func (t *Target) SetChangePosition(position laredo.Position) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.curPos = position
+}
+
+// Drain signals connected clients to hand off to another server instance. It is
+// idempotent. reason is surfaced to clients in the GoAway message; deadline (if
+// non-zero) is the wall-clock time after which the server stops serving drained
+// streams even if a client has not finished handing off.
+func (t *Target) Drain(reason string, deadline time.Time) {
+	t.drainMu.Lock()
+	defer t.drainMu.Unlock()
+	if t.draining {
+		return
+	}
+	t.draining = true
+	t.drainReason = reason
+	t.drainDeadline = deadline
+	if t.drainCh == nil {
+		t.drainCh = make(chan struct{})
+	}
+	close(t.drainCh)
+}
+
+// Draining returns a channel that is closed when the target begins draining.
+// Sync handlers select on it to emit GoAway promptly.
+func (t *Target) Draining() <-chan struct{} {
+	t.drainMu.Lock()
+	defer t.drainMu.Unlock()
+	if t.drainCh == nil {
+		t.drainCh = make(chan struct{})
+	}
+	return t.drainCh
+}
+
+// DrainInfo returns the current drain reason, deadline, and whether the target
+// is draining.
+func (t *Target) DrainInfo() (reason string, deadline time.Time, draining bool) {
+	t.drainMu.Lock()
+	defer t.drainMu.Unlock()
+	return t.drainReason, t.drainDeadline, t.draining
+}
+
+// IsDraining reports whether the target is currently draining.
+func (t *Target) IsDraining() bool {
+	t.drainMu.Lock()
+	defer t.drainMu.Unlock()
+	return t.draining
+}
 
 //nolint:revive // implements SyncTarget.
 func (t *Target) OnInit(_ context.Context, table laredo.TableIdentifier, columns []laredo.ColumnDefinition) error {
@@ -135,7 +205,8 @@ func (t *Target) OnBaselineRow(_ context.Context, _ laredo.TableIdentifier, row 
 	defer t.mu.Unlock()
 	key := t.buildKey(row)
 	t.store[key] = row
-	t.j.append(laredo.ActionInsert, nil, row)
+	// Baseline rows have no per-row position; backfilled at OnBaselineComplete.
+	t.j.append(laredo.ActionInsert, nil, row, nil)
 	return nil
 }
 
@@ -144,6 +215,9 @@ func (t *Target) OnBaselineComplete(_ context.Context, _ laredo.TableIdentifier)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.ready = true
+	// Stamp the baseline end position (delivered via SetChangePosition) onto the
+	// baseline rows so every journal entry carries a comparable coordinate.
+	t.j.backfillNilPositions(t.curPos)
 	return nil
 }
 
@@ -153,7 +227,7 @@ func (t *Target) OnInsert(_ context.Context, _ laredo.TableIdentifier, row lared
 	defer t.mu.Unlock()
 	key := t.buildKey(row)
 	t.store[key] = row
-	t.j.append(laredo.ActionInsert, nil, row)
+	t.j.append(laredo.ActionInsert, nil, row, t.curPos)
 	return nil
 }
 
@@ -164,7 +238,7 @@ func (t *Target) OnUpdate(_ context.Context, _ laredo.TableIdentifier, row lared
 	key := t.buildKey(row)
 	old := t.store[key]
 	t.store[key] = row
-	t.j.append(laredo.ActionUpdate, old, row)
+	t.j.append(laredo.ActionUpdate, old, row, t.curPos)
 	return nil
 }
 
@@ -175,7 +249,7 @@ func (t *Target) OnDelete(_ context.Context, _ laredo.TableIdentifier, identity 
 	key := t.buildKey(identity)
 	old := t.store[key]
 	delete(t.store, key)
-	t.j.append(laredo.ActionDelete, old, nil)
+	t.j.append(laredo.ActionDelete, old, nil, t.curPos)
 	return nil
 }
 
@@ -184,7 +258,7 @@ func (t *Target) OnTruncate(_ context.Context, _ laredo.TableIdentifier) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.store = make(map[string]laredo.Row)
-	t.j.append(laredo.ActionTruncate, nil, nil)
+	t.j.append(laredo.ActionTruncate, nil, nil, t.curPos)
 	return nil
 }
 
@@ -197,7 +271,7 @@ func (t *Target) OnSchemaChange(_ context.Context, _ laredo.TableIdentifier, _, 
 	defer t.mu.Unlock()
 	t.cols = newColumns
 	// Append a schema change marker to the journal so clients know to re-read schema.
-	t.j.append(laredo.ActionTruncate, nil, nil) // schema changes use truncate action as marker
+	t.j.append(laredo.ActionTruncate, nil, nil, t.curPos) // schema changes use truncate action as marker
 	return laredo.SchemaChangeResponse{Action: laredo.SchemaReBaseline}
 }
 
@@ -268,6 +342,14 @@ func (t *Target) JournalLen() int {
 // JournalEntriesSince returns journal entries after the given sequence.
 func (t *Target) JournalEntriesSince(afterSeq int64) []JournalEntry {
 	return t.j.entriesSince(afterSeq)
+}
+
+// ResumeSequenceForPosition maps a client's last applied source position to the
+// journal sequence to resume after, for cross-instance failover. covered is
+// false when the position predates the retained journal (the client must
+// re-snapshot). cmp compares two positions (e.g. SyncSource.ComparePositions).
+func (t *Target) ResumeSequenceForPosition(position laredo.Position, cmp func(a, b laredo.Position) int) (resumeSeq int64, covered bool) {
+	return t.j.resumeSeqForPosition(position, cmp)
 }
 
 // TakeSnapshot captures the current in-memory state tagged with the current

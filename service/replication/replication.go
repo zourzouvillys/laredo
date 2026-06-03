@@ -173,7 +173,7 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("schema and table are required"))
 	}
 
-	ft := s.findFanoutTarget(schema, table)
+	ft, src := s.findFanoutTargetAndSource(schema, table)
 	if ft == nil {
 		return connect.NewError(connect.CodeNotFound, fmt.Errorf("no fan-out target for %s.%s", schema, table))
 	}
@@ -190,12 +190,29 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 	oldestSeq := ft.JournalOldestSequence()
 	currentSeq := ft.JournalSequence()
 	snapshotID := req.Msg.GetLastSnapshotId()
+	clientPosStr := req.Msg.GetLastKnownSourcePosition()
 
 	var mode v1.SyncMode
 	var resumeSeq int64
 	var handshakeSnapshotID string
 
+	// Cross-instance resume by source position (e.g. WAL LSN) takes priority:
+	// it is the only coordinate stable across server instances. If the position
+	// is still covered by this instance's journal, send a delta from it; if it
+	// predates the journal, fall through to the sequence/snapshot/full paths.
+	if clientPosStr != "" && src != nil {
+		if pos, err := src.PositionFromString(clientPosStr); err == nil {
+			if seq, covered := ft.ResumeSequenceForPosition(pos, src.ComparePositions); covered {
+				mode = v1.SyncMode_SYNC_MODE_DELTA
+				resumeSeq = seq
+			}
+		}
+	}
+
 	switch {
+	case mode != v1.SyncMode_SYNC_MODE_UNSPECIFIED:
+		// Already resolved via source-position resume above.
+
 	case lastSeq > 0 && lastSeq >= oldestSeq:
 		// Client has a recent sequence — send journal delta.
 		mode = v1.SyncMode_SYNC_MODE_DELTA
@@ -237,6 +254,16 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 
 	ft.SetClientState(clientID, "catching_up")
 
+	// posToStr serializes a journal entry's source position for the wire, so
+	// clients can resume from it on any instance. Nil when the source is
+	// unavailable (positions are then omitted).
+	posToStr := func(p laredo.Position) string {
+		if src == nil || p == nil {
+			return ""
+		}
+		return src.PositionToString(p)
+	}
+
 	// Full snapshot if needed.
 	if mode == v1.SyncMode_SYNC_MODE_FULL_SNAPSHOT {
 		snap := ft.TakeSnapshot()
@@ -273,7 +300,7 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 
 	// Journal catch-up.
 	for _, e := range ft.JournalEntriesSince(resumeSeq) {
-		if err := sendJournalEntry(stream, e); err != nil {
+		if err := sendJournalEntry(stream, e, posToStr); err != nil {
 			return err
 		}
 		ft.UpdateClientSequence(clientID, e.Sequence)
@@ -283,16 +310,45 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 	lastSeqSent := ft.JournalSequence()
 	lastSent := time.Now()
 
+	drainCh := ft.Draining()
+	var goAwaySent bool
+	var drainDeadline time.Time
+
 	// Live streaming loop.
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 
+		// On drain, tell the client to hand off (once), then keep serving so it
+		// can overlap the cutover, until it disconnects or the deadline passes.
+		if !goAwaySent && ft.IsDraining() {
+			reason, deadline, _ := ft.DrainInfo()
+			var deadlineMs int64
+			if !deadline.IsZero() {
+				deadlineMs = deadline.UnixMilli()
+				drainDeadline = deadline
+			}
+			if err := stream.Send(&v1.SyncResponse{
+				Message: &v1.SyncResponse_GoAway{
+					GoAway: &v1.GoAway{Reason: reason, DrainDeadlineUnixMs: deadlineMs},
+				},
+			}); err != nil {
+				return err
+			}
+			ft.SetClientState(clientID, "draining")
+			goAwaySent = true
+			lastSent = time.Now()
+		}
+		if goAwaySent && !drainDeadline.IsZero() && !time.Now().Before(drainDeadline) {
+			// Deadline reached — stop serving this drained stream.
+			return nil
+		}
+
 		newEntries := ft.JournalEntriesSince(lastSeqSent)
 		if len(newEntries) > 0 {
 			for _, e := range newEntries {
-				if err := sendJournalEntry(stream, e); err != nil {
+				if err := sendJournalEntry(stream, e, posToStr); err != nil {
 					return err
 				}
 				ft.UpdateClientSequence(clientID, e.Sequence)
@@ -316,6 +372,8 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-drainCh:
+			// Wake promptly to emit GoAway on the next iteration.
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
@@ -331,11 +389,30 @@ func (s *Service) findFanoutTarget(schema, table string) *fanout.Target {
 	return nil
 }
 
-func sendJournalEntry(stream *connect.ServerStream[v1.SyncResponse], e fanout.JournalEntry) error {
+// findFanoutTargetAndSource locates the fan-out target for a table along with
+// the source feeding it, so the Sync handler can (de)serialize and compare
+// source positions for cross-instance resume. The source may be nil if the
+// owning source cannot be resolved.
+func (s *Service) findFanoutTargetAndSource(schema, table string) (*fanout.Target, laredo.SyncSource) {
+	tid := laredo.Table(schema, table)
+	for _, sid := range s.engine.SourceIDs() {
+		for _, t := range s.engine.Targets(sid, tid) {
+			if ft, ok := t.(*fanout.Target); ok {
+				src, _ := s.engine.Source(sid)
+				return ft, src
+			}
+		}
+	}
+	// Fall back to a source-less lookup (e.g. sourceID not matched).
+	return s.findFanoutTarget(schema, table), nil
+}
+
+func sendJournalEntry(stream *connect.ServerStream[v1.SyncResponse], e fanout.JournalEntry, posToStr func(laredo.Position) string) error {
 	entry := &v1.ReplicationJournalEntry{
-		Sequence:  e.Sequence,
-		Timestamp: timestamppb.New(e.Timestamp),
-		Action:    e.Action.String(),
+		Sequence:       e.Sequence,
+		Timestamp:      timestamppb.New(e.Timestamp),
+		Action:         e.Action.String(),
+		SourcePosition: posToStr(e.Position),
 	}
 	if e.NewValues != nil {
 		entry.NewValues, _ = structpb.NewStruct(map[string]any(e.NewValues))

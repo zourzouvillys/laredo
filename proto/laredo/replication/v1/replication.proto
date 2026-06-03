@@ -31,6 +31,11 @@ message SyncRequest {
   int64 last_known_sequence = 3;
   string last_snapshot_id = 4;
   string client_id = 5;
+  // Last source position (e.g. PostgreSQL WAL LSN) the client has applied.
+  // Unlike last_known_sequence (which is per-server), this is stable across
+  // server instances, enabling resume after failover to a different instance
+  // without a full re-sync.
+  string last_known_source_position = 6;
 }
 
 message SyncResponse {
@@ -42,7 +47,21 @@ message SyncResponse {
     ReplicationJournalEntry journal_entry = 5;
     SchemaChangeNotification schema_change = 6;
     Heartbeat heartbeat = 7;
+    GoAway go_away = 8;
   }
+}
+
+// GoAway tells the client to hand off to another server instance. The client
+// should reconnect (re-dialing its configured address, which an LB routes to a
+// healthy instance) and resume from its last applied source position, then
+// cleanly close this stream. Sent when the server is draining (graceful
+// shutdown or operator command).
+message GoAway {
+  string reason = 1; // "draining" | "admin"
+  // Optional hard cutoff: the server will stop serving this stream after this
+  // time even if the client has not finished handing off. Zero means no
+  // explicit deadline.
+  int64 drain_deadline_unix_ms = 2;
 }
 
 message SyncHandshake {

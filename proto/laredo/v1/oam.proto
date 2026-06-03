@@ -24,6 +24,9 @@ service LaredoOAMService {
   rpc PauseSync(PauseSyncRequest) returns (PauseSyncResponse);
   rpc ResumeSync(ResumeSyncRequest) returns (ResumeSyncResponse);
   rpc ResetSource(ResetSourceRequest) returns (ResetSourceResponse);
+  // Drain fan-out replication clients, telling them to hand off to another
+  // server instance (for rolling deploys / zero-downtime restarts).
+  rpc DrainReplication(DrainReplicationRequest) returns (DrainReplicationResponse);
 
   // --- Configuration (read-only) ---
   rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
@@ -266,6 +269,23 @@ message ResetSourceResponse {
   bool accepted = 1;
   string message = 2;
   google.protobuf.Struct details = 3;
+}
+
+message DrainReplicationRequest {
+  // schema and table identify a single fan-out target. If both are empty, all
+  // fan-out targets are drained.
+  string schema = 1;
+  string table = 2;
+  // Optional deadline: the server stops serving drained streams this many
+  // seconds from now even if a client has not finished handing off. 0 = no
+  // deadline (serve until each client disconnects).
+  int64 drain_deadline_seconds = 3;
+}
+
+message DrainReplicationResponse {
+  bool accepted = 1;
+  string message = 2;
+  int32 drained_targets = 3;
 }
 
 // ============================================================

@@ -10,12 +10,12 @@ import (
 func TestJournal_Append(t *testing.T) {
 	j := newJournal(100, 0)
 
-	seq := j.append(laredo.ActionInsert, nil, laredo.Row{"id": 1})
+	seq := j.append(laredo.ActionInsert, nil, laredo.Row{"id": 1}, nil)
 	if seq != 1 {
 		t.Errorf("expected seq=1, got %d", seq)
 	}
 
-	seq = j.append(laredo.ActionUpdate, laredo.Row{"id": 1}, laredo.Row{"id": 1, "name": "x"})
+	seq = j.append(laredo.ActionUpdate, laredo.Row{"id": 1}, laredo.Row{"id": 1, "name": "x"}, nil)
 	if seq != 2 {
 		t.Errorf("expected seq=2, got %d", seq)
 	}
@@ -34,9 +34,9 @@ func TestJournal_Append(t *testing.T) {
 func TestJournal_EntriesSince(t *testing.T) {
 	j := newJournal(100, 0)
 
-	j.append(laredo.ActionInsert, nil, laredo.Row{"id": 1})
-	j.append(laredo.ActionInsert, nil, laredo.Row{"id": 2})
-	j.append(laredo.ActionInsert, nil, laredo.Row{"id": 3})
+	j.append(laredo.ActionInsert, nil, laredo.Row{"id": 1}, nil)
+	j.append(laredo.ActionInsert, nil, laredo.Row{"id": 2}, nil)
+	j.append(laredo.ActionInsert, nil, laredo.Row{"id": 3}, nil)
 
 	entries := j.entriesSince(0) // all entries
 	if len(entries) != 3 {
@@ -61,7 +61,7 @@ func TestJournal_PruneBySize(t *testing.T) {
 	j := newJournal(3, 0) // max 3 entries
 
 	for i := range 5 {
-		j.append(laredo.ActionInsert, nil, laredo.Row{"id": i + 1})
+		j.append(laredo.ActionInsert, nil, laredo.Row{"id": i + 1}, nil)
 	}
 
 	if j.len() != 3 {
@@ -78,13 +78,13 @@ func TestJournal_PruneBySize(t *testing.T) {
 func TestJournal_PruneByAge(t *testing.T) {
 	j := newJournal(0, 50*time.Millisecond) // 50ms max age
 
-	j.append(laredo.ActionInsert, nil, laredo.Row{"id": 1})
-	j.append(laredo.ActionInsert, nil, laredo.Row{"id": 2})
+	j.append(laredo.ActionInsert, nil, laredo.Row{"id": 1}, nil)
+	j.append(laredo.ActionInsert, nil, laredo.Row{"id": 2}, nil)
 
 	time.Sleep(100 * time.Millisecond)
 
 	// New append should trigger age-based pruning.
-	j.append(laredo.ActionInsert, nil, laredo.Row{"id": 3})
+	j.append(laredo.ActionInsert, nil, laredo.Row{"id": 3}, nil)
 
 	if j.len() != 1 {
 		t.Errorf("expected 1 entry after age pruning, got %d", j.len())
@@ -115,8 +115,8 @@ func TestJournal_Empty(t *testing.T) {
 
 func TestJournal_Clear(t *testing.T) {
 	j := newJournal(100, 0)
-	j.append(laredo.ActionInsert, nil, laredo.Row{"id": 1})
-	j.append(laredo.ActionInsert, nil, laredo.Row{"id": 2})
+	j.append(laredo.ActionInsert, nil, laredo.Row{"id": 1}, nil)
+	j.append(laredo.ActionInsert, nil, laredo.Row{"id": 2}, nil)
 
 	j.clear()
 

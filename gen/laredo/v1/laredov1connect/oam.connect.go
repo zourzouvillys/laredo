@@ -66,6 +66,9 @@ const (
 	// LaredoOAMServiceResetSourceProcedure is the fully-qualified name of the LaredoOAMService's
 	// ResetSource RPC.
 	LaredoOAMServiceResetSourceProcedure = "/laredo.v1.LaredoOAMService/ResetSource"
+	// LaredoOAMServiceDrainReplicationProcedure is the fully-qualified name of the LaredoOAMService's
+	// DrainReplication RPC.
+	LaredoOAMServiceDrainReplicationProcedure = "/laredo.v1.LaredoOAMService/DrainReplication"
 	// LaredoOAMServiceListTablesProcedure is the fully-qualified name of the LaredoOAMService's
 	// ListTables RPC.
 	LaredoOAMServiceListTablesProcedure = "/laredo.v1.LaredoOAMService/ListTables"
@@ -126,6 +129,9 @@ type LaredoOAMServiceClient interface {
 	PauseSync(context.Context, *connect.Request[v1.PauseSyncRequest]) (*connect.Response[v1.PauseSyncResponse], error)
 	ResumeSync(context.Context, *connect.Request[v1.ResumeSyncRequest]) (*connect.Response[v1.ResumeSyncResponse], error)
 	ResetSource(context.Context, *connect.Request[v1.ResetSourceRequest]) (*connect.Response[v1.ResetSourceResponse], error)
+	// Drain fan-out replication clients, telling them to hand off to another
+	// server instance (for rolling deploys / zero-downtime restarts).
+	DrainReplication(context.Context, *connect.Request[v1.DrainReplicationRequest]) (*connect.Response[v1.DrainReplicationResponse], error)
 	// --- Configuration (read-only) ---
 	ListTables(context.Context, *connect.Request[v1.ListTablesRequest]) (*connect.Response[v1.ListTablesResponse], error)
 	GetTableSchema(context.Context, *connect.Request[v1.GetTableSchemaRequest]) (*connect.Response[v1.GetTableSchemaResponse], error)
@@ -221,6 +227,12 @@ func NewLaredoOAMServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			httpClient,
 			baseURL+LaredoOAMServiceResetSourceProcedure,
 			connect.WithSchema(laredoOAMServiceMethods.ByName("ResetSource")),
+			connect.WithClientOptions(opts...),
+		),
+		drainReplication: connect.NewClient[v1.DrainReplicationRequest, v1.DrainReplicationResponse](
+			httpClient,
+			baseURL+LaredoOAMServiceDrainReplicationProcedure,
+			connect.WithSchema(laredoOAMServiceMethods.ByName("DrainReplication")),
 			connect.WithClientOptions(opts...),
 		),
 		listTables: connect.NewClient[v1.ListTablesRequest, v1.ListTablesResponse](
@@ -323,6 +335,7 @@ type laredoOAMServiceClient struct {
 	pauseSync         *connect.Client[v1.PauseSyncRequest, v1.PauseSyncResponse]
 	resumeSync        *connect.Client[v1.ResumeSyncRequest, v1.ResumeSyncResponse]
 	resetSource       *connect.Client[v1.ResetSourceRequest, v1.ResetSourceResponse]
+	drainReplication  *connect.Client[v1.DrainReplicationRequest, v1.DrainReplicationResponse]
 	listTables        *connect.Client[v1.ListTablesRequest, v1.ListTablesResponse]
 	getTableSchema    *connect.Client[v1.GetTableSchemaRequest, v1.GetTableSchemaResponse]
 	createSnapshot    *connect.Client[v1.CreateSnapshotRequest, v1.CreateSnapshotResponse]
@@ -392,6 +405,11 @@ func (c *laredoOAMServiceClient) ResumeSync(ctx context.Context, req *connect.Re
 // ResetSource calls laredo.v1.LaredoOAMService.ResetSource.
 func (c *laredoOAMServiceClient) ResetSource(ctx context.Context, req *connect.Request[v1.ResetSourceRequest]) (*connect.Response[v1.ResetSourceResponse], error) {
 	return c.resetSource.CallUnary(ctx, req)
+}
+
+// DrainReplication calls laredo.v1.LaredoOAMService.DrainReplication.
+func (c *laredoOAMServiceClient) DrainReplication(ctx context.Context, req *connect.Request[v1.DrainReplicationRequest]) (*connect.Response[v1.DrainReplicationResponse], error) {
+	return c.drainReplication.CallUnary(ctx, req)
 }
 
 // ListTables calls laredo.v1.LaredoOAMService.ListTables.
@@ -480,6 +498,9 @@ type LaredoOAMServiceHandler interface {
 	PauseSync(context.Context, *connect.Request[v1.PauseSyncRequest]) (*connect.Response[v1.PauseSyncResponse], error)
 	ResumeSync(context.Context, *connect.Request[v1.ResumeSyncRequest]) (*connect.Response[v1.ResumeSyncResponse], error)
 	ResetSource(context.Context, *connect.Request[v1.ResetSourceRequest]) (*connect.Response[v1.ResetSourceResponse], error)
+	// Drain fan-out replication clients, telling them to hand off to another
+	// server instance (for rolling deploys / zero-downtime restarts).
+	DrainReplication(context.Context, *connect.Request[v1.DrainReplicationRequest]) (*connect.Response[v1.DrainReplicationResponse], error)
 	// --- Configuration (read-only) ---
 	ListTables(context.Context, *connect.Request[v1.ListTablesRequest]) (*connect.Response[v1.ListTablesResponse], error)
 	GetTableSchema(context.Context, *connect.Request[v1.GetTableSchemaRequest]) (*connect.Response[v1.GetTableSchemaResponse], error)
@@ -571,6 +592,12 @@ func NewLaredoOAMServiceHandler(svc LaredoOAMServiceHandler, opts ...connect.Han
 		LaredoOAMServiceResetSourceProcedure,
 		svc.ResetSource,
 		connect.WithSchema(laredoOAMServiceMethods.ByName("ResetSource")),
+		connect.WithHandlerOptions(opts...),
+	)
+	laredoOAMServiceDrainReplicationHandler := connect.NewUnaryHandler(
+		LaredoOAMServiceDrainReplicationProcedure,
+		svc.DrainReplication,
+		connect.WithSchema(laredoOAMServiceMethods.ByName("DrainReplication")),
 		connect.WithHandlerOptions(opts...),
 	)
 	laredoOAMServiceListTablesHandler := connect.NewUnaryHandler(
@@ -681,6 +708,8 @@ func NewLaredoOAMServiceHandler(svc LaredoOAMServiceHandler, opts ...connect.Han
 			laredoOAMServiceResumeSyncHandler.ServeHTTP(w, r)
 		case LaredoOAMServiceResetSourceProcedure:
 			laredoOAMServiceResetSourceHandler.ServeHTTP(w, r)
+		case LaredoOAMServiceDrainReplicationProcedure:
+			laredoOAMServiceDrainReplicationHandler.ServeHTTP(w, r)
 		case LaredoOAMServiceListTablesProcedure:
 			laredoOAMServiceListTablesHandler.ServeHTTP(w, r)
 		case LaredoOAMServiceGetTableSchemaProcedure:
@@ -760,6 +789,10 @@ func (UnimplementedLaredoOAMServiceHandler) ResumeSync(context.Context, *connect
 
 func (UnimplementedLaredoOAMServiceHandler) ResetSource(context.Context, *connect.Request[v1.ResetSourceRequest]) (*connect.Response[v1.ResetSourceResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("laredo.v1.LaredoOAMService.ResetSource is not implemented"))
+}
+
+func (UnimplementedLaredoOAMServiceHandler) DrainReplication(context.Context, *connect.Request[v1.DrainReplicationRequest]) (*connect.Response[v1.DrainReplicationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("laredo.v1.LaredoOAMService.DrainReplication is not implemented"))
 }
 
 func (UnimplementedLaredoOAMServiceHandler) ListTables(context.Context, *connect.Request[v1.ListTablesRequest]) (*connect.Response[v1.ListTablesResponse], error) {
