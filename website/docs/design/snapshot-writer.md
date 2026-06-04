@@ -366,11 +366,13 @@ when the feature lands.
 
 ## Status & roadmap
 
-This is a **proposed** design (EDR-0001). Implementation is phased:
+Implementation is phased:
 
-1. Interfaces + JSONL format + local destination + threshold engine + manifest (no AWS).
-2. S3 destination + protobuf format + per-action credentials.
-3. Event sinks (SNS, SQS, Kinesis).
-4. `cmd/laredo-snapshotter` + HTTP API + Docker image + example configs.
-5. Parquet snapshot format (future).
+1. ✅ Interfaces + JSONL format + local destination + threshold engine + manifest (no AWS).
+2. ✅ S3 destination + protobuf format + per-action credentials.
+3. ✅ Event sinks (SNS, SQS, Kinesis).
+4. ✅ `cmd/laredo-snapshotter` + HTTP API + Docker image + example configs.
+5. ⏳ Parquet snapshot format (future).
+
+See the [Snapshot Writer guide](../guides/snapshot-writer.md) to configure and run it.
 ```

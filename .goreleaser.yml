@@ -29,6 +29,20 @@ builds:
     ldflags:
       - -s -w -X github.com/zourzouvillys/laredo.Version={{.Version}}
 
+  - id: laredo-snapshotter
+    main: ./cmd/laredo-snapshotter
+    binary: laredo-snapshotter
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/zourzouvillys/laredo.Version={{.Version}}
+
 archives:
   - id: default
     formats:
@@ -43,6 +57,15 @@ dockers:
     ids:
       - laredo-server
       - laredo
+    build_flag_templates:
+      - "--label=org.opencontainers.image.version={{.Version}}"
+
+  - image_templates:
+      - "ghcr.io/zourzouvillys/laredo-snapshotter:{{ .Version }}"
+      - "ghcr.io/zourzouvillys/laredo-snapshotter:latest"
+    dockerfile: Dockerfile.goreleaser.snapshotter
+    ids:
+      - laredo-snapshotter
     build_flag_templates:
       - "--label=org.opencontainers.image.version={{.Version}}"
 
