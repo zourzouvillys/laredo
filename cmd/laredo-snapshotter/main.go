@@ -53,7 +53,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("build writers: %w", err)
 	}
-	slog.Info("starting laredo-snapshotter", "tables", len(writers), "http_port", cfg.HTTPPort)
+	slog.Info("starting laredo-snapshotter", "tables", len(writers), "http_port", cfg.HTTPPort) //nolint:gosec // structured logging of config values, not string interpolation
 
 	// Supervisor: run each per-table writer concurrently.
 	var wg sync.WaitGroup
