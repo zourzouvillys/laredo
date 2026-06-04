@@ -14,6 +14,20 @@
   --accent: hsl(28, 84%, 38%);
   --accent-light: hsl(28, 70%, 94%);
 
+  /* semantic diagram colours (mirrors viz.css) */
+  --main: hsl(28, 84%, 48%);
+  --main-soft: hsl(28, 85%, 94%);
+  --canary: hsl(212, 72%, 50%);
+  --canary-soft: hsl(212, 75%, 94%);
+  --allow: hsl(150, 55%, 38%);
+  --allow-soft: hsl(150, 50%, 93%);
+  --queue: hsl(40, 92%, 46%);
+  --queue-soft: hsl(40, 90%, 92%);
+  --reject: hsl(2, 72%, 52%);
+  --reject-soft: hsl(2, 75%, 95%);
+  --sensitive: hsl(270, 45%, 50%);
+  --sensitive-soft: hsl(270, 50%, 95%);
+
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
   --display: "Charter", "Iowan Old Style", "Source Serif Pro", "Cambria", Georgia, serif;
   --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", "Menlo", "Roboto Mono", monospace;
@@ -35,6 +49,18 @@
     --border-light: hsl(20, 6%, 19%);
     --accent: hsl(35, 90%, 60%);
     --accent-light: hsl(28, 40%, 20%);
+    --main: hsl(35, 88%, 60%);
+    --main-soft: hsl(28, 40%, 22%);
+    --canary: hsl(212, 80%, 64%);
+    --canary-soft: hsl(212, 45%, 24%);
+    --allow: hsl(150, 55%, 54%);
+    --allow-soft: hsl(150, 30%, 20%);
+    --queue: hsl(42, 90%, 58%);
+    --queue-soft: hsl(42, 40%, 22%);
+    --reject: hsl(2, 75%, 64%);
+    --reject-soft: hsl(2, 40%, 24%);
+    --sensitive: hsl(270, 60%, 72%);
+    --sensitive-soft: hsl(270, 30%, 24%);
     --shadow-sm: 0 1px 2px hsl(0 0% 0% / 0.30);
     --shadow: 0 2px 4px hsl(0 0% 0% / 0.30), 0 4px 12px hsl(0 0% 0% / 0.25);
   }
@@ -214,6 +240,18 @@ main.container { flex: 1; }
 .edr-body tr:last-child td { border-bottom: 0; }
 .edr-body hr { border: 0; border-top: 1px solid var(--border-light); margin: 2.5rem 0; }
 .edr-body img { max-width: 100%; }
+
+/* Inline SVG diagrams (replacing ASCII drawings) */
+.edr-body svg.diagram {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 760px;
+  margin: 1.5rem auto;
+}
+.edr-body svg.diagram text { font-family: var(--mono); }
+.edr-body figure.diagram { margin: 1.5rem 0; }
+.edr-body figure.diagram figcaption { font-size: 0.82rem; color: var(--fg-muted); text-align: center; margin-top: 0.4rem; font-family: var(--mono); }
 
 .edr-footer {
   margin-top: 3.5rem; padding-top: 1.25rem; border-top: 1px solid var(--border-light);
