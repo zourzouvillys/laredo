@@ -9,7 +9,12 @@ import (
 	"testing"
 
 	"github.com/zourzouvillys/laredo/snapshotter"
+	"github.com/zourzouvillys/laredo/snapshotter/desttest"
 )
+
+func TestLocal_Conformance(t *testing.T) {
+	desttest.Run(t, New(t.TempDir()))
+}
 
 func TestLocal_PutAndGet(t *testing.T) {
 	d := New(t.TempDir())
