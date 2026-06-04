@@ -12,10 +12,16 @@ diagrams use canvas). The build is `node build.mjs`.
 
 ```bash
 cd website
-npm ci            # or: npm install
-npm run build     # node build.mjs → website/dist/
-npm run serve     # preview at http://localhost:8080/laredo/ (strips the base path)
+pnpm install              # uses pnpm (pinned via packageManager; corepack picks it up)
+pnpm run build            # node build.mjs → website/dist/
+pnpm run serve            # preview at http://localhost:8080/laredo/ (strips the base path)
 ```
+
+Package manager is **pnpm** (pinned to `pnpm@10.33.2` via `packageManager`).
+`website/.npmrc` sets `minimum-release-age=2880` — a **48-hour cooldown**: a newly
+published dependency version must be at least 48h old before pnpm will install
+it (supply-chain safety). CI installs with `pnpm install --frozen-lockfile`.
+Commit `pnpm-lock.yaml`; do not reintroduce `package-lock.json`.
 
 The site is served under the base path `/laredo` — every internal link/asset is
 prefixed with it (the generator handles this via the `BASE` constant; the

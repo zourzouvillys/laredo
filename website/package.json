@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Static site generator for the Laredo documentation.",
+  "packageManager": "pnpm@10.33.2",
   "scripts": {
     "build": "node build.mjs",
     "serve": "node serve.mjs"
