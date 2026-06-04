@@ -1,0 +1,25 @@
+# Build stage
+FROM golang:1.26-alpine AS builder
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /bin/laredo-snapshotter ./cmd/laredo-snapshotter
+
+# Production image (distroless)
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=builder /bin/laredo-snapshotter /usr/local/bin/laredo-snapshotter
+
+# Default config path
+ENV LAREDO_SNAPSHOTTER_CONFIG=/etc/laredo/snapshotter.conf
+
+# Health, metrics, /status, POST /snapshot
+EXPOSE 8080
+
+# Config and (for local destinations) the archive directory
+VOLUME ["/etc/laredo", "/var/lib/laredo"]
+
+ENTRYPOINT ["laredo-snapshotter"]

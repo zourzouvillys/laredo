@@ -33,6 +33,7 @@ const sidebars: SidebarsConfig = {
         'guides/http-sync',
         'guides/fan-out',
         'guides/fan-out-client',
+        'guides/snapshot-writer',
         'guides/custom-source',
         'guides/custom-target',
         'guides/filters-and-transforms',
