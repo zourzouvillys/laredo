@@ -12,6 +12,8 @@ cross-account consumers can read the table from object storage on their own
 schedule. For the design and the full picture, see
 [Snapshot Writer — Architecture](../design/snapshot-writer.md).
 
+<iframe src="/laredo/viz/snapshot-writer.html?embed=1" title="Snapshot writer: base + diff" loading="lazy" class="embed"></iframe>
+
 ## What it produces
 
 For each table, under a key prefix on each destination:

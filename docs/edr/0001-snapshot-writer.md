@@ -34,7 +34,7 @@ publish artifacts and a manifest; we do not serve queries.
 
 ## Context
 
-laredo's fan-out target ([fan-out guide](../../website/docs/guides/fan-out.md))
+laredo's fan-out target ([fan-out guide](/guides/fan-out))
 already lets many clients hold a live in-memory replica of a PostgreSQL table
 over gRPC. That is excellent for online consumers, but it does not produce a
 **durable, offline-consumable** record of the table. Several needs are not met
@@ -237,8 +237,8 @@ mirror `laredo-server`; on shutdown the writer flushes a final diff.
 
 ## References
 
-- [Fan-out guide](../../website/docs/guides/fan-out.md) — the client this builds on
-- [Snapshot Writer architecture](../../website/docs/design/snapshot-writer.md) — diagrams & how it works
+- [Fan-out guide](/guides/fan-out) — the client this builds on
+- [Snapshot Writer architecture](/design/snapshot-writer) — diagrams & how it works
 - `client/fanout` — the subscription client (snapshot + resume + failover)
 - `snapshot/`, `snapshot/jsonl`, `snapshot/s3` — existing serialization/store patterns to model on
 - `source/kinesis` — existing `aws-sdk-go-v2` client + assume-role patterns

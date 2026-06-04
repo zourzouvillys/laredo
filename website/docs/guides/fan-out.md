@@ -7,27 +7,39 @@ title: Replication Fan-Out
 
 Multiplex one PostgreSQL replication slot to N downstream clients over gRPC. Clients connect, receive a consistent snapshot, then stream live changes — no need for each service instance to hold its own slot.
 
+<iframe src="/laredo/viz/fan-out.html?embed=1" title="Replication fan-out" loading="lazy" class="embed"></iframe>
+
 ## Architecture
 
-```
-PostgreSQL (1 slot)
-       │
-  ┌────▼─────┐
-  │  Engine   │
-  └────┬──────┘
-       │
-  ┌────▼──────────────┐
-  │  Fan-Out Target   │
-  │                   │
-  │  In-Memory State  │
-  │  Change Journal   │
-  │  Periodic Snaps   │
-  │  gRPC Server      │
-  └───┬───┬───┬───────┘
-      │   │   │
-      ▼   ▼   ▼
-    Client A  B  C
-```
+<svg class="diagram" viewBox="0 0 720 300" role="img" aria-label="One PostgreSQL slot feeds the engine and a fan-out target (in-memory state, change journal, periodic snapshots, gRPC server) which serves clients A, B and C.">
+  <defs>
+    <marker id="fa-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--fg-muted)"/></marker>
+  </defs>
+  <!-- postgres -->
+  <rect x="278" y="10" width="164" height="40" rx="9" fill="var(--bg-subtle)" stroke="var(--allow)" stroke-width="1.5"/>
+  <text x="360" y="35" text-anchor="middle" fill="var(--allow)" font-size="12" font-weight="700">PostgreSQL · 1 slot</text>
+  <line x1="360" y1="50" x2="360" y2="70" stroke="var(--fg-muted)" stroke-width="1.6" marker-end="url(#fa-arrow)"/>
+  <!-- engine -->
+  <rect x="288" y="72" width="144" height="38" rx="9" fill="var(--bg-subtle)" stroke="var(--border)" stroke-width="1.5"/>
+  <text x="360" y="96" text-anchor="middle" fill="var(--fg-secondary)" font-size="12" font-weight="700">Engine</text>
+  <line x1="360" y1="110" x2="360" y2="130" stroke="var(--fg-muted)" stroke-width="1.6" marker-end="url(#fa-arrow)"/>
+  <!-- fan-out target -->
+  <rect x="232" y="132" width="256" height="96" rx="11" fill="var(--bg)" stroke="var(--accent)" stroke-width="2"/>
+  <text x="360" y="153" text-anchor="middle" fill="var(--accent)" font-size="12.5" font-weight="700">Fan-Out Target</text>
+  <text x="360" y="174" text-anchor="middle" fill="var(--fg-secondary)" font-size="11">in-memory state · change journal</text>
+  <text x="360" y="192" text-anchor="middle" fill="var(--fg-secondary)" font-size="11">periodic snapshots · gRPC server</text>
+  <!-- clients -->
+  <g stroke="var(--fg-muted)" stroke-width="1.6" fill="none" marker-end="url(#fa-arrow)">
+    <path d="M300 228 C 300 250, 180 248, 150 264"/>
+    <path d="M360 228 L 360 264"/>
+    <path d="M420 228 C 420 250, 540 248, 570 264"/>
+  </g>
+  <g font-size="11.5" font-weight="700">
+    <rect x="96" y="266" width="108" height="30" rx="8" fill="var(--canary-soft)" stroke="var(--canary)" stroke-width="1.2"/><text x="150" y="285" text-anchor="middle" fill="var(--canary)">client A</text>
+    <rect x="306" y="266" width="108" height="30" rx="8" fill="var(--canary-soft)" stroke="var(--canary)" stroke-width="1.2"/><text x="360" y="285" text-anchor="middle" fill="var(--canary)">client B</text>
+    <rect x="516" y="266" width="108" height="30" rx="8" fill="var(--canary-soft)" stroke="var(--canary)" stroke-width="1.2"/><text x="570" y="285" text-anchor="middle" fill="var(--canary)">client C</text>
+  </g>
+</svg>
 
 ## Server configuration
 
@@ -111,6 +123,8 @@ A client can hand off from one `laredo-server` instance to another — during a
 rolling deploy or when an instance is being replaced — and **resume without a
 full re-sync**.
 
+<iframe src="/laredo/viz/failover.html?embed=1" title="Cross-instance failover" loading="lazy" class="embed"></iframe>
+
 ### Why it works: resume by source position
 
 Each fan-out instance assigns its own journal **sequence** numbers, so a
@@ -124,11 +138,17 @@ own replication slot, both reading the same publication). The same row change
 then yields the same LSN on every instance, so any instance can answer "give me
 everything after LSN X".
 
-```
-Instance A (slot_a) ─┐
-                     ├─ same publication ⇒ same LSN per change
-Instance B (slot_b) ─┘
-```
+<svg class="diagram" viewBox="0 0 720 130" role="img" aria-label="Instance A (slot_a) and Instance B (slot_b) read the same publication, so the same change yields the same LSN on both." style="max-width:560px">
+  <rect x="20" y="20" width="180" height="34" rx="8" fill="var(--bg-subtle)" stroke="var(--accent)" stroke-width="1.5"/>
+  <text x="110" y="42" text-anchor="middle" fill="var(--accent)" font-size="12" font-weight="700">Instance A · slot_a</text>
+  <rect x="20" y="76" width="180" height="34" rx="8" fill="var(--bg-subtle)" stroke="var(--accent)" stroke-width="1.5"/>
+  <text x="110" y="98" text-anchor="middle" fill="var(--accent)" font-size="12" font-weight="700">Instance B · slot_b</text>
+  <path d="M200 37 C 250 37, 250 65, 290 65" stroke="var(--fg-muted)" stroke-width="1.6" fill="none"/>
+  <path d="M200 93 C 250 93, 250 65, 290 65" stroke="var(--fg-muted)" stroke-width="1.6" fill="none"/>
+  <rect x="290" y="48" width="200" height="34" rx="8" fill="var(--allow-soft)" stroke="var(--allow)" stroke-width="1.5"/>
+  <text x="390" y="70" text-anchor="middle" fill="var(--allow)" font-size="11.5" font-weight="700">same publication</text>
+  <text x="510" y="69" fill="var(--fg-secondary)" font-size="12">⇒ same LSN per change</text>
+</svg>
 
 ### The handoff
 

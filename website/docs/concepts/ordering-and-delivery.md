@@ -5,6 +5,8 @@ title: Ordering & Delivery
 
 # Ordering & Delivery Guarantees
 
+<iframe src="/laredo/viz/ordering.html?embed=1" title="Ordering, ACK and backpressure" loading="lazy" class="embed"></iframe>
+
 ## Delivery semantics
 
 Laredo provides **at-least-once** delivery. The engine defers ACK until all targets confirm durability. On restart:

@@ -1,0 +1,39 @@
+<article class="edr">
+  <p class="back"><a href="{{base}}/edr/">← All decision records</a></p>
+
+  <div class="edr-layout">
+    <div class="edr-main">
+      <header class="edr-header">
+        <p style="margin: 0;">
+          <span class="edr-id">EDR {{id_padded}}</span>
+          {{status_badge}}
+        </p>
+
+        <h1>{{title}}</h1>
+
+        <dl class="edr-meta">
+          <div><dt>Authors</dt><dd>{{authors}}</dd></div>
+          <div><dt>Date</dt><dd>{{date}}</dd></div>
+          <div><dt>Tags</dt><dd>{{tags}}</dd></div>
+        </dl>
+
+        {{relations}}
+      </header>
+
+      <div class="edr-body">
+        {{content}}
+      </div>
+
+      <footer class="edr-footer">
+        <p>Source: <a href="https://github.com/zourzouvillys/laredo/blob/main/{{source_path}}"><code>{{source_path}}</code></a></p>
+      </footer>
+    </div>
+
+    <aside class="edr-toc">
+      <p class="edr-toc-label">On this page</p>
+      <ul>
+        {{toc}}
+      </ul>
+    </aside>
+  </div>
+</article>

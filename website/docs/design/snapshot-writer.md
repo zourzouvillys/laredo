@@ -17,33 +17,53 @@ It does **not** serve queries. It publishes artifacts; consumers read them.
 
 ## Where it fits
 
-```
-                          PostgreSQL (logical replication)
-                                      │
-                          ┌───────────▼───────────┐
-                          │     laredo-server      │
-                          │  (fan-out target)      │
-                          └───────────┬───────────┘
-                            gRPC Sync │ (snapshot + live changes)
-              ┌───────────────────────┼───────────────────────┐
-              ▼                       ▼                         ▼
-       online consumer         online consumer         ┌───────────────────┐
-      (client/fanout)         (client/fanout)           │ laredo-snapshotter │
-                                                        │  in-mem replica    │
-                                                        │  diff buffer       │
-                                                        │  threshold engine  │
-                                                        └─────────┬─────────┘
-                                       write snapshots/diffs/manifest │ emit events
-                          ┌─────────────────────────────┬────────────┴────────┐
-                          ▼                              ▼                      ▼
-                 ┌─────────────────┐          ┌──────────────────┐    ┌────────────────┐
-                 │  Destinations    │          │   Manifest        │    │  Event sinks    │
-                 │  local FS │ S3   │          │  (latest head)    │    │ SNS│SQS│Kinesis │
-                 └────────┬────────┘          └────────┬─────────┘    └───────┬────────┘
-                          ▼                            ▼                       ▼
-                 cold consumers (Athena, Spark, another account/region) poll manifest,
-                 read newest snapshot + following diffs, or react to events.
-```
+<svg class="diagram" viewBox="0 0 720 400" role="img" aria-label="PostgreSQL feeds laredo-server; over gRPC it serves online consumers and laredo-snapshotter; the snapshotter writes snapshots, diffs and a manifest to destinations and emits events; cold consumers poll the manifest.">
+  <defs><marker id="sw-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--fg-muted)"/></marker></defs>
+  <!-- postgres -->
+  <rect x="276" y="8" width="168" height="36" rx="9" fill="var(--bg-subtle)" stroke="var(--allow)" stroke-width="1.5"/>
+  <text x="360" y="31" text-anchor="middle" fill="var(--allow)" font-size="11.5" font-weight="700">PostgreSQL · logical replication</text>
+  <line x1="360" y1="44" x2="360" y2="62" stroke="var(--fg-muted)" stroke-width="1.6" marker-end="url(#sw-arrow)"/>
+  <!-- laredo-server -->
+  <rect x="276" y="64" width="168" height="42" rx="9" fill="var(--bg-subtle)" stroke="var(--accent)" stroke-width="2"/>
+  <text x="360" y="83" text-anchor="middle" fill="var(--accent)" font-size="12" font-weight="700">laredo-server</text>
+  <text x="360" y="98" text-anchor="middle" fill="var(--fg-muted)" font-size="10">fan-out target</text>
+  <text x="360" y="124" text-anchor="middle" fill="var(--fg-faint)" font-size="9.5">gRPC Sync — snapshot + live changes</text>
+  <!-- gRPC consumers row -->
+  <g stroke="var(--fg-muted)" stroke-width="1.5" fill="none" marker-end="url(#sw-arrow)">
+    <path d="M320 106 C 240 130, 150 130, 130 150"/>
+    <path d="M360 106 L 360 150"/>
+    <path d="M400 106 C 480 130, 580 130, 600 150"/>
+  </g>
+  <rect x="56" y="152" width="148" height="40" rx="9" fill="var(--bg-muted)" stroke="var(--border)"/>
+  <text x="130" y="170" text-anchor="middle" fill="var(--fg-secondary)" font-size="11" font-weight="700">online consumer</text>
+  <text x="130" y="184" text-anchor="middle" fill="var(--fg-muted)" font-size="9.5">client/fanout</text>
+  <rect x="286" y="152" width="148" height="40" rx="9" fill="var(--bg-muted)" stroke="var(--border)"/>
+  <text x="360" y="170" text-anchor="middle" fill="var(--fg-secondary)" font-size="11" font-weight="700">online consumer</text>
+  <text x="360" y="184" text-anchor="middle" fill="var(--fg-muted)" font-size="9.5">client/fanout</text>
+  <rect x="516" y="148" width="168" height="58" rx="10" fill="var(--sensitive-soft)" stroke="var(--sensitive)" stroke-width="1.8"/>
+  <text x="600" y="167" text-anchor="middle" fill="var(--sensitive)" font-size="11.5" font-weight="700">laredo-snapshotter</text>
+  <text x="600" y="182" text-anchor="middle" fill="var(--fg-secondary)" font-size="9.5">in-mem replica · diff buffer</text>
+  <text x="600" y="195" text-anchor="middle" fill="var(--fg-secondary)" font-size="9.5">threshold engine</text>
+  <!-- snapshotter → outputs -->
+  <text x="600" y="224" text-anchor="middle" fill="var(--fg-faint)" font-size="9">writes artifacts + manifest · emits events</text>
+  <g stroke="var(--fg-muted)" stroke-width="1.5" fill="none" marker-end="url(#sw-arrow)">
+    <path d="M560 206 C 360 240, 200 250, 150 268"/>
+    <path d="M600 206 L 380 268"/>
+    <path d="M620 206 C 660 240, 640 250, 600 268"/>
+  </g>
+  <rect x="56" y="270" width="190" height="44" rx="9" fill="var(--bg-subtle)" stroke="var(--border)"/>
+  <text x="151" y="289" text-anchor="middle" fill="var(--fg)" font-size="11" font-weight="700">Destinations</text>
+  <text x="151" y="303" text-anchor="middle" fill="var(--fg-muted)" font-size="9.5">local FS · S3</text>
+  <rect x="288" y="270" width="170" height="44" rx="9" fill="var(--bg-subtle)" stroke="var(--accent)" stroke-width="1.5"/>
+  <text x="373" y="289" text-anchor="middle" fill="var(--accent)" font-size="11" font-weight="700">Manifest</text>
+  <text x="373" y="303" text-anchor="middle" fill="var(--fg-muted)" font-size="9.5">latest head · the chain</text>
+  <rect x="500" y="270" width="184" height="44" rx="9" fill="var(--bg-subtle)" stroke="var(--border)"/>
+  <text x="592" y="289" text-anchor="middle" fill="var(--fg)" font-size="11" font-weight="700">Event sinks</text>
+  <text x="592" y="303" text-anchor="middle" fill="var(--fg-muted)" font-size="9.5">SNS · SQS · Kinesis</text>
+  <!-- cold consumers caption -->
+  <text x="360" y="350" text-anchor="middle" fill="var(--fg-secondary)" font-size="11">cold consumers (Athena, Spark, another account/region)</text>
+  <text x="360" y="368" text-anchor="middle" fill="var(--fg-muted)" font-size="10.5">poll the manifest → read newest snapshot + following diffs, or react to events</text>
+</svg>
 
 The writer is just another `client/fanout` consumer — it benefits from the same
 snapshot bootstrap, LSN-based resume, and cross-instance failover as any online
@@ -55,24 +75,14 @@ A consumer should never have to replay all history. The writer keeps cold reads
 cheap by periodically **re-basing**: writing a fresh full snapshot and starting a
 new diff chain after it.
 
-```
- source position (WAL LSN) ───────────────────────────────────────────────▶
+<iframe src="/laredo/viz/snapshot-writer.html?embed=1" title="Base + diff timeline with threshold-driven re-base" loading="lazy" class="embed"></iframe>
 
- epoch 1                              epoch 2
- ┌─────────┐  ┌────┐ ┌────┐ ┌────┐    ┌─────────┐  ┌────┐ ┌────┐ ┌────┐ ...
- │SNAPSHOT │  │diff│ │diff│ │diff│    │SNAPSHOT │  │diff│ │diff│ │diff│
- │ @100    │  │101-│ │121-│ │141-│    │ @173    │  │174-│ │190-│ │205-│
- │ (full)  │  │120 │ │140 │ │172 │    │ (full)  │  │189 │ │204 │ │ .. │
- └─────────┘  └────┘ └────┘ └────┘    └─────────┘  └────┘ └────┘ └────┘
-      ▲                        ▲           ▲
-      │                        │           └── a threshold fired → re-base
-      │                        └── periodic diff flush (diff.interval)
-      └── initial base snapshot on first ready
-
- To rebuild the table at the latest position, a consumer reads the NEWEST
- snapshot (epoch 2 @173) and applies every diff after it (174-189, 190-204, …).
- Everything in epoch 1 can be pruned once epoch 2's snapshot is durable.
-```
+A base snapshot opens an **epoch**; periodic **diffs** follow it, each covering a
+half-open source-position range `(from, to]`. When a threshold fires, the writer
+re-bases — a fresh snapshot starts a new epoch. To rebuild the table at the
+latest position a consumer reads the **newest snapshot** and applies every diff
+after it; everything in an older epoch can be pruned once the next snapshot is
+durable.
 
 Each artifact covers a half-open source-position range `(from, to]`. Snapshots
 are stamped with the position at which the full state was captured. Diffs are
@@ -81,41 +91,52 @@ consumer can verify it has an unbroken chain.
 
 ## Internal data flow
 
-```
-        client/fanout
-        ┌──────────────┐   OnReady          ┌───────────────────────────┐
-        │ in-mem store │ ─────────────────▶ │  base snapshot (full state)│
-        │  + Listen()  │                    └─────────────┬─────────────┘
-        └──────┬───────┘                                  │
-   change(old,new) + source position                     │
-               │                                          │
-               ▼                                          │
-        ┌──────────────┐  every diff.interval             │
-        │  diff buffer  │ ───────────┐                    │
-        │ (keyed by PK, │            ▼                     ▼
-        │  net change)  │     ┌─────────────┐      ┌──────────────┐
-        └──────┬───────┘     │  threshold   │ yes  │  re-base:    │
-               │             │  engine:     │─────▶│  snapshot    │
-               │             │  size/churn/ │      └──────┬───────┘
-               │             │  age?        │  no         │
-               │             └──────┬──────┘             │
-               │                    ▼                     │
-               │             ┌─────────────┐              │
-               └────────────▶│ diff artifact│             │
-                             └──────┬──────┘              │
-                                    ▼                     ▼
-                        ┌────────────────────────────────────────┐
-                        │  encode (Format × N) → write (Dest × N)  │
-                        └───────────────────┬────────────────────┘
-                                            ▼   all destinations durable
-                                  ┌───────────────────┐
-                                  │ manifest CAS append│  ← commit point
-                                  └─────────┬─────────┘
-                                            ▼
-                                  ┌───────────────────┐
-                                  │ emit event (sinks) │  ← best-effort
-                                  └───────────────────┘
-```
+<svg class="diagram" viewBox="0 0 720 470" role="img" aria-label="Data flow: the client store yields a base snapshot on ready and buffers changes; the threshold engine writes a diff or re-bases; artifacts are encoded and written to all destinations; the manifest compare-and-swap is the commit point; then an event is emitted." style="max-width:680px">
+  <defs><marker id="df-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--fg-muted)"/></marker></defs>
+  <style>.df text{font-size:11px} .df .t{font-weight:700;font-size:11.5px} .df .e{stroke:var(--fg-muted);stroke-width:1.5;fill:none;marker-end:url(#df-arrow)} .df .el{font-size:9.5px;fill:var(--fg-muted)}</style>
+  <g class="df">
+    <!-- client/fanout -->
+    <rect x="30" y="24" width="150" height="52" rx="9" fill="var(--bg-muted)" stroke="var(--border)"/>
+    <text x="105" y="46" text-anchor="middle" class="t" fill="var(--fg-secondary)">client/fanout</text>
+    <text x="105" y="62" text-anchor="middle" fill="var(--fg-muted)">in-mem store · Listen()</text>
+    <!-- base snapshot -->
+    <rect x="470" y="24" width="220" height="44" rx="9" fill="var(--sensitive-soft)" stroke="var(--sensitive)" stroke-width="1.5"/>
+    <text x="580" y="51" text-anchor="middle" class="t" fill="var(--sensitive)">base snapshot (full state)</text>
+    <path class="e" d="M180 44 L 466 44"/><text x="320" y="36" text-anchor="middle" class="el">OnReady</text>
+    <!-- diff buffer -->
+    <rect x="30" y="120" width="150" height="56" rx="9" fill="var(--queue-soft)" stroke="var(--queue)" stroke-width="1.5"/>
+    <text x="105" y="142" text-anchor="middle" class="t" fill="var(--queue)">diff buffer</text>
+    <text x="105" y="158" text-anchor="middle" fill="var(--fg-muted)">keyed by PK,</text>
+    <text x="105" y="170" text-anchor="middle" fill="var(--fg-muted)">net change</text>
+    <path class="e" d="M105 76 L 105 116"/><text x="113" y="100" class="el">change(old,new) + position</text>
+    <!-- threshold engine -->
+    <rect x="270" y="118" width="150" height="60" rx="9" fill="var(--bg-subtle)" stroke="var(--accent)" stroke-width="1.8"/>
+    <text x="345" y="142" text-anchor="middle" class="t" fill="var(--accent)">threshold engine</text>
+    <text x="345" y="160" text-anchor="middle" fill="var(--fg-muted)">size / churn / age?</text>
+    <path class="e" d="M180 148 L 266 148"/><text x="223" y="140" text-anchor="middle" class="el">diff.interval</text>
+    <!-- re-base -->
+    <rect x="500" y="126" width="160" height="44" rx="9" fill="var(--sensitive-soft)" stroke="var(--sensitive)" stroke-width="1.5"/>
+    <text x="580" y="153" text-anchor="middle" class="t" fill="var(--sensitive)">re-base: snapshot</text>
+    <path class="e" d="M420 148 L 496 148"/><text x="458" y="140" text-anchor="middle" class="el">yes</text>
+    <!-- diff artifact -->
+    <rect x="270" y="230" width="150" height="44" rx="9" fill="var(--main-soft)" stroke="var(--main)" stroke-width="1.5"/>
+    <text x="345" y="257" text-anchor="middle" class="t" fill="var(--main)">diff artifact</text>
+    <path class="e" d="M345 178 L 345 226"/><text x="353" y="206" class="el">no</text>
+    <!-- encode/write -->
+    <rect x="150" y="312" width="420" height="42" rx="9" fill="var(--bg-subtle)" stroke="var(--border)" stroke-width="1.5"/>
+    <text x="360" y="338" text-anchor="middle" class="t" fill="var(--fg)">encode (Format × N) → write (Dest × N)</text>
+    <g class="e"><path d="M580 68 C 580 200, 470 280, 420 312"/><path d="M580 170 C 560 240, 470 290, 430 312"/><path d="M345 274 L 345 308"/></g>
+    <!-- manifest CAS -->
+    <rect x="246" y="384" width="228" height="42" rx="9" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="2"/>
+    <text x="360" y="410" text-anchor="middle" class="t" fill="var(--accent)">manifest CAS append</text>
+    <path class="e" d="M360 354 L 360 380"/><text x="368" y="372" class="el">all destinations durable</text>
+    <text x="486" y="409" fill="var(--accent)" font-size="10" font-weight="700">← commit point</text>
+    <!-- emit -->
+    <rect x="276" y="436" width="168" height="30" rx="8" fill="var(--bg-muted)" stroke="var(--border)"/>
+    <text x="360" y="455" text-anchor="middle" fill="var(--fg-secondary)" font-size="11">emit event (sinks)</text>
+    <path class="e" d="M360 426 L 360 432"/>
+  </g>
+</svg>
 
 The **manifest CAS append** is the commit point. An artifact's bytes may exist on
 storage before the manifest references it (a crash there just leaves an orphan to
@@ -128,25 +149,40 @@ Before every scheduled flush, the threshold engine decides whether to write a
 diff or re-base. The triggers are independent and any one fires a snapshot,
 subject to a minimum-interval floor:
 
-```
-                        ┌─────────────── flush tick ───────────────┐
-                        ▼                                           │
-            since last snapshot < min_interval? ──yes──▶ write DIFF │
-                        │ no                                        │
-                        ▼                                           │
-      ANY of:                                                       │
-        • serialized diff size  > max_diff_bytes                    │
-        • serialized diff size  > max_diff_fraction × snapshot_size │
-        • churn records         > max_churn_records                 │
-        • churn / dataset_size  > max_churn_fraction                │
-        • age since snapshot    > max_interval                      │
-                        │                                           │
-              ┌── yes ──┴── no ──┐                                  │
-              ▼                  ▼                                  │
-         write SNAPSHOT      write DIFF ───────────────────────────┘
-         (reset counters,
-          bump epoch)
-```
+<svg class="diagram" viewBox="0 0 720 360" role="img" aria-label="On each flush tick: if within the min-interval floor, write a diff; otherwise if any size, churn, or age trigger fired, write a snapshot (re-base), else write a diff." style="max-width:660px">
+  <defs><marker id="dc-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--fg-muted)"/></marker></defs>
+  <style>.dc text{font-size:11px} .dc .e{stroke:var(--fg-muted);stroke-width:1.5;fill:none;marker-end:url(#dc-arrow)} .dc .el{font-size:10px;fill:var(--fg-muted);font-weight:700}</style>
+  <g class="dc">
+    <!-- flush tick -->
+    <rect x="285" y="14" width="150" height="32" rx="16" fill="var(--bg-subtle)" stroke="var(--accent)" stroke-width="1.6"/>
+    <text x="360" y="34" text-anchor="middle" fill="var(--accent)" font-weight="700">flush tick</text>
+    <!-- decision 1: min_interval -->
+    <path class="e" d="M360 46 L 360 70"/>
+    <rect x="232" y="72" width="256" height="40" rx="9" fill="var(--bg-subtle)" stroke="var(--border)" stroke-width="1.5"/>
+    <text x="360" y="97" text-anchor="middle" fill="var(--fg)">since snapshot &lt; min_interval?</text>
+    <!-- yes → diff (right) -->
+    <path class="e" d="M488 92 L 560 92"/><text x="524" y="84" text-anchor="middle" class="el">yes</text>
+    <rect x="560" y="74" width="140" height="36" rx="9" fill="var(--main-soft)" stroke="var(--main)" stroke-width="1.5"/>
+    <text x="630" y="97" text-anchor="middle" fill="var(--main)" font-weight="700">write DIFF</text>
+    <!-- no: triggers panel -->
+    <path class="e" d="M360 112 L 360 134"/><text x="372" y="128" class="el">no</text>
+    <rect x="170" y="136" width="380" height="118" rx="10" fill="var(--bg-muted)" stroke="var(--border)"/>
+    <text x="188" y="156" fill="var(--fg)" font-weight="700">any of:</text>
+    <text x="200" y="176" fill="var(--fg-secondary)">• serialized diff size &gt; max_diff_bytes</text>
+    <text x="200" y="194" fill="var(--fg-secondary)">• diff size &gt; max_diff_fraction × snapshot_size</text>
+    <text x="200" y="212" fill="var(--fg-secondary)">• churn records &gt; max_churn_records</text>
+    <text x="200" y="230" fill="var(--fg-secondary)">• churn / dataset &gt; max_churn_fraction</text>
+    <text x="200" y="248" fill="var(--fg-secondary)">• age since snapshot &gt; max_interval</text>
+    <!-- branch -->
+    <path class="e" d="M300 254 C 260 280, 200 286, 175 300"/><text x="232" y="280" text-anchor="middle" class="el">yes</text>
+    <path class="e" d="M430 254 C 500 280, 560 286, 590 300"/><text x="520" y="280" text-anchor="middle" class="el">no</text>
+    <rect x="30" y="302" width="190" height="48" rx="9" fill="var(--sensitive-soft)" stroke="var(--sensitive)" stroke-width="1.8"/>
+    <text x="125" y="322" text-anchor="middle" fill="var(--sensitive)" font-weight="700">write SNAPSHOT</text>
+    <text x="125" y="338" text-anchor="middle" fill="var(--fg-muted)" font-size="9.5">reset counters · bump epoch</text>
+    <rect x="520" y="306" width="140" height="36" rx="9" fill="var(--main-soft)" stroke="var(--main)" stroke-width="1.5"/>
+    <text x="590" y="329" text-anchor="middle" fill="var(--main)" font-weight="700">write DIFF</text>
+  </g>
+</svg>
 
 `min_interval` prevents snapshot storms on bursty tables; `max_interval`
 guarantees a re-base eventually happens even on a quiet table so cold-read chains

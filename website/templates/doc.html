@@ -1,0 +1,29 @@
+<div class="doc-shell">
+  <aside class="sidebar">
+    <nav class="sb">
+      {{sidebar}}
+    </nav>
+  </aside>
+
+  <article class="edr doc">
+    <div class="edr-layout">
+      <div class="edr-main">
+        <header class="edr-header">
+          <h1>{{title}}</h1>
+        </header>
+        <div class="edr-body">
+          {{content}}
+        </div>
+        <footer class="edr-footer">
+          <p>Source: <a href="https://github.com/zourzouvillys/laredo/blob/main/{{source_path}}"><code>{{source_path}}</code></a></p>
+        </footer>
+      </div>
+      <aside class="edr-toc">
+        <p class="edr-toc-label">On this page</p>
+        <ul>
+          {{toc}}
+        </ul>
+      </aside>
+    </div>
+  </article>
+</div>

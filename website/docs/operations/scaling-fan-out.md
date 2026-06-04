@@ -221,11 +221,20 @@ When you hit these limits, consider adding a second fan-out target on a differen
 
 Use the fan-out client as a source for a second laredo-server:
 
-```
-PostgreSQL → laredo-server-1 (fan-out, 500 clients)
-                    ↓
-             laredo-server-2 (fan-out, 500 clients, sourced from server-1)
-```
+<svg class="diagram" viewBox="0 0 720 200" role="img" aria-label="Cascading fan-out: PostgreSQL feeds laredo-server-1 (500 clients); laredo-server-2 is sourced from server-1 and fans out to another 500 clients." style="max-width:560px">
+  <defs><marker id="cf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--fg-muted)"/></marker></defs>
+  <rect x="20" y="20" width="150" height="40" rx="9" fill="var(--bg-subtle)" stroke="var(--allow)" stroke-width="1.5"/>
+  <text x="95" y="44" text-anchor="middle" fill="var(--allow)" font-size="12" font-weight="700">PostgreSQL</text>
+  <line x1="170" y1="40" x2="236" y2="40" stroke="var(--fg-muted)" stroke-width="1.6" marker-end="url(#cf-arrow)"/>
+  <rect x="238" y="20" width="240" height="40" rx="9" fill="var(--bg-subtle)" stroke="var(--accent)" stroke-width="2"/>
+  <text x="358" y="38" text-anchor="middle" fill="var(--accent)" font-size="12" font-weight="700">laredo-server-1</text>
+  <text x="358" y="52" text-anchor="middle" fill="var(--fg-muted)" font-size="9.5">fan-out · 500 clients</text>
+  <line x1="358" y1="60" x2="358" y2="108" stroke="var(--fg-muted)" stroke-width="1.6" marker-end="url(#cf-arrow)"/>
+  <text x="368" y="88" fill="var(--fg-muted)" font-size="9.5">sourced from server-1</text>
+  <rect x="238" y="110" width="240" height="44" rx="9" fill="var(--canary-soft)" stroke="var(--canary)" stroke-width="1.8"/>
+  <text x="358" y="130" text-anchor="middle" fill="var(--canary)" font-size="12" font-weight="700">laredo-server-2</text>
+  <text x="358" y="144" text-anchor="middle" fill="var(--fg-muted)" font-size="9.5">fan-out · 500 more clients</text>
+</svg>
 
 This spreads the client load across multiple servers while keeping only one replication slot on PostgreSQL.
 

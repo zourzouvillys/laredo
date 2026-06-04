@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>The Laredo pipeline · Laredo</title>
+  <link rel="stylesheet" href="/laredo/viz/viz.css" />
+</head>
+<body>
+<div class="viz-wrap">
+  <nav class="viz-nav">
+    <a class="brand" href="/laredo/">Laredo</a>
+    <span><a href="/laredo/viz/">all diagrams</a> &nbsp;·&nbsp; <a href="/laredo/concepts/architecture/">Architecture ↗</a></span>
+  </nav>
+
+  <h1 class="viz-title">The Laredo pipeline</h1>
+  <p class="viz-lede">
+    One PostgreSQL logical-replication slot feeds the <b>engine</b>, which <b>demuxes</b> each change
+    by table and dispatches it to the targets bound to that table — an indexed in-memory replica, an
+    HTTP-sync target, and a replication fan-out target. A change is <b>acked</b> back to the source
+    only once <b>every</b> target on the source confirms it is durable. Make one target slow and watch
+    the ACK hold back.
+  </p>
+
+  <div class="stage"><canvas id="c"></canvas></div>
+
+  <div class="controls">
+    <button class="btn primary" id="play">⏸ Pause</button>
+    <button class="btn" id="reset">↺ reset</button>
+    <button class="btn" id="spawn">＋ change</button>
+    <button class="btn toggle" id="slow">slow the HTTP target</button>
+    <span class="ctl-group"><label>change rate</label><input type="range" id="rate" min="1" max="12" step="1" value="4"><span class="ctl-val" id="rateV">4</span></span>
+  </div>
+
+  <div class="legend">
+    <span><i class="dot" style="background:var(--main)"></i> insert</span>
+    <span><i class="dot" style="background:var(--canary)"></i> update</span>
+    <span><i class="dot" style="background:var(--reject)"></i> delete</span>
+    <span><i class="dot" style="background:var(--allow)"></i> ack (durable)</span>
+  </div>
+
+  <div class="stats">
+    <div class="stat main"><div class="k">indexed memory</div><div class="v" id="sMem">0</div></div>
+    <div class="stat queue"><div class="k">http sync (buffer)</div><div class="v" id="sHttp">0</div></div>
+    <div class="stat canary"><div class="k">fan-out</div><div class="v" id="sFan">0</div></div>
+    <div class="stat allow"><div class="k">acked position</div><div class="v" id="sAck">0</div></div>
+  </div>
+
+  <p class="note">
+    The engine holds an in-memory change buffer per pipeline and advances the source ACK only when
+    all targets confirm durability — so a slow or backpressured target (here, HTTP sync) holds the
+    ACK back without losing changes. See <code>concepts/ordering-and-delivery</code>.
+  </p>
+</div>
+<script>
+(() => {
+  if (/(?:[?&#])embed/.test(location.search+location.hash)) document.body.classList.add('embed');
+  const cv=document.getElementById('c'), ctx=cv.getContext('2d');
+  let W=0,H=320,dpr=1;
+  const $=id=>document.getElementById(id);
+  const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const TARGETS=[{k:'indexed memory',v:'sMem'},{k:'http sync',v:'sHttp'},{k:'fan-out',v:'sFan'}];
+  let playing=true, rate=4, slow=false, spawnAcc=0;
+  let nMem=0,nHttp=0,nFan=0, ackPos=0, seq=0;
+  const dots=[], acks=[];
+  let engineGlow=0;
+
+  function geo(){ return { srcX:40, engX:W*0.42, engW:96, engY:H/2, tgX:W-120,
+    tgY:i=>60+i*((H-110)/2) }; }
+  function spawn(forced){ const r=Math.random(); const kind = r<0.5?'ins':(r<0.82?'upd':'del');
+    dots.push({x:geo().srcX,y:geo().engY+(Math.random()*30-15),stage:0,kind,grp:(Math.random()*3)|0,seq:++seq,buffered:0}); }
+  function color(d){ return d.kind==='ins'?css('--main'):d.kind==='upd'?css('--canary'):css('--reject'); }
+
+  function step(dt){
+    const g=geo(); spawnAcc+=rate*dt; while(spawnAcc>=1){spawn();spawnAcc-=1;}
+    for(const d of dots){
+      if(d.stage===0){ // source → engine
+        d.x+=(g.engX-d.x)*Math.min(1,dt*4); d.y+=(g.engY-d.y)*Math.min(1,dt*4);
+        if(Math.abs(g.engX-d.x)<4){ d.stage=1; engineGlow=1; d.ty=g.tgY(d.grp); }
+      } else if(d.stage===1){ // engine → its target
+        const tx=g.tgX, ty=d.ty;
+        // a slow http target (grp 1) buffers: pause partway
+        if(d.grp===1 && slow && d.buffered<1){ d.buffered+=dt; }
+        else { d.x+=(tx-d.x)*Math.min(1,dt*3.5); d.y+=(ty-d.y)*Math.min(1,dt*3.5);
+          if(Math.hypot(tx-d.x,ty-d.y)<6){ d.stage=2;
+            if(d.grp===0)nMem++; else if(d.grp===1)nHttp++; else nFan++;
+            // ack returns only if not held by slow target backlog
+            acks.push({x:tx,y:ty,seq:d.seq,grp:d.grp}); }
+        }
+      } else { d.dead=true; }
+    }
+    // ack pulses travel back to source; ackPos advances to min across targets (approx by max delivered when not slow)
+    for(const a of acks){ a.x+=(g.srcX-a.x)*Math.min(1,dt*5); a.y+=(g.engY-a.y)*Math.min(1,dt*5);
+      if(Math.abs(g.srcX-a.x)<5){ a.dead=true; if(!(slow)) ackPos=Math.max(ackPos,a.seq); } }
+    if(slow) { /* ack held back at the buffered seq */ }
+    else { /* allow ack to catch up */ }
+    for(let i=dots.length-1;i>=0;i--) if(dots[i].dead) dots.splice(i,1);
+    for(let i=acks.length-1;i>=0;i--) if(acks[i].dead) acks.splice(i,1);
+    engineGlow=Math.max(0,engineGlow-dt*2);
+  }
+  function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+  function box(x,y,w,h,stroke,fill,glow){ if(glow>0){ctx.save();ctx.globalAlpha=glow*0.5;ctx.fillStyle=stroke;rr(x-3,y-3,w+6,h+6,11);ctx.fill();ctx.restore();} ctx.fillStyle=fill;ctx.strokeStyle=stroke;ctx.lineWidth=2;rr(x,y,w,h,9);ctx.fill();ctx.stroke(); }
+  function draw(){ ctx.clearRect(0,0,W,H); const g=geo();
+    ctx.textAlign='center';
+    // source
+    box(g.srcX-30,g.engY-26,60,52,css('--allow'),css('--bg-subtle'),0);
+    ctx.fillStyle=css('--allow'); ctx.font='600 10px '+css('--mono'); ctx.fillText('Postgres',g.srcX,g.engY-2); ctx.fillText('slot',g.srcX,g.engY+11);
+    // engine
+    box(g.engX-g.engW/2,g.engY-34,g.engW,68,css('--accent'),css('--bg-subtle'),engineGlow);
+    ctx.fillStyle=css('--accent'); ctx.font='700 12px '+css('--mono'); ctx.fillText('ENGINE',g.engX,g.engY-12);
+    ctx.fillStyle=css('--fg-muted'); ctx.font='9px '+css('--mono'); ctx.fillText('demux by table',g.engX,g.engY+6); ctx.fillText('ack tracker',g.engX,g.engY+19);
+    // targets
+    for(let i=0;i<3;i++){ const y=g.tgY(i); const slowT=(i===1&&slow);
+      box(g.tgX-50,y-16,100,32,slowT?css('--queue'):css('--border'),css('--bg-muted'),0);
+      ctx.fillStyle=slowT?css('--queue'):css('--fg-secondary'); ctx.font='600 10px '+css('--mono'); ctx.fillText(TARGETS[i].k,g.tgX,y+1);
+      if(slowT){ctx.fillStyle=css('--queue');ctx.font='8px '+css('--mono');ctx.fillText('backpressure',g.tgX,y+11);}
+      ctx.strokeStyle=css('--border-light');ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(g.engX+g.engW/2,g.engY);ctx.lineTo(g.tgX-50,y);ctx.stroke();
+    }
+    ctx.strokeStyle=css('--border-light');ctx.beginPath();ctx.moveTo(g.srcX+30,g.engY);ctx.lineTo(g.engX-g.engW/2,g.engY);ctx.stroke();
+    // dots
+    for(const d of dots){ ctx.fillStyle=color(d); ctx.beginPath(); ctx.arc(d.x,d.y,4,0,7); ctx.fill();
+      if(d.grp===1&&slow&&d.stage===1&&d.buffered<1){ ctx.strokeStyle=css('--queue');ctx.globalAlpha=0.6;ctx.beginPath();ctx.arc(d.x,d.y,7,0,7);ctx.stroke();ctx.globalAlpha=1; } }
+    // ack pulses
+    for(const a of acks){ ctx.fillStyle=css('--allow'); ctx.globalAlpha=0.85; ctx.beginPath(); ctx.arc(a.x,a.y,3,0,7); ctx.fill(); ctx.globalAlpha=1; }
+  }
+  let last=performance.now();
+  function frame(now){ let dt=(now-last)/1000;last=now;dt=Math.min(0.05,dt); if(playing)step(dt); draw();
+    $('sMem').textContent=nMem;$('sHttp').textContent=nHttp;$('sFan').textContent=nFan;$('sAck').textContent=ackPos;
+    requestAnimationFrame(frame); }
+  $('play').onclick=()=>{playing=!playing;$('play').textContent=playing?'⏸ Pause':'▶ Play';};
+  $('reset').onclick=()=>{dots.length=0;acks.length=0;nMem=nHttp=nFan=0;ackPos=0;seq=0;};
+  $('spawn').onclick=()=>spawn(true);
+  $('slow').onclick=()=>{slow=!slow;$('slow').classList.toggle('on');$('slow').textContent=slow?'slow the HTTP target ✓':'slow the HTTP target';};
+  $('rate').oninput=e=>{rate=+e.target.value;$('rateV').textContent=e.target.value;};
+  function resize(){dpr=window.devicePixelRatio||1;W=cv.clientWidth;H=320;cv.width=W*dpr;cv.height=H*dpr;cv.style.height=H+'px';ctx.setTransform(dpr,0,0,dpr,0,0);}
+  window.addEventListener('resize',resize); resize(); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
