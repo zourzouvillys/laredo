@@ -7,7 +7,12 @@ import (
 
 	"github.com/zourzouvillys/laredo"
 	"github.com/zourzouvillys/laredo/snapshotter"
+	"github.com/zourzouvillys/laredo/snapshotter/formattest"
 )
+
+func TestJSONL_Conformance(t *testing.T) {
+	formattest.Run(t, New())
+}
 
 func TestJSONL_SnapshotRoundTrip(t *testing.T) {
 	f := New()

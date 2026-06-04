@@ -1,0 +1,21 @@
+syntax = "proto3";
+package laredo.snapshotter.v1;
+
+option go_package = "github.com/zourzouvillys/laredo/gen/laredo/snapshotter/v1;snapshotterv1";
+
+import "google/protobuf/struct.proto";
+
+// SnapshotRow is one row in a protobuf-encoded snapshot artifact. Artifacts are
+// a stream of length-delimited SnapshotRow messages.
+message SnapshotRow {
+  google.protobuf.Struct row = 1;
+}
+
+// DiffChange is one change in a protobuf-encoded diff artifact. Artifacts are a
+// stream of length-delimited DiffChange messages.
+message DiffChange {
+  string action = 1; // "INSERT" | "UPDATE" | "DELETE" | "TRUNCATE"
+  string key = 2;
+  google.protobuf.Struct old = 3; // present for UPDATE/DELETE
+  google.protobuf.Struct new = 4; // present for INSERT/UPDATE
+}
