@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cross-instance failover · Laredo</title>
+  <link rel="stylesheet" href="/laredo/viz/viz.css" />
+</head>
+<body>
+<div class="viz-wrap">
+  <nav class="viz-nav">
+    <a class="brand" href="/laredo/">Laredo</a>
+    <span><a href="/laredo/viz/">all diagrams</a> &nbsp;·&nbsp; <a href="/laredo/guides/fan-out/#failover--zero-downtime-deploys">Failover ↗</a></span>
+  </nav>
+  <h1 class="viz-title">Cross-instance failover</h1>
+  <p class="viz-lede">
+    Two server instances tail the same PostgreSQL, so the <b>WAL LSN</b> means the same thing on
+    both. When instance A drains for a deploy, it sends a <b>GoAway</b>; the client re-dials the
+    load balancer, lands on B, and <b>resumes from its last LSN</b> — a delta, not a full snapshot —
+    then closes A cleanly. Hit <b>drain A</b>.
+  </p>
+  <div class="stage"><canvas id="c"></canvas></div>
+  <div class="controls">
+    <button class="btn primary" id="play">⏸ Pause</button>
+    <button class="btn" id="reset">↺ reset</button>
+    <button class="btn danger" id="drain">drain instance A</button>
+  </div>
+  <div class="legend">
+    <span><i class="dot" style="background:var(--main)"></i> live change</span>
+    <span><i class="dot" style="background:var(--reject)"></i> GoAway</span>
+    <span><i class="dot" style="background:var(--allow)"></i> resume-by-LSN delta</span>
+  </div>
+  <div class="stats">
+    <div class="stat canary"><div class="k">connected to</div><div class="v" id="sConn">A</div></div>
+    <div class="stat main"><div class="k">last applied LSN</div><div class="v" id="sLsn">0/0</div></div>
+    <div class="stat allow"><div class="k">full re-syncs</div><div class="v" id="sResync">0</div></div>
+  </div>
+  <p class="note">Resume is at-least-once and idempotent (apply by primary key); the new instance replays from the client's LSN, so the handoff is gapless — see <code>guides/fan-out</code>.</p>
+</div>
+<script>
+(() => {
+  if (/(?:[?&#])embed/.test(location.search+location.hash)) document.body.classList.add('embed');
+  const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+  let W=0,H=320,dpr=1; const $=id=>document.getElementById(id);
+  const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  let playing=true, conn='A', phase='live', lsn=40, resyncs=0, emitAcc=0, phaseT=0;
+  const dots=[]; let aGlow=0,bGlow=0,cliGlow=0;
+  function geo(){ return { aX:90,aY:70, bX:90,bY:H-70, cliX:W-90,cliY:H/2, lbX:W*0.5,lbY:H/2 }; }
+  function srvPos(which){ const g=geo(); return which==='A'?{x:g.aX,y:g.aY}:{x:g.bX,y:g.bY}; }
+  function emit(kind, from){ const s=srvPos(from); dots.push({x:s.x,y:s.y,kind,t:0}); }
+  function step(dt){
+    const g=geo(); phaseT+=dt;
+    if(phase==='live'){ emitAcc+=4*dt; while(emitAcc>=1){ emit('live',conn); lsn++; emitAcc-=1; (conn==='A'?aGlow=1:bGlow=1); } }
+    else if(phase==='goaway'){ if(phaseT>0.4){ phase='resume'; phaseT=0; conn='B'; bGlow=1;
+        for(let k=0;k<6;k++) dots.push({x:g.bX,y:g.bY,kind:'resume',t:0,delay:k*0.06}); } }
+    else if(phase==='resume'){ if(phaseT>0.9){ phase='live'; phaseT=0; } }
+    for(const d of dots){ if(d.delay&&d.t<d.delay){ d.t+=dt; continue; } d.t+=dt;
+      d.x+=(g.cliX-d.x)*Math.min(1,dt*3); d.y+=(g.cliY-d.y)*Math.min(1,dt*3);
+      if(Math.hypot(g.cliX-d.x,g.cliY-d.y)<6){ d.dead=true; cliGlow=0.6; if(d.kind!=='goaway') lsnApplied=Math.max(lsnApplied,lsn); } }
+    for(let i=dots.length-1;i>=0;i--) if(dots[i].dead) dots.splice(i,1);
+    aGlow=Math.max(0,aGlow-dt*2); bGlow=Math.max(0,bGlow-dt*2); cliGlow=Math.max(0,cliGlow-dt*2);
+  }
+  let lsnApplied=40;
+  function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+  function box(x,y,w,h,s,f,glow){ if(glow>0){ctx.save();ctx.globalAlpha=glow*0.5;ctx.fillStyle=s;rr(x-3,y-3,w+6,h+6,11);ctx.fill();ctx.restore();} ctx.fillStyle=f;ctx.strokeStyle=s;ctx.lineWidth=2;rr(x,y,w,h,9);ctx.fill();ctx.stroke(); }
+  function fmtLsn(n){ return '0/'+(n*7).toString(16).toUpperCase(); }
+  function draw(){ ctx.clearRect(0,0,W,H); const g=geo(); ctx.textAlign='center';
+    const draining = phase!=='live' && conn!=='A';
+    // instance A
+    const aActive=conn==='A';
+    box(g.aX-44,g.aY-22,88,44,aActive?css('--accent'):css('--border'),css('--bg-subtle'),aGlow);
+    ctx.fillStyle=aActive?css('--accent'):css('--fg-muted');ctx.font='700 12px '+css('--mono');ctx.fillText('instance A',g.aX,g.aY-2);
+    ctx.fillStyle=css('--fg-faint');ctx.font='8px '+css('--mono');ctx.fillText(aActive?'serving':'drained',g.aX,g.aY+12);
+    // instance B
+    const bActive=conn==='B';
+    box(g.bX-44,g.bY-22,88,44,bActive?css('--accent'):css('--border'),css('--bg-subtle'),bGlow);
+    ctx.fillStyle=bActive?css('--accent'):css('--fg-muted');ctx.font='700 12px '+css('--mono');ctx.fillText('instance B',g.bX,g.bY-2);
+    ctx.fillStyle=css('--fg-faint');ctx.font='8px '+css('--mono');ctx.fillText(bActive?'serving':'standby',g.bX,g.bY+12);
+    // shared postgres label
+    ctx.fillStyle=css('--allow');ctx.font='9px '+css('--mono');ctx.fillText('same Postgres (shared WAL)',g.lbX,18);
+    ctx.strokeStyle=css('--border-light');ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(g.aX,g.aY-22);ctx.lineTo(g.lbX,24);ctx.lineTo(g.bX,g.bY-22);ctx.stroke();ctx.setLineDash([]);
+    // client
+    box(g.cliX-40,g.cliY-16,80,32,css('--canary'),css('--bg-muted'),cliGlow);
+    ctx.fillStyle=css('--canary');ctx.font='600 11px '+css('--mono');ctx.fillText('client',g.cliX,g.cliY+4);
+    // active link
+    const s=srvPos(conn); ctx.strokeStyle=css('--border');ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(s.x+44,s.y);ctx.lineTo(g.cliX-40,g.cliY);ctx.stroke();
+    // dots
+    for(const d of dots){ if(d.delay&&d.t<d.delay) continue; ctx.fillStyle=d.kind==='goaway'?css('--reject'):d.kind==='resume'?css('--allow'):css('--main'); ctx.beginPath(); ctx.arc(d.x,d.y,d.kind==='goaway'?5:4,0,7); ctx.fill(); }
+  }
+  let last=performance.now();
+  function frame(now){ let dt=(now-last)/1000;last=now;dt=Math.min(0.05,dt); if(playing)step(dt); draw();
+    $('sConn').textContent=conn;$('sLsn').textContent=fmtLsn(lsnApplied);$('sResync').textContent=resyncs; requestAnimationFrame(frame); }
+  $('play').onclick=()=>{playing=!playing;$('play').textContent=playing?'⏸ Pause':'▶ Play';};
+  $('reset').onclick=()=>{conn='A';phase='live';lsn=40;lsnApplied=40;resyncs=0;dots.length=0;phaseT=0;};
+  $('drain').onclick=()=>{ if(conn==='A'&&phase==='live'){ phase='goaway'; phaseT=0; emit('goaway','A'); aGlow=1; } };
+  function resize(){dpr=window.devicePixelRatio||1;W=cv.clientWidth;H=320;cv.width=W*dpr;cv.height=H*dpr;cv.style.height=H+'px';ctx.setTransform(dpr,0,0,dpr,0,0);}
+  window.addEventListener('resize',resize); resize(); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Interactive diagrams · Laredo</title>
+  <link rel="stylesheet" href="/laredo/viz/viz.css" />
+</head>
+<body>
+<div class="viz-wrap">
+  <nav class="viz-nav">
+    <a class="brand" href="/laredo/">Laredo</a>
+    <span><a href="/laredo/">overview</a> &nbsp;·&nbsp; <a href="/laredo/edr/">decision records</a></span>
+  </nav>
+  <h1 class="viz-title">Interactive diagrams</h1>
+  <p class="viz-lede">Animated, hands-on views of how Laredo moves data. Each runs in your browser — play, pause, and poke at it.</p>
+  <ul class="viz-index">
+    <li><a href="/laredo/viz/pipeline.html"><div class="t">The Laredo pipeline</div><div class="d">Postgres slot → engine demux → targets, with ACK held back by a slow target.</div></a></li>
+    <li><a href="/laredo/viz/fan-out.html"><div class="t">Replication fan-out</div><div class="d">One server, many clients: snapshot bootstrap then a live journal stream + heartbeats.</div></a></li>
+    <li><a href="/laredo/viz/snapshot-writer.html"><div class="t">Snapshot writer: base + diff</div><div class="d">Base snapshot, periodic diffs, and threshold-driven re-bases into new epochs.</div></a></li>
+    <li><a href="/laredo/viz/failover.html"><div class="t">Cross-instance failover</div><div class="d">GoAway → resume-by-LSN on another instance → drop the old one. No full re-sync.</div></a></li>
+    <li><a href="/laredo/viz/ordering.html"><div class="t">Ordering, ACK &amp; backpressure</div><div class="d">In-order delivery, ACK = min(target positions), drop_disconnect vs slow_down.</div></a></li>
+  </ul>
+</div>
+</body>
+</html>

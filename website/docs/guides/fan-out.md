@@ -7,6 +7,8 @@ title: Replication Fan-Out
 
 Multiplex one PostgreSQL replication slot to N downstream clients over gRPC. Clients connect, receive a consistent snapshot, then stream live changes — no need for each service instance to hold its own slot.
 
+<iframe src="/laredo/viz/fan-out.html?embed=1" title="Replication fan-out" loading="lazy" class="embed"></iframe>
+
 ## Architecture
 
 ```
@@ -110,6 +112,8 @@ client.Stop() // saves local snapshot for fast restart
 A client can hand off from one `laredo-server` instance to another — during a
 rolling deploy or when an instance is being replaced — and **resume without a
 full re-sync**.
+
+<iframe src="/laredo/viz/failover.html?embed=1" title="Cross-instance failover" loading="lazy" class="embed"></iframe>
 
 ### Why it works: resume by source position
 

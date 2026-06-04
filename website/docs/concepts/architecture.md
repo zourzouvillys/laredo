@@ -7,6 +7,8 @@ title: Architecture
 
 Laredo is organized in three layers, each building on the one below.
 
+<iframe src="/laredo/viz/pipeline.html?embed=1" title="The Laredo pipeline" loading="lazy" class="embed"></iframe>
+
 ## Layer diagram
 
 ```

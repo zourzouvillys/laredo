@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Replication fan-out · Laredo</title>
+  <link rel="stylesheet" href="/laredo/viz/viz.css" />
+</head>
+<body>
+<div class="viz-wrap">
+  <nav class="viz-nav">
+    <a class="brand" href="/laredo/">Laredo</a>
+    <span><a href="/laredo/viz/">all diagrams</a> &nbsp;·&nbsp; <a href="/laredo/guides/fan-out/">Fan-out ↗</a></span>
+  </nav>
+  <h1 class="viz-title">Replication fan-out</h1>
+  <p class="viz-lede">
+    One server multiplexes a single slot to many clients over gRPC. A new client first receives a
+    <b>consistent snapshot</b> (the purple burst), then joins the <b>live journal stream</b> (amber)
+    with periodic <b>heartbeats</b>. Add and drop clients — each new one bootstraps from a snapshot,
+    then tracks the same live stream.
+  </p>
+  <div class="stage"><canvas id="c"></canvas></div>
+  <div class="controls">
+    <button class="btn primary" id="play">⏸ Pause</button>
+    <button class="btn" id="reset">↺ reset</button>
+    <button class="btn" id="add">＋ add client</button>
+    <button class="btn danger" id="kill">drop a client</button>
+    <span class="ctl-group"><label>change rate</label><input type="range" id="rate" min="1" max="12" step="1" value="5"><span class="ctl-val" id="rateV">5</span></span>
+  </div>
+  <div class="legend">
+    <span><i class="dot" style="background:var(--sensitive)"></i> snapshot row</span>
+    <span><i class="dot" style="background:var(--main)"></i> live change</span>
+    <span><i class="dot" style="background:var(--allow)"></i> heartbeat</span>
+  </div>
+  <div class="stats">
+    <div class="stat canary"><div class="k">connected clients</div><div class="v" id="sCli">0</div></div>
+    <div class="stat main"><div class="k">journal sequence</div><div class="v" id="sSeq">0</div></div>
+    <div class="stat sensitive"><div class="k">snapshots served</div><div class="v" id="sSnap">0</div></div>
+  </div>
+  <p class="note">Clients resume by source position (WAL LSN), so a draining server can tell them to hand off and they reconnect without a full re-sync — see <code>guides/fan-out</code>.</p>
+</div>
+<script>
+(() => {
+  if (/(?:[?&#])embed/.test(location.search+location.hash)) document.body.classList.add('embed');
+  const cv=document.getElementById('c'), ctx=cv.getContext('2d');
+  let W=0,H=340,dpr=1; const $=id=>document.getElementById(id);
+  const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  let playing=true, rate=5, spawnAcc=0, seq=0, nSnap=0, hbAcc=0;
+  const clients=[]; const dots=[]; let srvGlow=0;
+  function geo(){ return { srvX:90, srvY:H/2, cliX:W-90, n:clients.length }; }
+  function cliY(i){ const g=geo(); const n=Math.max(1,g.n); const top=46, bot=H-30; return n===1?H/2:top+(bot-top)*(i/(n-1)); }
+  function addClient(){ if(clients.length>=6) return; const c={id:++cidC, state:'snap', snap:0, glow:1}; clients.push(c);
+    // snapshot burst
+    for(let k=0;k<10;k++) dots.push({x:geo().srvX,y:geo().srvY,kind:'snap',cli:c,delay:k*0.05,t:0}); nSnap++; srvGlow=1; }
+  let cidC=0;
+  function killClient(){ if(clients.length){ const i=(Math.random()*clients.length)|0; clients.splice(i,1); } }
+  function emitLive(){ seq++; for(const c of clients){ if(c.state==='live') dots.push({x:geo().srvX,y:geo().srvY,kind:'live',cli:c,t:0,delay:0}); } srvGlow=Math.max(srvGlow,0.7); }
+  function step(dt){
+    spawnAcc+=rate*dt; while(spawnAcc>=1){ emitLive(); spawnAcc-=1; }
+    hbAcc+=dt; if(hbAcc>1.4){ hbAcc=0; for(const c of clients) if(c.state==='live') dots.push({x:geo().srvX,y:geo().srvY,kind:'hb',cli:c,t:0,delay:0}); }
+    const g=geo();
+    for(const c of clients){ c.glow=Math.max(0,c.glow-dt*1.5);
+      if(c.state==='snap'){ c.snap+=dt; if(c.snap>0.8) c.state='live'; } }
+    for(const d of dots){ if(!clients.includes(d.cli)){ d.dead=true; continue; }
+      d.t+=dt; if(d.t<d.delay) continue;
+      const i=clients.indexOf(d.cli), tx=g.cliX, ty=cliY(i);
+      d.x+=(tx-d.x)*Math.min(1,dt*3); d.y+=(ty-d.y)*Math.min(1,dt*3);
+      if(Math.hypot(tx-d.x,ty-d.y)<6){ d.dead=true; d.cli.glow=Math.max(d.cli.glow,0.6); } }
+    for(let i=dots.length-1;i>=0;i--) if(dots[i].dead) dots.splice(i,1);
+    srvGlow=Math.max(0,srvGlow-dt*2);
+  }
+  function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+  function box(x,y,w,h,s,f,glow){ if(glow>0){ctx.save();ctx.globalAlpha=glow*0.5;ctx.fillStyle=s;rr(x-3,y-3,w+6,h+6,11);ctx.fill();ctx.restore();} ctx.fillStyle=f;ctx.strokeStyle=s;ctx.lineWidth=2;rr(x,y,w,h,9);ctx.fill();ctx.stroke(); }
+  function color(d){ return d.kind==='snap'?css('--sensitive'):d.kind==='hb'?css('--allow'):css('--main'); }
+  function draw(){ ctx.clearRect(0,0,W,H); const g=geo(); ctx.textAlign='center';
+    box(g.srvX-46,g.srvY-30,92,60,css('--accent'),css('--bg-subtle'),srvGlow);
+    ctx.fillStyle=css('--accent');ctx.font='700 12px '+css('--mono');ctx.fillText('laredo',g.srvX,g.srvY-8);
+    ctx.fillStyle=css('--fg-muted');ctx.font='9px '+css('--mono');ctx.fillText('fan-out',g.srvX,g.srvY+6);ctx.fillText('journal',g.srvX,g.srvY+18);
+    for(let i=0;i<clients.length;i++){ const y=cliY(i),c=clients[i];
+      ctx.strokeStyle=css('--border-light');ctx.lineWidth=1.2;ctx.beginPath();ctx.moveTo(g.srvX+46,g.srvY);ctx.lineTo(g.cliX-34,y);ctx.stroke();
+      box(g.cliX-34,y-13,68,26,c.state==='snap'?css('--sensitive'):css('--canary'),css('--bg-muted'),c.glow);
+      ctx.fillStyle=c.state==='snap'?css('--sensitive'):css('--canary');ctx.font='600 9px '+css('--mono');
+      ctx.fillText(c.state==='snap'?'bootstrap':'client '+c.id,g.cliX,y+3); }
+    for(const d of dots){ if(d.t<d.delay) continue; ctx.fillStyle=color(d); ctx.beginPath(); ctx.arc(d.x,d.y,d.kind==='snap'?3:4,0,7); ctx.fill(); }
+    if(!clients.length){ ctx.fillStyle=css('--fg-faint');ctx.font='12px '+css('--mono');ctx.fillText('add a client →',W/2,H/2); }
+  }
+  let last=performance.now();
+  function frame(now){ let dt=(now-last)/1000;last=now;dt=Math.min(0.05,dt); if(playing)step(dt); draw();
+    $('sCli').textContent=clients.length;$('sSeq').textContent=seq;$('sSnap').textContent=nSnap; requestAnimationFrame(frame); }
+  $('play').onclick=()=>{playing=!playing;$('play').textContent=playing?'⏸ Pause':'▶ Play';};
+  $('reset').onclick=()=>{clients.length=0;dots.length=0;seq=0;nSnap=0;};
+  $('add').onclick=addClient; $('kill').onclick=killClient;
+  $('rate').oninput=e=>{rate=+e.target.value;$('rateV').textContent=e.target.value;};
+  function resize(){dpr=window.devicePixelRatio||1;W=cv.clientWidth;H=340;cv.width=W*dpr;cv.height=H*dpr;cv.style.height=H+'px';ctx.setTransform(dpr,0,0,dpr,0,0);}
+  window.addEventListener('resize',resize); resize(); addClient(); addClient(); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
