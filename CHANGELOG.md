@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`LoadManifest`, `ReadSnapshot` / `ReadDiff`, and `Plan` chain selection), plus
   exported `ManifestObjectKey` / `ArtifactObjectKey` helpers, so consumers can
   reconstruct a table from the archive.
+- **Snapshotter**: Point-in-time reconstruction — `Reader.ReconstructAsOf` (and
+  `PlanAsOf`) materialize a table's full state as of any source position from the
+  archive (newest base snapshot + the folded diffs up to it), returning the rows
+  and the effective position. Library-only; see EDR-0003.
 
 ## [0.2.0] - 2026-04-14
 

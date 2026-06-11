@@ -194,3 +194,114 @@ func contiguousDiffChain(diffs []Artifact, startPos string) (chain []Artifact, h
 	}
 	return chain, head, ok
 }
+
+// Reconstruction is a materialized point-in-time view of a table, produced by
+// ReconstructAsOf.
+type Reconstruction struct {
+	// Rows is the full table state at Position.
+	Rows []laredo.Row
+	// Position is the source position the state reflects: the latest artifact
+	// boundary at or before the requested position (a diff that straddles the
+	// request is excluded, since diffs are not splittable).
+	Position string
+}
+
+// PlanAsOf selects the chain to reconstruct the table state as of (at or before)
+// position: the newest base snapshot at or before position, plus the contiguous
+// diffs after it whose range ends at or before position. A diff that straddles
+// position is excluded, so the plan's HeadPosition is the latest artifact
+// boundary at or before position — the effective as-of position.
+//
+// It returns (nil, nil) when the archive cannot cover position: the manifest is
+// empty, or its oldest snapshot is already after position (the request predates
+// the archive). cmp compares opaque position strings.
+func (r *Reader) PlanAsOf(m *Manifest, position string, cmp func(a, b string) int) (*ReplayPlan, error) {
+	if m == nil || len(m.Artifacts) == 0 {
+		return nil, nil
+	}
+	var base *Artifact
+	for i := range m.Artifacts {
+		a := &m.Artifacts[i]
+		if a.Kind != KindSnapshot {
+			continue
+		}
+		if cmp(a.ToPosition, position) <= 0 && (base == nil || cmp(a.ToPosition, base.ToPosition) > 0) {
+			base = a
+		}
+	}
+	if base == nil {
+		return nil, nil
+	}
+	byFrom := make(map[string]Artifact)
+	for _, a := range m.Artifacts {
+		if a.Kind == KindDiff && a.FromPosition != nil {
+			byFrom[*a.FromPosition] = a
+		}
+	}
+	plan := &ReplayPlan{Snapshot: base, HeadPosition: base.ToPosition}
+	for cur := base.ToPosition; ; {
+		d, ok := byFrom[cur]
+		if !ok || cmp(d.ToPosition, position) > 0 {
+			break
+		}
+		plan.Diffs = append(plan.Diffs, d)
+		plan.HeadPosition = d.ToPosition
+		cur = d.ToPosition
+	}
+	return plan, nil
+}
+
+// ReconstructAsOf loads the manifest and materializes the full table state as of
+// (at or before) position, by reading the newest base snapshot at or before it
+// and folding the diffs up to it. keyFields are the primary-key field names the
+// archive was written with (defaults to ["id"]); they key snapshot rows so they
+// align with the diff stream.
+//
+// It returns nil (with nil error) when the archive cannot reach position — the
+// caller decides whether that is an error for its use case.
+func (r *Reader) ReconstructAsOf(ctx context.Context, position string, keyFields []string, cmp func(a, b string) int) (*Reconstruction, error) {
+	m, err := r.LoadManifest(ctx)
+	if err != nil {
+		return nil, err
+	}
+	plan, err := r.PlanAsOf(m, position, cmp)
+	if err != nil {
+		return nil, err
+	}
+	if plan == nil {
+		return nil, nil
+	}
+
+	state := make(map[string]laredo.Row)
+	if plan.Snapshot != nil {
+		base, err := r.ReadSnapshot(ctx, *plan.Snapshot)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range base {
+			state[RowKey(row, keyFields)] = row
+		}
+	}
+	for _, d := range plan.Diffs {
+		changes, err := r.ReadDiff(ctx, d)
+		if err != nil {
+			return nil, err
+		}
+		for _, ch := range changes {
+			switch ch.Action {
+			case laredo.ActionDelete:
+				delete(state, ch.Key)
+			case laredo.ActionTruncate:
+				state = make(map[string]laredo.Row)
+			default: // insert, update
+				state[ch.Key] = ch.New
+			}
+		}
+	}
+
+	rows := make([]laredo.Row, 0, len(state))
+	for _, row := range state {
+		rows = append(rows, row)
+	}
+	return &Reconstruction{Rows: rows, Position: plan.HeadPosition}, nil
+}
