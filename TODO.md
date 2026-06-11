@@ -77,3 +77,18 @@ Deferred:
 - [ ] Diff-only resume when the client's position aligns to a diff boundary is
       implemented; consider serving partial-diff ranges for non-aligned positions
       if a use case needs to avoid the base-snapshot re-read.
+
+### Point-in-time reconstruction (EDR-0003)
+
+Shipped: [EDR-0003](docs/edr/0003-point-in-time-reconstruction.md) —
+`Reader.ReconstructAsOf` / `PlanAsOf` materialize a table's state as of any
+source position from the archive (library-only).
+
+Deferred:
+
+- [ ] Expose reconstruction through a surface: a `laredo` CLI subcommand
+      (`archive reconstruct --at <position>`) and/or a read RPC, once archive
+      destination/format config has a config home.
+- [ ] Sub-diff (intra-range) precision would need per-change positions in the
+      diff format; out of scope until a use case requires landing between
+      artifact boundaries.

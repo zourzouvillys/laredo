@@ -33,6 +33,39 @@ config_document/
 A consumer reads `manifest.json`, loads the **newest snapshot**, and applies the
 **diffs after it** to reconstruct the table as of `head_position`.
 
+## Reading the archive
+
+The snapshotter only writes; **reconstruction is the consumer's job** — but
+`snapshotter.Reader` is the library tool for it. Point it at the same
+destination, prefix, and formats the writer used.
+
+### Point-in-time reads
+
+`ReconstructAsOf` materializes the full table as of any source position, by
+reading the newest base snapshot at or before it and folding the diffs up to it:
+
+```go
+reader, _ := snapshotter.NewReader(dest, "public.events/", jsonl.New())
+
+rec, err := reader.ReconstructAsOf(ctx, "0/1A2B3C0", []string{"id"}, cmp)
+// rec.Rows     — the full table state
+// rec.Position — the effective position it reflects: the latest artifact
+//                boundary at or before the requested one (diffs are not
+//                splittable, so a request between boundaries lands on the
+//                earlier one)
+```
+
+`cmp` compares two opaque position strings (negative / zero / positive) — supply
+it from your source (e.g. WAL-LSN ordering). `keyFields` must match what the
+snapshotter wrote with (defaults to `["id"]`). `ReconstructAsOf` returns `nil`
+when the archive cannot reach the requested position (it predates the oldest
+snapshot).
+
+This is the building block for audit ("what did this look like at T?"),
+point-in-time exports, and historical diffs — all from object storage, with no
+live system in the loop. For *resuming forward* from a position (the fan-out
+cold-replay case) see [Cold-tier replay](./fan-out.md#cold-tier-replay).
+
 ## Install
 
 ```bash

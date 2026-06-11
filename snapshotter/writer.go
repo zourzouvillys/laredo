@@ -368,12 +368,5 @@ func (w *Writer) Status() Status {
 }
 
 func (w *Writer) keyOf(row laredo.Row) string {
-	if len(w.cfg.KeyFields) == 1 {
-		return fmt.Sprintf("%v", row[w.cfg.KeyFields[0]])
-	}
-	parts := make([]any, len(w.cfg.KeyFields))
-	for i, f := range w.cfg.KeyFields {
-		parts[i] = row[f]
-	}
-	return fmt.Sprintf("%v", parts)
+	return RowKey(row, w.cfg.KeyFields)
 }
