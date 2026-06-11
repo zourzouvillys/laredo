@@ -1,0 +1,45 @@
+# Dependabot keeps dependencies current. For GitHub Actions it bumps the pinned
+# commit SHA *and* the `# vX.Y.Z` comment together, so SHA-pinning (see
+# .github/workflows/*) stays secure without going stale. Updates are grouped per
+# ecosystem into a single weekly PR to keep noise low, and held for a 48h cooldown
+# after a release so freshly-published (and potentially compromised) versions are
+# not adopted immediately. The npm ecosystem reads website/pnpm-lock.yaml.
+# Non-major bumps are auto-merged once their CI passes — see
+# .github/workflows/dependabot-auto-merge.yml.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 2
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 2
+    groups:
+      golang:
+        patterns: ["*"]
+    commit-message:
+      prefix: go
+
+  - package-ecosystem: npm
+    directory: /website
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 2
+    groups:
+      website:
+        patterns: ["*"]
+    commit-message:
+      prefix: docs
