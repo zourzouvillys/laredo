@@ -302,6 +302,7 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 				JournalOldestSequence: oldestSeq,
 				ResumeFromSequence:    resumeSeq,
 				SnapshotId:            handshakeSnapshotID,
+				Columns:               columnsToProto(ft.Columns()),
 			},
 		},
 	}); err != nil {
@@ -518,4 +519,21 @@ func sendJournalEntry(stream *connect.ServerStream[v1.SyncResponse], e fanout.Jo
 	return stream.Send(&v1.SyncResponse{
 		Message: &v1.SyncResponse_JournalEntry{JournalEntry: entry},
 	})
+}
+
+// columnsToProto converts laredo column definitions to the wire form sent in the
+// Sync handshake, so cascading consumers can discover the table schema.
+func columnsToProto(cols []laredo.ColumnDefinition) []*v1.ColumnDefinition {
+	out := make([]*v1.ColumnDefinition, len(cols))
+	for i, c := range cols {
+		out[i] = &v1.ColumnDefinition{
+			OrdinalPosition:   int32(c.OrdinalPosition), //nolint:gosec // small ordinal
+			ColumnName:        c.Name,
+			DataType:          c.Type,
+			NotNull:           !c.Nullable,
+			IsPrimaryKey:      c.PrimaryKey,
+			PrimaryKeyOrdinal: int32(c.PrimaryKeyOrdinal), //nolint:gosec // small ordinal
+		}
+	}
+	return out
 }

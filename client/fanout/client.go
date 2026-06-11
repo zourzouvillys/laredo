@@ -38,6 +38,8 @@ type Client struct {
 	lastSourcePosition string
 	lastReceived       time.Time
 	listener           func(old, new laredo.Row)
+	posListener        func(old, new laredo.Row, position string)
+	columns            []laredo.ColumnDefinition
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -227,6 +229,46 @@ func (c *Client) Listen(fn func(old, new laredo.Row)) func() {
 		c.listener = nil
 		c.mu.Unlock()
 	}
+}
+
+// ListenWithPosition registers a change listener that also receives the source
+// position (e.g. WAL LSN) of each change. Conventions match Listen (insert →
+// old nil; delete → new nil; truncate → both nil). The callback runs while the
+// client holds its lock, so it must not block or call back into the client.
+// Returns an unsubscribe function.
+func (c *Client) ListenWithPosition(fn func(old, new laredo.Row, position string)) func() {
+	c.mu.Lock()
+	c.posListener = fn
+	c.mu.Unlock()
+	return func() {
+		c.mu.Lock()
+		c.posListener = nil
+		c.mu.Unlock()
+	}
+}
+
+// Columns returns the table's column definitions as learned from the server
+// handshake. Empty until the client has connected and received a handshake.
+func (c *Client) Columns() []laredo.ColumnDefinition {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return append([]laredo.ColumnDefinition(nil), c.columns...)
+}
+
+// columnsFromProto converts replication column definitions to laredo's.
+func columnsFromProto(cols []*v1.ColumnDefinition) []laredo.ColumnDefinition {
+	out := make([]laredo.ColumnDefinition, len(cols))
+	for i, col := range cols {
+		out[i] = laredo.ColumnDefinition{
+			Name:              col.GetColumnName(),
+			Type:              col.GetDataType(),
+			Nullable:          !col.GetNotNull(),
+			PrimaryKey:        col.GetIsPrimaryKey(),
+			OrdinalPosition:   int(col.GetOrdinalPosition()),
+			PrimaryKeyOrdinal: int(col.GetPrimaryKeyOrdinal()),
+		}
+	}
+	return out
 }
 
 // LastSequence returns the last received journal sequence number.
@@ -506,7 +548,11 @@ func (c *Client) stopDrain(stop, done chan struct{}, stream *syncStream) {
 func (c *Client) applyMessage(msg *v1.SyncResponse) (goAway bool) {
 	switch m := msg.GetMessage().(type) {
 	case *v1.SyncResponse_Handshake:
-		_ = m
+		if cols := m.Handshake.GetColumns(); len(cols) > 0 {
+			c.mu.Lock()
+			c.columns = columnsFromProto(cols)
+			c.mu.Unlock()
+		}
 
 	case *v1.SyncResponse_SnapshotBegin:
 		// Clear local state for full snapshot. The source position is reset; it
@@ -614,6 +660,11 @@ func (c *Client) applyJournalEntry(entry *v1.ReplicationJournalEntry) {
 func (c *Client) notify(old, new laredo.Row) {
 	if c.listener != nil {
 		c.listener(old, new)
+	}
+	if c.posListener != nil {
+		// Called under c.mu from applyJournalEntry, where lastSourcePosition is
+		// already the position of this change.
+		c.posListener(old, new, c.lastSourcePosition)
 	}
 }
 

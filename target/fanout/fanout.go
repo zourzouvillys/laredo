@@ -317,6 +317,15 @@ func (t *Target) Count() int {
 	return len(t.store)
 }
 
+// Columns returns the table's column definitions (from the source schema), as
+// learned at baseline. Used to populate the replication handshake so cascading
+// consumers can discover the schema.
+func (t *Target) Columns() []laredo.ColumnDefinition {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return append([]laredo.ColumnDefinition(nil), t.cols...)
+}
+
 // IsReady reports whether the target has completed baseline loading.
 func (t *Target) IsReady() bool {
 	t.mu.RLock()
