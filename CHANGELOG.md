@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **snapshotter/laredo-server**: S3 cold-tier archives from HOCON (EDR-0005).
+  Extracted the snapshotter binary's destination/format building into a new
+  importable `snapshotter/destwire` package (`BuildDestination`, `BuildFormats`,
+  `AmbientAWSConfig`); `laredo-snapshotter` now delegates to it, and
+  `laredo-server` accepts `archive.store = s3` through the same path — one wiring,
+  no duplication. S3 uses the ambient AWS credential chain (env / IRSA /
+  instance-role); named profiles and assume-role for the server archive remain
+  future work.
 - **laredo-server**: Cold-tier archive from HOCON (EDR-0005). A
   `replication-fanout` target may carry an `archive { store, store_config,
   format, key_prefix }` block; `laredo-server` builds a `snapshotter.Reader` and

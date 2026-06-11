@@ -3,6 +3,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -14,9 +15,7 @@ import (
 	"github.com/zourzouvillys/laredo"
 	"github.com/zourzouvillys/laredo/filter"
 	"github.com/zourzouvillys/laredo/snapshotter"
-	"github.com/zourzouvillys/laredo/snapshotter/dest/local"
-	"github.com/zourzouvillys/laredo/snapshotter/format/jsonl"
-	"github.com/zourzouvillys/laredo/snapshotter/format/protobuf"
+	"github.com/zourzouvillys/laredo/snapshotter/destwire"
 	"github.com/zourzouvillys/laredo/source/pg"
 	"github.com/zourzouvillys/laredo/target/fanout"
 	"github.com/zourzouvillys/laredo/target/httpsync"
@@ -724,53 +723,43 @@ func fanoutOptions(fc *FanoutConfig) []fanout.Option {
 }
 
 // BuildArchiveReader constructs a read-only cold-tier archive reader from an
-// ArchiveConfig, for registration via replication.WithArchive. Only the local
-// store is supported in laredo-server today; s3 is rejected with a clear error
-// pending the shared destination-builder extraction (EDR-0005). The reader does
-// not touch storage at construction time, so a local archive whose objects do
-// not yet exist builds fine and simply declines cold replay until they do.
+// ArchiveConfig, for registration via replication.WithArchive. Both local and
+// s3 stores are supported, built through snapshotter/destwire so laredo-server
+// and laredo-snapshotter wire destinations the same way (EDR-0005). S3 uses the
+// ambient AWS credential chain; named profiles / assume-role are not wired for
+// the archive. The reader does not touch storage at construction time, so an
+// archive whose objects do not yet exist builds fine and simply declines cold
+// replay until they do.
 func BuildArchiveReader(ac *ArchiveConfig) (*snapshotter.Reader, error) {
 	if ac == nil {
 		return nil, nil
 	}
-	formats, err := buildArchiveFormats(ac.Formats)
+	if ac.Credentials != "" {
+		return nil, fmt.Errorf("archive: store_config.credentials is not supported here; laredo-server reads the archive with ambient AWS credentials")
+	}
+	formats, err := destwire.BuildFormats(archiveFormatIDs(ac.Formats))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("archive: %w", err)
 	}
-	switch ac.Store {
-	case "local":
-		if ac.Path == "" {
-			return nil, fmt.Errorf("archive: local store requires store_config.path")
-		}
-		return snapshotter.NewReader(local.New(ac.Path), ac.KeyPrefix, formats...)
-	case "s3":
-		return nil, fmt.Errorf("archive: store %q is not yet supported in laredo-server; "+
-			"use a local archive, or run laredo-snapshotter for S3 (EDR-0005)", ac.Store)
-	case "":
-		return nil, fmt.Errorf("archive: store is required (local)")
-	default:
-		return nil, fmt.Errorf("archive: unknown store %q (want local)", ac.Store)
+	dest, err := destwire.BuildDestination(context.Background(), destwire.DestinationSpec{
+		Type:   ac.Store,
+		Path:   ac.Path,
+		Bucket: ac.Bucket,
+		Prefix: ac.Prefix,
+		Region: ac.Region,
+	}, destwire.AmbientAWSConfig)
+	if err != nil {
+		return nil, fmt.Errorf("archive: %w", err)
 	}
+	return snapshotter.NewReader(dest, ac.KeyPrefix, formats...)
 }
 
-// buildArchiveFormats maps format ids to codecs, defaulting to jsonl when none
-// are given. The reader tries them in order.
-func buildArchiveFormats(ids []string) ([]snapshotter.Format, error) {
+// archiveFormatIDs defaults to jsonl when no formats are configured.
+func archiveFormatIDs(ids []string) []string {
 	if len(ids) == 0 {
-		ids = []string{"jsonl"}
+		return []string{"jsonl"}
 	}
-	formats := make([]snapshotter.Format, 0, len(ids))
-	for _, id := range ids {
-		switch id {
-		case "jsonl":
-			formats = append(formats, jsonl.New())
-		case "protobuf":
-			formats = append(formats, protobuf.New())
-		default:
-			return nil, fmt.Errorf("archive: unknown format %q (want jsonl or protobuf)", id)
-		}
-	}
-	return formats, nil
+	return ids
 }
 
 func createFilter(cfg FilterConfig) (laredo.PipelineFilter, error) {

@@ -95,11 +95,12 @@ tables = [
         max_clients = 500
         client_buffer { max_size = 50000, policy = drop_disconnect }
         heartbeat_interval = 5s
-        # optional cold-tier archive (EDR-0005). store = local today; key_prefix
-        # MUST match the laredo-snapshotter prefix for this table.
+        # optional cold-tier archive (EDR-0005). store = local | s3; key_prefix
+        # MUST match the laredo-snapshotter prefix for this table. s3 uses
+        # ambient AWS credentials.
         archive {
-          store = local
-          store_config { path = "/var/lib/laredo/archive/events" }
+          store = local                     # or: s3
+          store_config { path = "/var/lib/laredo/archive/events" }   # s3: bucket, prefix, region
           format = jsonl                    # jsonl | protobuf; default jsonl
           key_prefix = "laredo/public.events/"
         }

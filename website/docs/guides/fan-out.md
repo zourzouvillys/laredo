@@ -236,6 +236,9 @@ tables = [{
   targets = [{
     type = replication-fanout
     journal { max_entries = 1000000, max_age = 24h }
+
+    # Local archive — the offline-first case (an onboard node archives to local
+    # disk and resumes from it).
     archive {
       store = local
       store_config { path = "/var/lib/laredo/archive/events" }
@@ -246,12 +249,24 @@ tables = [{
 }]
 ```
 
+For an S3 archive, set `store = s3` and the bucket/region instead:
+
+```hocon
+archive {
+  store = s3
+  store_config { bucket = laredo-archive, prefix = "laredo/", region = us-east-1 }
+  format     = jsonl
+  key_prefix = "laredo/public.events/"
+}
+```
+
 `key_prefix` **must match** the prefix [`laredo-snapshotter`](./snapshot-writer.md)
 wrote this table under — otherwise the reader finds no manifest and cold replay
-declines to a live snapshot. Today `store = local` is supported (the offline-first
-case: an onboard node archives to local disk and resumes from it); `store = s3`
-is rejected with a clear error pending a shared destination-builder, so use a
-local archive or the engine-level API below for S3.
+declines to a live snapshot. Both `local` and `s3` stores are built through the
+shared `snapshotter/destwire` package, the same path the snapshotter writes
+through. S3 uses the **ambient** AWS credential chain (environment, IRSA,
+instance/task roles); named profiles and assume-role are not wired for the
+archive — embed the engine-level API below if you need them.
 
 #### From the library (custom embedding)
 
