@@ -14,6 +14,7 @@ import (
 	"github.com/zourzouvillys/laredo"
 	"github.com/zourzouvillys/laredo/filter"
 	"github.com/zourzouvillys/laredo/source/pg"
+	"github.com/zourzouvillys/laredo/target/fanout"
 	"github.com/zourzouvillys/laredo/target/httpsync"
 	"github.com/zourzouvillys/laredo/target/memory"
 	"github.com/zourzouvillys/laredo/transform"
@@ -25,6 +26,7 @@ type Config struct {
 	Tables   []TableConfig
 	Snapshot *SnapshotConfig
 	GRPC     *GRPCConfig
+	Fanout   *FanoutServerConfig
 }
 
 // SourceConfig is the configuration for a data source.
@@ -60,6 +62,24 @@ type TargetConfig struct {
 	MaxRetries   int
 	Filters      []FilterConfig
 	Transforms   []TransformConfig
+	// Fanout holds replication-fanout-specific settings. It is populated only
+	// when Type == "replication-fanout".
+	Fanout *FanoutConfig
+}
+
+// FanoutConfig configures a replication-fanout target. The fields map directly
+// onto target/fanout.New options. The replication protocol is served by the
+// engine-global fan-out listener (see FanoutServerConfig), not per target.
+type FanoutConfig struct {
+	JournalMaxEntries  int
+	JournalMaxAge      time.Duration
+	SnapshotInterval   time.Duration
+	SnapshotKeepCount  int
+	SnapshotMaxAge     time.Duration
+	MaxClients         int
+	ClientBufferSize   int
+	ClientBufferPolicy string
+	HeartbeatInterval  time.Duration
 }
 
 // FilterConfig is the configuration for a pipeline filter.
@@ -96,6 +116,15 @@ type SnapshotConfig struct {
 // GRPCConfig is the configuration for the gRPC server.
 type GRPCConfig struct {
 	Port int
+}
+
+// FanoutServerConfig configures the engine-global fan-out replication listener.
+// A single LaredoReplicationService serves every replication-fanout target in
+// the engine, routing by table; it listens on its own port, distinct from the
+// OAM/Query gRPC port (GRPCConfig). See ADR-007.
+type FanoutServerConfig struct {
+	// GRPCPort is the listen port for the replication protocol (default 4002).
+	GRPCPort int
 }
 
 // LoadOptions controls how configuration is loaded.
@@ -298,7 +327,55 @@ func Parse(input string) (*Config, error) {
 		cfg.GRPC = &GRPCConfig{Port: grpcPort}
 	}
 
+	// Fan-out replication listener (engine-global). When a replication-fanout
+	// target exists, ensure a listener config with a default port, so callers
+	// can treat a non-nil cfg.Fanout as "serve the replication protocol".
+	cfg.Fanout = parseFanoutServerConfig(hc)
+	if configHasFanoutTarget(cfg) {
+		if cfg.Fanout == nil {
+			cfg.Fanout = &FanoutServerConfig{}
+		}
+		if cfg.Fanout.GRPCPort == 0 {
+			cfg.Fanout.GRPCPort = DefaultFanoutPort
+		}
+	}
+
 	return cfg, nil
+}
+
+// DefaultFanoutPort is the default listen port for the fan-out replication
+// protocol when a replication-fanout target is configured (see ADR-007).
+const DefaultFanoutPort = 4002
+
+// targetTypeReplicationFanout is the config `type` value for a fan-out target.
+const targetTypeReplicationFanout = "replication-fanout"
+
+// configHasFanoutTarget reports whether any table declares a replication-fanout
+// target.
+func configHasFanoutTarget(cfg *Config) bool {
+	for _, t := range cfg.Tables {
+		for _, tg := range t.Targets {
+			if tg.Type == targetTypeReplicationFanout {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// parseFanoutServerConfig reads the top-level `fanout { grpc { port } }` block.
+// It returns nil when the block is absent, so callers can default the port only
+// when a replication-fanout target actually exists.
+func parseFanoutServerConfig(hc *hocon.Config) *FanoutServerConfig {
+	obj := safeGetObject(hc, "fanout")
+	if obj == nil {
+		return nil
+	}
+	fc := &FanoutServerConfig{}
+	if grpc, ok := obj["grpc"].(hocon.Object); ok {
+		fc.GRPCPort = objInt(grpc, "port")
+	}
+	return fc
 }
 
 // ApplyEnvOverrides applies environment variable overrides to the parsed config.
@@ -393,6 +470,12 @@ func (c *Config) Validate() []error {
 				errs = append(errs, fmt.Errorf("%s.targets[%d]: type is required", prefix, j))
 			}
 		}
+	}
+
+	// The fan-out replication listener must not collide with the OAM/Query port;
+	// they are separate servers and would race to bind the same address.
+	if c.Fanout != nil && c.GRPC != nil && c.Fanout.GRPCPort == c.GRPC.Port {
+		errs = append(errs, fmt.Errorf("fanout.grpc.port (%d) must differ from grpc.port", c.Fanout.GRPCPort))
 	}
 
 	return errs
@@ -556,9 +639,49 @@ func createTarget(cfg TargetConfig) (laredo.SyncTarget, error) {
 			opts = append(opts, httpsync.Headers(cfg.Headers))
 		}
 		return httpsync.New(opts...), nil
+	case targetTypeReplicationFanout:
+		return fanout.New(fanoutOptions(cfg.Fanout)...), nil
 	default:
 		return nil, fmt.Errorf("unknown target type %q", cfg.Type)
 	}
+}
+
+// fanoutOptions maps a FanoutConfig onto target/fanout.New options. A nil
+// config (or zero fields) yields an empty option set, so the fan-out target
+// keeps its built-in defaults.
+func fanoutOptions(fc *FanoutConfig) []fanout.Option {
+	if fc == nil {
+		return nil
+	}
+	var opts []fanout.Option
+	if fc.JournalMaxEntries > 0 {
+		opts = append(opts, fanout.JournalMaxEntries(fc.JournalMaxEntries))
+	}
+	if fc.JournalMaxAge > 0 {
+		opts = append(opts, fanout.JournalMaxAge(fc.JournalMaxAge))
+	}
+	if fc.SnapshotInterval > 0 {
+		opts = append(opts, fanout.SnapshotInterval(fc.SnapshotInterval))
+	}
+	if fc.SnapshotKeepCount > 0 {
+		opts = append(opts, fanout.SnapshotKeepCount(fc.SnapshotKeepCount))
+	}
+	if fc.SnapshotMaxAge > 0 {
+		opts = append(opts, fanout.SnapshotMaxAge(fc.SnapshotMaxAge))
+	}
+	if fc.MaxClients > 0 {
+		opts = append(opts, fanout.MaxClients(fc.MaxClients))
+	}
+	if fc.ClientBufferSize > 0 {
+		opts = append(opts, fanout.ClientBufferSize(fc.ClientBufferSize))
+	}
+	if fc.ClientBufferPolicy != "" {
+		opts = append(opts, fanout.ClientBufferPolicy(fc.ClientBufferPolicy))
+	}
+	if fc.HeartbeatInterval > 0 {
+		opts = append(opts, fanout.HeartbeatInterval(fc.HeartbeatInterval))
+	}
+	return opts
 }
 
 func createFilter(cfg FilterConfig) (laredo.PipelineFilter, error) {
@@ -658,7 +781,43 @@ func parseTargetObj(obj hocon.Object) TargetConfig {
 		}
 	}
 
+	if tc.Type == targetTypeReplicationFanout {
+		tc.Fanout = parseFanoutConfig(obj)
+	}
+
 	return tc
+}
+
+// parseFanoutConfig reads the replication-fanout target settings:
+//
+//	journal       { max_entries, max_age }
+//	snapshot      { interval, retention { keep_count, max_age } }
+//	max_clients
+//	client_buffer { max_size, policy }
+//	heartbeat_interval
+//
+// Zero/absent fields leave the corresponding target/fanout.New default in place.
+func parseFanoutConfig(obj hocon.Object) *FanoutConfig {
+	fc := &FanoutConfig{
+		MaxClients:        objInt(obj, "max_clients"),
+		HeartbeatInterval: objDuration(obj, "heartbeat_interval"),
+	}
+	if j, ok := obj["journal"].(hocon.Object); ok {
+		fc.JournalMaxEntries = objInt(j, "max_entries")
+		fc.JournalMaxAge = objDuration(j, "max_age")
+	}
+	if s, ok := obj["snapshot"].(hocon.Object); ok {
+		fc.SnapshotInterval = objDuration(s, "interval")
+		if r, ok := s["retention"].(hocon.Object); ok {
+			fc.SnapshotKeepCount = objInt(r, "keep_count")
+			fc.SnapshotMaxAge = objDuration(r, "max_age")
+		}
+	}
+	if cb, ok := obj["client_buffer"].(hocon.Object); ok {
+		fc.ClientBufferSize = objInt(cb, "max_size")
+		fc.ClientBufferPolicy = objStr(cb, "policy")
+	}
+	return fc
 }
 
 // objStr extracts a string value from a hocon.Object, stripping quotes.
@@ -682,13 +841,14 @@ func objInt(obj hocon.Object, key string) int {
 	return n
 }
 
-// objDuration extracts a duration value from a hocon.Object.
+// objDuration extracts a duration value from a hocon.Object, accepting either a
+// bare (24h) or quoted ("24h") Go duration literal.
 func objDuration(obj hocon.Object, key string) time.Duration {
 	v, ok := obj[key]
 	if !ok {
 		return 0
 	}
-	s := fmt.Sprintf("%v", v)
+	s := strings.Trim(fmt.Sprintf("%v", v), "\"")
 	d, err := time.ParseDuration(s)
 	if err != nil {
 		return 0

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zourzouvillys/laredo/gen/laredo/replication/v1/replicationv1connect"
 	"github.com/zourzouvillys/laredo/gen/laredo/v1/laredov1connect"
 )
 
@@ -29,11 +30,12 @@ type Server struct {
 type Option func(*serverConfig)
 
 type serverConfig struct {
-	addr         string
-	oamHandler   laredov1connect.LaredoOAMServiceHandler
-	queryHandler laredov1connect.LaredoQueryServiceHandler
-	tlsCertFile  string
-	tlsKeyFile   string
+	addr               string
+	oamHandler         laredov1connect.LaredoOAMServiceHandler
+	queryHandler       laredov1connect.LaredoQueryServiceHandler
+	replicationHandler replicationv1connect.LaredoReplicationServiceHandler
+	tlsCertFile        string
+	tlsKeyFile         string
 }
 
 // WithAddress sets the listen address (default ":4001").
@@ -54,6 +56,15 @@ func EnableOAM(handler laredov1connect.LaredoOAMServiceHandler) Option {
 func EnableQuery(handler laredov1connect.LaredoQueryServiceHandler) Option {
 	return func(c *serverConfig) {
 		c.queryHandler = handler
+	}
+}
+
+// EnableReplication registers the fan-out replication service handler. The
+// handler is engine-global: it serves every fan-out target in the engine,
+// routing by the table identified in each request.
+func EnableReplication(handler replicationv1connect.LaredoReplicationServiceHandler) Option {
+	return func(c *serverConfig) {
+		c.replicationHandler = handler
 	}
 }
 
@@ -83,6 +94,11 @@ func New(opts ...Option) *Server {
 
 	if cfg.queryHandler != nil {
 		path, handler := laredov1connect.NewLaredoQueryServiceHandler(cfg.queryHandler)
+		mux.Handle(path, handler)
+	}
+
+	if cfg.replicationHandler != nil {
+		path, handler := replicationv1connect.NewLaredoReplicationServiceHandler(cfg.replicationHandler)
 		mux.Handle(path, handler)
 	}
 

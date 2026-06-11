@@ -43,34 +43,57 @@ Multiplex one PostgreSQL replication slot to N downstream clients over gRPC. Cli
 
 ## Server configuration
 
+The replication protocol is served by a single **engine-global** listener on its
+own port (default `4002`), separate from the OAM/Query port (`4001`). That one
+listener serves every `replication-fanout` target on the server, routing each
+request by table — see [ADR-007](/internals/adrs#adr-007-server-side-fan-out-wiring).
+The stock `laredo-server` binary starts it automatically whenever at least one
+fan-out target is configured.
+
 ```hocon
-targets = [{
-  type = replication-fanout
+# Engine-global replication listener. Optional — when omitted, the port
+# defaults to 4002 as soon as a replication-fanout target exists.
+fanout {
+  grpc { port = 4002 }
+}
 
-  journal {
-    max_entries = 1000000
-    max_age = 24h
-  }
+tables = [{
+  source = pg
+  schema = public
+  table  = config_document
 
-  snapshot {
-    interval = 5m
-    store = local
-    store_config { path = "/var/lib/laredo/fanout-snapshots" }
-    serializer = jsonl
-    retention { keep_count = 5, max_age = 1h }
-  }
+  targets = [{
+    type = replication-fanout
 
-  grpc {
-    port = 4002
+    journal {
+      max_entries = 1000000
+      max_age     = 24h
+    }
+
+    # In-memory snapshots: how often a base snapshot is cut and how many to keep.
+    snapshot {
+      interval  = 5m
+      retention { keep_count = 5, max_age = 1h }
+    }
+
     max_clients = 500
-  }
 
-  client_buffer {
-    max_size = 50000
-    policy = drop_disconnect
-  }
+    client_buffer {
+      max_size = 50000
+      policy   = drop_disconnect   # or slow_down
+    }
+
+    heartbeat_interval = 5s
+  }]
 }]
 ```
+
+Each target field maps onto a [`target/fanout.New`](https://github.com/zourzouvillys/laredo/blob/main/target/fanout/fanout.go)
+option; omit any to keep its default. The `snapshot` block governs the target's
+**in-memory** snapshots (interval + retention) — durable on-disk snapshot stores
+are not yet wired into the config. To let a client that has fallen behind the
+hot journal catch up from cold object storage, register a read-only archive on
+the replication service as shown under [Cold-tier replay](#cold-tier-replay).
 
 ## Client protocol
 

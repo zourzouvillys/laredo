@@ -88,11 +88,13 @@ tables = [
         auth_header = "Bearer ..."
         headers { X-Custom = value }
 
-        # replication-fanout
+        # replication-fanout (served on the engine-global fan-out listener; see
+        # the top-level `fanout` block below and ADR-007)
         journal { max_entries = 1000000, max_age = 24h }
-        snapshot { interval = 5m, store = local, retention { keep_count = 5 } }
-        grpc { port = 4002, max_clients = 500 }
+        snapshot { interval = 5m, retention { keep_count = 5, max_age = 1h } }  # in-memory
+        max_clients = 500
         client_buffer { max_size = 50000, policy = drop_disconnect }
+        heartbeat_interval = 5s
 
         # Common
         buffer { max_size = 10000, policy = block }
@@ -140,6 +142,20 @@ snapshot {
 grpc {
   port = 4001
   tls { enabled = false, cert_path = "", key_path = "" }
+}
+```
+
+## Fan-out replication listener
+
+The replication protocol for `replication-fanout` targets is served by a single
+engine-global listener on its own port, distinct from the OAM/Query `grpc` port
+above. `laredo-server` starts it automatically when any `replication-fanout`
+target is configured; this block only overrides the default port (`4002`). See
+[ADR-007](/internals/adrs#adr-007-server-side-fan-out-wiring).
+
+```hocon
+fanout {
+  grpc { port = 4002 }
 }
 ```
 
