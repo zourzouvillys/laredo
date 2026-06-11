@@ -1,0 +1,11 @@
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY laredo-snapshotter /usr/local/bin/laredo-snapshotter
+
+ENV LAREDO_SNAPSHOTTER_CONFIG=/etc/laredo/snapshotter.conf
+
+EXPOSE 8080
+
+VOLUME ["/etc/laredo", "/var/lib/laredo"]
+
+ENTRYPOINT ["laredo-snapshotter"]

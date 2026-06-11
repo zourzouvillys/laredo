@@ -1,0 +1,106 @@
+<section class="hero">
+  <p class="hero-kicker">Real-time data sync · PostgreSQL → in-memory</p>
+  <h1>Laredo</h1>
+  <p class="hero-tag">Your database, live in your application's memory.</p>
+  <p class="hero-lede">
+    Laredo captures a <b>consistent baseline snapshot</b> of your tables, then streams every
+    subsequent change — inserts, updates, deletes, truncates — through <b>pluggable targets</b>:
+    indexed in-memory replicas, HTTP sync, replication fan-out, durable snapshots. The engine owns
+    the hard parts — logical replication, ACK coordination, backpressure, error isolation, TTL, and
+    snapshots — behind clean Go interfaces. This is the living documentation: how it works, the
+    decisions behind it, and how to build, run, and operate it.
+  </p>
+  <p class="hero-cta">
+    <a class="btn-primary" href="{{base}}/getting-started/quick-start/">Quick start →</a>
+    <a class="btn-ghost" href="{{base}}/concepts/architecture/">Architecture</a>
+    <a class="btn-ghost" href="{{base}}/viz/">Interactive diagrams</a>
+  </p>
+  <p class="hero-status">Three layers: a zero-opinion <b>core library</b>, optional <b>modules</b> (gRPC, config, metrics), and a pre-built <b>laredo-server</b>.</p>
+</section>
+
+<section class="band">
+  <h2>What it is</h2>
+  <p class="band-note">
+    Laredo sits between your database and your application's in-memory state. Each <b>pipeline</b>
+    binds a source, a table, optional filters/transforms, and a target. Sources are shared; the
+    engine demuxes changes by table and dispatches to targets, advancing the ACK only once every
+    target on a source confirms durability. The path every row takes:
+  </p>
+  <div class="flow-strip">
+    <span class="flow-step"><b>1</b> baseline snapshot</span><i>→</i>
+    <span class="flow-step"><b>2</b> stream changes</span><i>→</i>
+    <span class="flow-step"><b>3</b> filter / transform</span><i>→</i>
+    <span class="flow-step"><b>4</b> dispatch by table</span><i>→</i>
+    <span class="flow-step"><b>5</b> apply to target</span><i>→</i>
+    <span class="flow-step muted">ack when durable</span>
+  </div>
+</section>
+
+<section class="explainer">
+  <h2>How data flows</h2>
+  <p>
+    One PostgreSQL logical-replication slot feeds the engine; the engine fans each change out to the
+    targets bound to that table — an indexed in-memory replica for lookups, an HTTP sync target, a
+    replication fan-out target serving many downstream clients. A change is acknowledged back to the
+    source only after every target has it.
+  </p>
+  <iframe src="{{base}}/viz/pipeline.html?embed=1" title="The Laredo pipeline" loading="lazy" class="embed"></iframe>
+</section>
+
+<section class="explainer">
+  <h2>Fan-out to many readers</h2>
+  <p>
+    The fan-out target multiplexes one slot to N clients over gRPC: each client gets a consistent
+    snapshot, then a live journal stream with heartbeats. Clients resume by source position (WAL LSN),
+    so they survive a server redeploy without a full re-sync.
+  </p>
+  <iframe src="{{base}}/viz/fan-out.html?embed=1" title="Replication fan-out" loading="lazy" class="embed"></iframe>
+</section>
+
+<section class="band">
+  <h2>What it gives you</h2>
+  <div class="feature-grid">
+    <div class="feature">
+      <h3>Consistent baselines</h3>
+      <p>A point-in-time snapshot at a known WAL position, then a gapless change stream from exactly there. No missed or duplicated rows across the handoff.</p>
+      <a href="{{base}}/concepts/snapshots/">Snapshots ↗</a>
+    </div>
+    <div class="feature">
+      <h3>Pluggable targets</h3>
+      <p>Indexed in-memory replicas, compiled domain objects, HTTP sync, replication fan-out — or your own, behind one small interface.</p>
+      <a href="{{base}}/concepts/targets/">Targets ↗</a>
+    </div>
+    <div class="feature">
+      <h3>Replication fan-out</h3>
+      <p>One slot, many in-memory clients over gRPC, with snapshot + journal + cross-instance failover by WAL LSN.</p>
+      <a href="{{base}}/guides/fan-out/">Fan-out ↗</a>
+    </div>
+    <div class="feature">
+      <h3>Durable snapshot + diff archive</h3>
+      <p>The snapshot writer materializes a table to object storage as base snapshots plus diffs, indexed by a manifest — for cold and cross-account consumers.</p>
+      <a href="{{base}}/edr/0001-snapshot-writer/">EDR-0001 ↗</a>
+    </div>
+    <div class="feature">
+      <h3>ACK &amp; backpressure</h3>
+      <p>The engine advances the source ACK only when every target is durable, and applies backpressure or error isolation per pipeline.</p>
+      <a href="{{base}}/concepts/ordering-and-delivery/">Ordering &amp; delivery ↗</a>
+    </div>
+    <div class="feature">
+      <h3>Zero-opinion core</h3>
+      <p>The library has no opinion on config, transport, or logging. Embed it, or run the pre-built <code>laredo-server</code> with HOCON config and gRPC.</p>
+      <a href="{{base}}/getting-started/library-usage/">Library usage ↗</a>
+    </div>
+  </div>
+</section>
+
+<section class="explore">
+  <h2>Find your way around</h2>
+  <div class="card-grid">
+    <a class="card" href="{{base}}/getting-started/quick-start/"><span class="card-t">Getting started</span><span class="card-d">Run laredo-server, embed the library, or try it with Docker.</span></a>
+    <a class="card" href="{{base}}/concepts/architecture/"><span class="card-t">Concepts</span><span class="card-d">Architecture, pipelines, sources, targets, snapshots, ordering.</span></a>
+    <a class="card" href="{{base}}/guides/postgresql/"><span class="card-t">Guides</span><span class="card-d">PostgreSQL, in-memory targets, HTTP sync, fan-out, custom sources/targets.</span></a>
+    <a class="card" href="{{base}}/reference/configuration/"><span class="card-t">Reference</span><span class="card-d">Config, CLI, gRPC API, metrics, health, env vars, Go API.</span></a>
+    <a class="card" href="{{base}}/edr/"><span class="card-t">Decision records</span><span class="card-d">The decisions behind the design, with context and consequences.</span></a>
+    <a class="card" href="{{base}}/viz/"><span class="card-t">Diagrams</span><span class="card-d">Interactive, animated views of the pipeline, fan-out, and more.</span></a>
+  </div>
+</section>

@@ -1,0 +1,27 @@
+<section class="intro">
+  <h1>Decision Records</h1>
+  <p>
+    {{count}} engineering decision record(s) for <strong>Laredo</strong>. EDRs capture decisions
+    we've made — the context that forced them, the choice, and the consequences we accepted.
+    Discussion happens in pull requests; this is the outcome. Start with
+    <a href="{{base}}/edr/0001-snapshot-writer/">EDR-0001</a>, or read the
+    <a href="{{base}}/">overview</a> for the whole picture.
+  </p>
+</section>
+
+<section class="edr-list">
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Title</th>
+        <th>Status</th>
+        <th>Date</th>
+        <th>Tags</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{rows}}
+    </tbody>
+  </table>
+</section>

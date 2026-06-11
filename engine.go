@@ -59,6 +59,11 @@ type Engine interface {
 	// SourceInfo returns runtime information about a source.
 	SourceInfo(sourceID string) (SourceRunInfo, bool)
 
+	// Source returns the live source registered under the given ID, if any.
+	// Used by services that need source-specific behaviour such as position
+	// (de)serialization and comparison.
+	Source(sourceID string) (SyncSource, bool)
+
 	// TableSchema returns the column definitions for a table, or nil if not found.
 	TableSchema(table TableIdentifier) []ColumnDefinition
 
@@ -938,6 +943,11 @@ func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source Sy
 		if p.loadState() != PipelineBaselining {
 			continue
 		}
+		// Baseline rows carry no per-row position; give position-aware targets
+		// the baseline's end position so they can stamp baseline-derived state.
+		if pt, ok := p.target.(PositionedTarget); ok {
+			pt.SetChangePosition(position)
+		}
 		if err := p.target.OnBaselineComplete(ctx, p.table); err != nil {
 			e.transitionPipeline(idx, PipelineError)
 			continue
@@ -1267,6 +1277,13 @@ func (e *coreEngine) runPipelineConsumer(
 // applyChangeToTarget applies a single change event to a pipeline's target.
 // On success, it updates the pipeline's expectedRows counter to track drift.
 func (e *coreEngine) applyChangeToTarget(ctx context.Context, p *resolvedPipeline, event ChangeEvent) error {
+	// Hand the change's source position to position-aware targets (e.g. the
+	// fan-out target, which records it in its journal for cross-instance
+	// resume). Calls are sequential per pipeline, so a stash-then-read in the
+	// target is race-free.
+	if pt, ok := p.target.(PositionedTarget); ok {
+		pt.SetChangePosition(event.Position)
+	}
 	switch event.Action {
 	case ActionInsert:
 		row := applyFiltersAndTransforms(p, event.Table, event.NewValues)
@@ -1610,7 +1627,7 @@ func (e *coreEngine) Reload(ctx context.Context, sourceID string, table TableIde
 	var rowCount int64
 	baselineStart := time.Now()
 
-	_, err := source.Baseline(ctx, []TableIdentifier{table}, func(t TableIdentifier, row Row) {
+	reloadPos, err := source.Baseline(ctx, []TableIdentifier{table}, func(t TableIdentifier, row Row) {
 		rowCount++
 		e.dispatchBaselineRow(ctx, affectedIdxs, t, row)
 	})
@@ -1630,6 +1647,9 @@ func (e *coreEngine) Reload(ctx context.Context, sourceID string, table TableIde
 		p := &e.pipelines[idx]
 		if p.loadState() != PipelineBaselining {
 			continue
+		}
+		if pt, ok := p.target.(PositionedTarget); ok {
+			pt.SetChangePosition(reloadPos)
 		}
 		if err := p.target.OnBaselineComplete(ctx, p.table); err != nil {
 			e.transitionPipeline(idx, PipelineError)
@@ -1865,6 +1885,14 @@ func (e *coreEngine) SourceIDs() []string {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+//nolint:revive // Engine interface implementation.
+func (e *coreEngine) Source(sourceID string) (SyncSource, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	src, ok := e.sources[sourceID]
+	return src, ok
 }
 
 //nolint:revive // Engine interface implementation.

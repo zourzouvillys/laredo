@@ -104,6 +104,25 @@ An identifier for this client instance, used for server-side monitoring and logg
 fanout.ClientID("myapp-pod-abc123")
 ```
 
+### Subscription filters
+
+Restrict the replica to a slice of the table with one or more column predicates.
+The server applies them across the snapshot and the live stream, so excluded
+rows never reach this client — the right tool for partition scoping (e.g. one
+tenant's rows out of a shared table).
+
+```go
+fanout.WithFilterEquals("tenant_id", "acme")   // column equals a value
+fanout.WithFilterPrefix("key", "rulesets/")     // string column starts with a prefix
+fanout.WithFilterIn("region", "eu", "us")       // column is one of a set
+```
+
+Multiple filter options are **AND-combined**. Filter values must be JSON scalars
+(string, number, or bool). All query methods (`Get`, `Lookup`, `All`, `Count`)
+and listeners then operate over the filtered slice. See
+[Subscription filtering](./fan-out.md#subscription-filtering) for the matching
+rules and caveats (immutable filter columns, filtered resume).
+
 ## Lifecycle
 
 ### Start
@@ -235,6 +254,23 @@ On reconnect, the client sends its `LastSequence` to the server. The server deci
 - **Local state is preserved** across reconnections. Rows from the previous session remain available while the client reconnects.
 
 No application code is needed to handle reconnections. The client manages it transparently.
+
+## Failover across server instances
+
+The client also survives an individual `laredo-server` being drained for a
+deploy or replacement, **without a full re-sync**. When the server sends a
+`GoAway`, the client re-dials its configured address (a load balancer routes it
+to a healthy instance) and resumes from the **source position** (WAL LSN) of the
+last change it applied — not the per-instance sequence, which is not portable.
+It keeps the old stream open until the new one has caught up, then disconnects
+cleanly.
+
+This is transparent to application code. It requires that the instances tail the
+same PostgreSQL and that clients are pointed at a load-balanced address rather
+than individual instances. If `LocalSnapshotPath` is set, the persisted source
+position is reused across restarts too. See
+[Failover & zero-downtime deploys](./fan-out.md#failover--zero-downtime-deploys)
+for the server side.
 
 ## Monitoring with LastSequence
 

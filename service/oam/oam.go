@@ -418,6 +418,66 @@ func (s *Service) ResumeSync(ctx context.Context, req *connect.Request[v1.Resume
 	}), nil
 }
 
+// drainable is implemented by targets that can drain their clients for
+// cross-instance handoff (the fan-out target). Declared locally so the OAM
+// service need not depend on the fanout package.
+type drainable interface {
+	Drain(reason string, deadline time.Time)
+}
+
+// DrainReplication tells fan-out clients to hand off to another server
+// instance. With an empty schema/table it drains every fan-out target.
+func (s *Service) DrainReplication(_ context.Context, req *connect.Request[v1.DrainReplicationRequest]) (*connect.Response[v1.DrainReplicationResponse], error) {
+	if s.engine == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("engine not available"))
+	}
+
+	var deadline time.Time
+	if secs := req.Msg.GetDrainDeadlineSeconds(); secs > 0 {
+		deadline = time.Now().Add(time.Duration(secs) * time.Second)
+	}
+
+	// Collect target tables: the requested one, or all tables with pipelines.
+	var tables []laredo.TableIdentifier
+	if schema, table := req.Msg.GetSchema(), req.Msg.GetTable(); schema != "" || table != "" {
+		if schema == "" || table == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("schema and table must both be set, or both empty"))
+		}
+		tables = append(tables, laredo.Table(schema, table))
+	} else {
+		seen := make(map[laredo.TableIdentifier]bool)
+		for _, p := range s.engine.Pipelines() {
+			if !seen[p.Table] {
+				seen[p.Table] = true
+				tables = append(tables, p.Table)
+			}
+		}
+	}
+
+	var drained int
+	for _, tid := range tables {
+		for _, t := range s.engine.Targets("", tid) {
+			if d, ok := t.(drainable); ok {
+				d.Drain("admin", deadline)
+				drained++
+			}
+		}
+	}
+
+	if drained == 0 {
+		return connect.NewResponse(&v1.DrainReplicationResponse{
+			Accepted: false,
+			Message:  "no fan-out targets found to drain",
+		}), nil
+	}
+
+	return connect.NewResponse(&v1.DrainReplicationResponse{
+		Accepted:       true,
+		Message:        fmt.Sprintf("draining %d fan-out target(s)", drained),
+		DrainedTargets: int32(drained), //nolint:gosec // small count
+	}), nil
+}
+
 // GetSourceInfo returns details about sources.
 func (s *Service) GetSourceInfo(_ context.Context, req *connect.Request[v1.GetSourceInfoRequest]) (*connect.Response[v1.GetSourceInfoResponse], error) {
 	var sources []*v1.SourceInfo

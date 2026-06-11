@@ -60,3 +60,18 @@ type SyncTarget interface {
 	// OnClose is called on shutdown.
 	OnClose(ctx context.Context, table TableIdentifier) error
 }
+
+// PositionedTarget is an optional interface a SyncTarget may implement to learn
+// the source position of the change about to be delivered. When a target
+// implements it, the engine calls SetChangePosition immediately before each
+// corresponding OnInsert/OnUpdate/OnDelete/OnTruncate call.
+//
+// The engine guarantees these calls are ordered and sequential within a single
+// pipeline, so a target may stash the position and read it back in the following
+// On* call. A target bound to more than one table (i.e. shared across pipelines)
+// must not rely on the stash, as positions from concurrent pipelines would race.
+type PositionedTarget interface {
+	// SetChangePosition records the source position of the next change to be
+	// delivered to this target.
+	SetChangePosition(position Position)
+}

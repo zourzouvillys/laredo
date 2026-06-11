@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ordering, ACK & backpressure · Laredo</title>
+  <link rel="stylesheet" href="/laredo/viz/viz.css" />
+</head>
+<body>
+<div class="viz-wrap">
+  <nav class="viz-nav">
+    <a class="brand" href="/laredo/">Laredo</a>
+    <span><a href="/laredo/viz/">all diagrams</a> &nbsp;·&nbsp; <a href="/laredo/concepts/ordering-and-delivery/">Ordering &amp; delivery ↗</a></span>
+  </nav>
+  <h1 class="viz-title">Ordering, ACK &amp; backpressure</h1>
+  <p class="viz-lede">
+    Changes arrive in <b>order</b> and are buffered per target. The source <b>ACK</b> advances only to
+    the slowest target's position — so one lagging consumer holds the ACK back but never reorders or
+    drops for the others. Slow a target: with <b>drop_disconnect</b> it's cut loose (and will
+    re-snapshot on reconnect); with <b>slow_down</b> the whole source applies backpressure.
+  </p>
+  <div class="stage"><canvas id="c"></canvas></div>
+  <div class="controls">
+    <button class="btn primary" id="play">⏸ Pause</button>
+    <button class="btn" id="reset">↺ reset</button>
+    <button class="btn toggle" id="slow">slow target B</button>
+    <button class="btn toggle" id="policy">policy: drop_disconnect</button>
+    <span class="ctl-group"><label>source rate</label><input type="range" id="rate" min="1" max="12" step="1" value="6"><span class="ctl-val" id="rateV">6</span></span>
+  </div>
+  <div class="legend">
+    <span><i class="dot" style="background:var(--main)"></i> change (in order)</span>
+    <span><i class="dot" style="background:var(--queue)"></i> buffered</span>
+    <span><i class="dot" style="background:var(--allow)"></i> applied</span>
+    <span><i class="dot" style="background:var(--reject)"></i> dropped client</span>
+  </div>
+  <div class="stats">
+    <div class="stat allow"><div class="k">acked position</div><div class="v" id="sAck">0</div></div>
+    <div class="stat main"><div class="k">target A pos</div><div class="v" id="sA">0</div></div>
+    <div class="stat canary"><div class="k">target B pos</div><div class="v" id="sB">0</div></div>
+    <div class="stat reject"><div class="k">disconnects</div><div class="v" id="sD">0</div></div>
+  </div>
+  <p class="note">ACK = min(target positions). <code>drop_disconnect</code> keeps the source healthy by shedding a slow client; <code>slow_down</code> preserves the client at the cost of source throughput.</p>
+</div>
+<script>
+(() => {
+  if (/(?:[?&#])embed/.test(location.search+location.hash)) document.body.classList.add('embed');
+  const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+  let W=0,H=300,dpr=1; const $=id=>document.getElementById(id);
+  const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const CAP=12;
+  let playing=true, rate=6, slow=false, dropPolicy=true, srcSeq=0, drops=0, srcAcc=0;
+  // two targets, each a FIFO buffer of pending seqs + an applied position
+  const T=[{name:'A',buf:[],pos:0,applyAcc:0,speed:1},{name:'B',buf:[],pos:0,applyAcc:0,speed:1}];
+  function step(dt){
+    // source emits in order to both targets (subject to slow_down backpressure)
+    const blocked = (!dropPolicy && slow && T[1].buf.length>=CAP);
+    if(!blocked){ srcAcc+=rate*dt; while(srcAcc>=1){ srcSeq++; for(const t of T) t.buf.push(srcSeq); srcAcc-=1; } }
+    for(const t of T){ const sp = (t.name==='B'&&slow)?0.35:3.0; t.applyAcc+=sp*dt;
+      while(t.applyAcc>=1 && t.buf.length){ t.pos=t.buf.shift(); t.applyAcc-=1; }
+      // drop_disconnect: slow target buffer overflows → disconnect + reset (re-snapshot)
+      if(t.name==='B' && slow && dropPolicy && t.buf.length>CAP){ t.buf.length=0; t.pos=srcSeq; drops++; }
+    }
+  }
+  function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+  function ack(){ return Math.min(T[0].pos,T[1].pos); }
+  function drawTarget(t,y){ const g={x0:W*0.30,x1:W-150};
+    ctx.textAlign='left'; ctx.fillStyle=css('--fg-secondary');ctx.font='600 11px '+css('--mono');
+    ctx.fillText('target '+t.name+(t.name==='B'&&slow?' (slow)':''), 20, y+4);
+    // buffer slots
+    const n=CAP, sw=Math.min(20,(g.x1-g.x0)/n - 4);
+    for(let i=0;i<n;i++){ const x=g.x0+i*(sw+4); const filled=i<t.buf.length;
+      ctx.strokeStyle=css('--border');ctx.lineWidth=1; rr(x,y-9,sw,18,4);
+      if(filled){ ctx.fillStyle=(i>=CAP-2&&t.name==='B'&&slow)?css('--reject'):css('--queue'); ctx.fill(); } ctx.stroke(); }
+    // applied position bar
+    ctx.fillStyle=css('--allow');ctx.font='10px '+css('--mono');ctx.textAlign='right';ctx.fillText('pos '+t.pos,W-20,y+4);
+  }
+  function draw(){ ctx.clearRect(0,0,W,H);
+    // source
+    ctx.textAlign='left';ctx.fillStyle=css('--accent');ctx.font='700 12px '+css('--mono');ctx.fillText('source',20,28);
+    ctx.fillStyle=css('--fg-muted');ctx.font='9px '+css('--mono');ctx.fillText('seq '+srcSeq,20,42);
+    const blocked=(!dropPolicy&&slow&&T[1].buf.length>=CAP);
+    if(blocked){ ctx.fillStyle=css('--reject');ctx.fillText('backpressure: paused',20,56); }
+    drawTarget(T[0],110); drawTarget(T[1],175);
+    // ack line
+    ctx.fillStyle=css('--allow');ctx.font='600 11px '+css('--mono');ctx.textAlign='left';
+    ctx.fillText('ACK → '+ack()+'  (min of target positions)',20,H-22);
+    ctx.fillStyle=css('--fg-faint');ctx.font='9px '+css('--mono');ctx.fillText('policy: '+(dropPolicy?'drop_disconnect':'slow_down'),20,H-8);
+  }
+  let last=performance.now();
+  function frame(now){ let dt=(now-last)/1000;last=now;dt=Math.min(0.05,dt); if(playing)step(dt); draw();
+    $('sAck').textContent=ack();$('sA').textContent=T[0].pos;$('sB').textContent=T[1].pos;$('sD').textContent=drops; requestAnimationFrame(frame); }
+  $('play').onclick=()=>{playing=!playing;$('play').textContent=playing?'⏸ Pause':'▶ Play';};
+  $('reset').onclick=()=>{srcSeq=0;drops=0;for(const t of T){t.buf.length=0;t.pos=0;}};
+  $('slow').onclick=()=>{slow=!slow;$('slow').classList.toggle('on');$('slow').textContent=slow?'slow target B ✓':'slow target B';};
+  $('policy').onclick=()=>{dropPolicy=!dropPolicy;$('policy').classList.toggle('on');$('policy').textContent='policy: '+(dropPolicy?'drop_disconnect':'slow_down');};
+  $('rate').oninput=e=>{rate=+e.target.value;$('rateV').textContent=e.target.value;};
+  function resize(){dpr=window.devicePixelRatio||1;W=cv.clientWidth;H=300;cv.width=W*dpr;cv.height=H*dpr;cv.style.height=H+'px';ctx.setTransform(dpr,0,0,dpr,0,0);}
+  window.addEventListener('resize',resize); resize(); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

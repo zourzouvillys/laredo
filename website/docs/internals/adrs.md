@@ -162,6 +162,64 @@ Implement fan-out as a target type (`target/fanout`). It satisfies the `SyncTarg
 - **Single-process bottleneck.** All fan-out clients connect to the one Laredo instance that holds the fan-out target. If that instance fails, all downstream clients lose their connection. Clients handle this through reconnection with delta sync (resuming from their last-known position) or snapshot restore.
 - **Journal and snapshot management.** The fan-out target must manage its own change journal (for delta sync) and snapshot lifecycle (for new clients or clients that fall too far behind). This adds complexity to the target implementation, but keeps it isolated from the engine core.
 
+## ADR-006: Subscription-scoped server-side filtering on the fan-out
+
+**Status:** Accepted
+
+### Context
+
+A single fan-out target multiplexes one table to many clients. When that table is
+shared across logical partitions — the canonical case being a multi-tenant table
+keyed by `tenant_id` — each client usually wants only its own slice. Three ways
+to deliver that were considered:
+
+1. **One pipeline (and fan-out target) per partition.** A separate pipeline,
+   in-memory state map, journal, and snapshot lifecycle for every tenant. This
+   does not scale to thousands of partitions and fragments the source's single
+   replication slot's benefit.
+2. **Client-side filtering.** Send every row to every client and let each discard
+   what it does not want. Simple, but every partition's rows cross the wire to
+   every client — wasteful, and for multi-tenant data an isolation violation
+   (other tenants' rows leave the server).
+3. **Server-side per-subscription filtering.** The client attaches column
+   predicates to its `Sync` request; the server evaluates them and sends only
+   matching rows and changes.
+
+### Decision
+
+Add an optional `filters` field (`repeated FieldPredicate`) to `SyncRequest`. The
+replication service compiles the predicates once per stream and applies them
+uniformly across the snapshot, journal catch-up, and live phases. Predicates
+support `equals`, `prefix`, and `in`, are AND-combined, and evaluate against the
+post-change row for inserts/updates and the pre-change row for deletes;
+`TRUNCATE` always passes. Filtering lives entirely in `service/replication` and
+the wire contract — the engine, the fan-out target's in-memory state, and the
+journal are untouched.
+
+### Consequences
+
+- **Hard partition isolation.** Rows a client filters out never cross the wire,
+  so one fan-out target can safely serve a multi-tenant table — each subscriber
+  with a `tenant_id` equality predicate sees only its own rows.
+- **No new pipeline per partition.** A single source slot, target, journal, and
+  snapshot set serve every partition; partitioning is a per-subscription concern,
+  not a per-pipeline one.
+- **Uniform across phases.** Applying the same predicate to the snapshot, the
+  catch-up delta, and the live stream is what keeps a filtered subscriber's view
+  consistent — a row never appears in the snapshot only to have its updates
+  silently dropped.
+- **Filter columns are assumed immutable.** A row that changes its partition
+  value is not handled specially: the old-value subscriber is not told it left.
+  This matches real partition keys (`tenant_id`), and is documented rather than
+  engineered around.
+- **Filtered resume re-scans.** A filtered client resumes from its last *received*
+  sequence; if a partition is silent long enough for the journal to prune past
+  it, the client re-snapshots (filtered). This is correct, and bounded by the
+  same journal-retention sizing that already governs slow consumers.
+- **Whole table still resident.** Filtering reduces delivery, not memory — the
+  fan-out target keeps the full table in memory. Memory-bounded partitioning, if
+  ever needed, would be a separate concern.
+
 ## Further reading
 
 - [Architecture](/concepts/architecture) -- the three-layer design these decisions support

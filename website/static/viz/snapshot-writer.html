@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Snapshot writer: base + diff · Laredo</title>
+  <link rel="stylesheet" href="/laredo/viz/viz.css" />
+</head>
+<body>
+<div class="viz-wrap">
+  <nav class="viz-nav">
+    <a class="brand" href="/laredo/">Laredo</a>
+    <span><a href="/laredo/viz/">all diagrams</a> &nbsp;·&nbsp; <a href="/laredo/edr/0001-snapshot-writer/">EDR-0001 ↗</a></span>
+  </nav>
+  <h1 class="viz-title">Snapshot writer: base + diff</h1>
+  <p class="viz-lede">
+    The snapshot writer turns a live table into a durable archive: a <b>base snapshot</b> (purple)
+    then a stream of <b>diffs</b> (amber), flushed on an interval. When a threshold fires — too much
+    <b>churn</b>, a diff too large, or too long since the last snapshot — it <b>re-bases</b> with a
+    fresh snapshot and starts a new <b>epoch</b>. Turn up the churn and watch re-bases happen.
+  </p>
+  <div class="stage"><canvas id="c"></canvas></div>
+  <div class="controls">
+    <button class="btn primary" id="play">⏸ Pause</button>
+    <button class="btn" id="reset">↺ reset</button>
+    <button class="btn" id="snap">force snapshot</button>
+    <span class="ctl-group"><label>churn / s</label><input type="range" id="rate" min="1" max="20" step="1" value="6"><span class="ctl-val" id="rateV">6</span></span>
+    <span class="ctl-group"><label>re-base at churn</label><input type="range" id="thr" min="8" max="60" step="2" value="24"><span class="ctl-val" id="thrV">24</span></span>
+  </div>
+  <div class="legend">
+    <span><i class="sw" style="background:var(--sensitive)"></i> base snapshot</span>
+    <span><i class="sw" style="background:var(--main)"></i> diff</span>
+    <span><i class="dot" style="background:var(--queue)"></i> buffered change</span>
+  </div>
+  <div class="stats">
+    <div class="stat sensitive"><div class="k">epoch</div><div class="v" id="sEpoch">1</div></div>
+    <div class="stat main"><div class="k">diffs since snapshot</div><div class="v" id="sDiffs">0</div></div>
+    <div class="stat queue"><div class="k">buffered churn</div><div class="v" id="sBuf">0</div></div>
+  </div>
+  <p class="note">Re-base triggers are configurable by bytes, record count, fraction of dataset, and max/min interval — see <code>edr/0001-snapshot-writer</code>.</p>
+</div>
+<script>
+(() => {
+  if (/(?:[?&#])embed/.test(location.search+location.hash)) document.body.classList.add('embed');
+  const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+  let W=0,H=300,dpr=1; const $=id=>document.getElementById(id);
+  const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  let playing=true, rate=6, thr=24, churnAcc=0, buffered=0, epoch=1, diffsSince=0;
+  let diffTimer=0, sinceSnap=0; const blocks=[]; const buf=[];
+  const DIFF_INTERVAL=1.2, MAX_AGE=9;
+  function pushBlock(kind){ blocks.push({kind,epoch,t:0}); if(blocks.length>34) blocks.shift(); }
+  function snapshot(reason){ pushBlock('snap'); epoch++; diffsSince=0; sinceSnap=0; buffered=0; buf.length=0; }
+  function flushDiff(){ if(buffered<=0) return; pushBlock('diff'); diffsSince++; buffered=0; buf.length=0; }
+  function step(dt){
+    churnAcc+=rate*dt; while(churnAcc>=1){ buffered++; churnAcc-=1; if(buf.length<60) buf.push({x:Math.random(),y:Math.random()}); }
+    diffTimer+=dt; sinceSnap+=dt;
+    if(diffTimer>=DIFF_INTERVAL){ diffTimer=0;
+      if(buffered>=thr || sinceSnap>=MAX_AGE) snapshot('threshold'); else flushDiff(); }
+    for(const b of blocks) b.t+=dt;
+  }
+  function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+  function draw(){ ctx.clearRect(0,0,W,H); ctx.textAlign='left';
+    // buffer well (top)
+    ctx.fillStyle=css('--fg-faint');ctx.font='600 10px '+css('--mono');ctx.fillText('diff buffer (keyed by primary key)',20,24);
+    const bw=W-40, bx=20, by=34, bh=46;
+    ctx.strokeStyle=css('--border');ctx.lineWidth=1.5;rr(bx,by,bw,bh,8);ctx.stroke();
+    for(let i=0;i<buf.length;i++){ ctx.fillStyle=css('--queue'); ctx.beginPath(); ctx.arc(bx+10+(i%40)*(bw-20)/40, by+12+Math.floor(i/40)*14, 3,0,7); ctx.fill(); }
+    // fill meter toward threshold
+    const frac=Math.min(1,buffered/thr); ctx.fillStyle=frac>0.85?css('--reject'):css('--queue'); ctx.globalAlpha=0.18; rr(bx,by,bw*frac,bh,8); ctx.fill(); ctx.globalAlpha=1;
+    // timeline (bottom): blocks oldest→newest
+    ctx.fillStyle=css('--fg-faint');ctx.font='600 10px '+css('--mono');ctx.fillText('artifact stream  →  newest',20,H-72);
+    const tlY=H-58, n=blocks.length; const slot=Math.min(34,(W-40)/Math.max(12,n));
+    for(let i=0;i<n;i++){ const b=blocks[i]; const x=20+i*slot; const isSnap=b.kind==='snap';
+      const w=isSnap?slot*0.9:slot*0.7, h=isSnap?40:26, y=tlY+(40-h);
+      ctx.fillStyle=isSnap?css('--sensitive'):css('--main'); ctx.globalAlpha=Math.min(1,b.t*3); rr(x,y,w,h,4); ctx.fill(); ctx.globalAlpha=1;
+    }
+    // epoch markers
+    ctx.fillStyle=css('--fg-muted');ctx.font='9px '+css('--mono');ctx.fillText('each purple block = a re-base (new epoch); ambers between = diffs',20,H-10);
+  }
+  let last=performance.now();
+  function frame(now){ let dt=(now-last)/1000;last=now;dt=Math.min(0.05,dt); if(playing)step(dt); draw();
+    $('sEpoch').textContent=epoch;$('sDiffs').textContent=diffsSince;$('sBuf').textContent=buffered; requestAnimationFrame(frame); }
+  $('play').onclick=()=>{playing=!playing;$('play').textContent=playing?'⏸ Pause':'▶ Play';};
+  $('reset').onclick=()=>{blocks.length=0;buf.length=0;buffered=0;epoch=1;diffsSince=0;sinceSnap=0;diffTimer=0;pushBlock('snap');};
+  $('snap').onclick=()=>snapshot('manual');
+  $('rate').oninput=e=>{rate=+e.target.value;$('rateV').textContent=e.target.value;};
+  $('thr').oninput=e=>{thr=+e.target.value;$('thrV').textContent=e.target.value;};
+  function resize(){dpr=window.devicePixelRatio||1;W=cv.clientWidth;H=300;cv.width=W*dpr;cv.height=H*dpr;cv.style.height=H+'px';ctx.setTransform(dpr,0,0,dpr,0,0);}
+  window.addEventListener('resize',resize); resize(); pushBlock('snap'); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

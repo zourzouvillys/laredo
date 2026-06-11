@@ -1015,3 +1015,177 @@ func TestRowKey(t *testing.T) {
 		})
 	}
 }
+
+// TestClient_FailoverByPosition simulates a load-balanced deploy: the client
+// connects to instance A, A drains (sends GoAway), and the client re-dials the
+// same address — routed to instance B — resuming by source position with no
+// full snapshot, then cleanly disconnects from A.
+func TestClient_FailoverByPosition(t *testing.T) {
+	ts := &testServer{}
+	gotResumePos := make(chan string, 1)
+	gotResumeSeq := make(chan int64, 1)
+
+	ts.setSyncFn(func(ctx context.Context, req *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
+		switch ts.syncCnt.Load() {
+		case 1:
+			// Instance A: deliver one row, then drain.
+			if err := stream.Send(&v1.SyncResponse{Message: &v1.SyncResponse_Handshake{
+				Handshake: &v1.SyncHandshake{Mode: v1.SyncMode_SYNC_MODE_DELTA, ServerCurrentSequence: 1},
+			}}); err != nil {
+				return err
+			}
+			if err := stream.Send(&v1.SyncResponse{Message: &v1.SyncResponse_JournalEntry{
+				JournalEntry: &v1.ReplicationJournalEntry{
+					Sequence: 1, Action: "INSERT", SourcePosition: "0/100",
+					NewValues: makeRow(t, map[string]any{"id": "1", "name": "alice"}),
+				},
+			}}); err != nil {
+				return err
+			}
+			if err := stream.Send(&v1.SyncResponse{Message: &v1.SyncResponse_GoAway{
+				GoAway: &v1.GoAway{Reason: "draining"},
+			}}); err != nil {
+				return err
+			}
+			// Keep the stream open so the client can overlap the cutover.
+			<-ctx.Done()
+			return ctx.Err()
+
+		default:
+			// Instance B: client resumed by position. Record what it sent.
+			gotResumePos <- req.Msg.GetLastKnownSourcePosition()
+			gotResumeSeq <- req.Msg.GetLastKnownSequence()
+			if err := stream.Send(&v1.SyncResponse{Message: &v1.SyncResponse_Handshake{
+				Handshake: &v1.SyncHandshake{Mode: v1.SyncMode_SYNC_MODE_DELTA, ServerCurrentSequence: 7},
+			}}); err != nil {
+				return err
+			}
+			// New row from B (no SnapshotBegin — this is a pure delta).
+			if err := stream.Send(&v1.SyncResponse{Message: &v1.SyncResponse_JournalEntry{
+				JournalEntry: &v1.ReplicationJournalEntry{
+					Sequence: 7, Action: "INSERT", SourcePosition: "0/200",
+					NewValues: makeRow(t, map[string]any{"id": "2", "name": "bob"}),
+				},
+			}}); err != nil {
+				return err
+			}
+			<-ctx.Done()
+			return ctx.Err()
+		}
+	})
+
+	addr := startTestServer(t, ts)
+
+	c := New(ServerAddress(addr), Table("public", "users"), ClientID("failover-1"))
+	ctx := context.Background()
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer c.Stop()
+
+	if !c.AwaitReady(5 * time.Second) {
+		t.Fatal("client not ready")
+	}
+
+	// Verify the handoff resumed strictly by position (sequence is not portable).
+	select {
+	case pos := <-gotResumePos:
+		if pos != "0/100" {
+			t.Fatalf("resumed at source_position %q, want \"0/100\"", pos)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("client never failed over to instance B")
+	}
+	if seq := <-gotResumeSeq; seq != 0 {
+		t.Fatalf("resume sent last_known_sequence %d, want 0 (not portable across instances)", seq)
+	}
+
+	// B's new row must arrive, and A's row must still be present (no full re-sync).
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, ok := c.Get("2"); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("did not receive instance B's data after failover")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, ok := c.Get("1"); !ok {
+		t.Fatal("instance A's row was lost — failover did a full re-sync instead of a delta")
+	}
+	if got := c.Count(); got != 2 {
+		t.Fatalf("count = %d, want 2", got)
+	}
+
+	// The client must have reconnected exactly once (A → B).
+	if n := ts.syncCnt.Load(); n != 2 {
+		t.Fatalf("sync calls = %d, want 2", n)
+	}
+}
+
+// TestClient_SendsFilters verifies the WithFilter* options are encoded into the
+// SyncRequest sent to the server.
+func TestClient_SendsFilters(t *testing.T) {
+	ts := &testServer{}
+	gotFilters := make(chan []*v1.FieldPredicate, 1)
+	ts.setSyncFn(func(ctx context.Context, req *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
+		select {
+		case gotFilters <- req.Msg.GetFilters():
+		default:
+		}
+		// A minimal empty snapshot so the client reaches ready.
+		if err := stream.Send(&v1.SyncResponse{
+			Message: &v1.SyncResponse_SnapshotBegin{SnapshotBegin: &v1.SnapshotBegin{SnapshotId: "s1", Sequence: 1}},
+		}); err != nil {
+			return err
+		}
+		if err := stream.Send(&v1.SyncResponse{
+			Message: &v1.SyncResponse_SnapshotEnd{SnapshotEnd: &v1.SnapshotEnd{Sequence: 1}},
+		}); err != nil {
+			return err
+		}
+		<-ctx.Done()
+		return nil
+	})
+	addr := startTestServer(t, ts)
+
+	c := New(
+		ServerAddress(addr),
+		Table("public", "test_table"),
+		ClientID("filtered"),
+		WithFilterEquals("tenant_id", "acme"),
+		WithFilterPrefix("key", "rulesets/"),
+		WithFilterIn("region", "eu", "us"),
+	)
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(c.Stop)
+	if !c.AwaitReady(2 * time.Second) {
+		t.Fatal("client not ready")
+	}
+
+	var filters []*v1.FieldPredicate
+	select {
+	case filters = <-gotFilters:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server never received a Sync request")
+	}
+
+	if len(filters) != 3 {
+		t.Fatalf("got %d filters, want 3", len(filters))
+	}
+	if filters[0].GetField() != "tenant_id" || filters[0].GetEquals().GetStringValue() != "acme" {
+		t.Errorf("filter[0] = %v, want tenant_id == acme", filters[0])
+	}
+	if filters[1].GetField() != "key" || filters[1].GetPrefix() != "rulesets/" {
+		t.Errorf("filter[1] = %v, want key prefix rulesets/", filters[1])
+	}
+	if filters[2].GetField() != "region" {
+		t.Errorf("filter[2] field = %q, want region", filters[2].GetField())
+	}
+	if in := filters[2].GetIn().GetValues(); len(in) != 2 || in[0].GetStringValue() != "eu" || in[1].GetStringValue() != "us" {
+		t.Errorf("filter[2] in = %v, want [eu us]", in)
+	}
+}

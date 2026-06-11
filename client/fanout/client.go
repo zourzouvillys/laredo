@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/zourzouvillys/laredo"
 	v1 "github.com/zourzouvillys/laredo/gen/laredo/replication/v1"
@@ -31,8 +32,12 @@ type Client struct {
 	ready          bool
 	lastSeq        int64
 	lastSnapshotID string
-	lastReceived   time.Time
-	listener       func(old, new laredo.Row)
+	// lastSourcePosition is the source position (e.g. WAL LSN) of the last
+	// applied change. Unlike lastSeq it is stable across server instances, so it
+	// is what the client resumes from when failing over to another instance.
+	lastSourcePosition string
+	lastReceived       time.Time
+	listener           func(old, new laredo.Row)
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -56,6 +61,7 @@ type config struct {
 	clientID          string
 	localSnapshotPath string
 	indexes           []indexConfig
+	filters           []*v1.FieldPredicate
 }
 
 // Option configures the fan-out client.
@@ -89,6 +95,52 @@ func LocalSnapshotPath(path string) Option {
 func WithIndex(name string, fields ...string) Option {
 	return func(c *config) {
 		c.indexes = append(c.indexes, indexConfig{name: name, fields: fields})
+	}
+}
+
+// WithFilterEquals adds a server-side subscription filter requiring the given
+// column to equal value (a JSON scalar: string, number, or bool). The server
+// then sends only matching rows and changes, across the snapshot, catch-up, and
+// live phases — other partitions' rows never cross the wire. This is the common
+// partition-scoping case, e.g. WithFilterEquals("tenant_id", "acme"). Multiple
+// filter options are AND-combined. Values of unsupported types are ignored.
+func WithFilterEquals(field string, value any) Option {
+	return func(c *config) {
+		v, err := structpb.NewValue(value)
+		if err != nil {
+			return
+		}
+		c.filters = append(c.filters, &v1.FieldPredicate{
+			Field: field,
+			Match: &v1.FieldPredicate_Equals{Equals: v},
+		})
+	}
+}
+
+// WithFilterPrefix adds a server-side subscription filter requiring the given
+// (string) column to start with prefix. AND-combined with other filters.
+func WithFilterPrefix(field, prefix string) Option {
+	return func(c *config) {
+		c.filters = append(c.filters, &v1.FieldPredicate{
+			Field: field,
+			Match: &v1.FieldPredicate_Prefix{Prefix: prefix},
+		})
+	}
+}
+
+// WithFilterIn adds a server-side subscription filter requiring the given column
+// to equal one of values (JSON scalars). AND-combined with other filters.
+// Unsupported value types are ignored.
+func WithFilterIn(field string, values ...any) Option {
+	return func(c *config) {
+		lv, err := structpb.NewList(values)
+		if err != nil {
+			return
+		}
+		c.filters = append(c.filters, &v1.FieldPredicate{
+			Field: field,
+			Match: &v1.FieldPredicate_In{In: lv},
+		})
 	}
 }
 
@@ -184,6 +236,15 @@ func (c *Client) LastSequence() int64 {
 	return c.lastSeq
 }
 
+// LastSourcePosition returns the source position (e.g. PostgreSQL WAL LSN) of
+// the last applied change. Unlike LastSequence it is stable across server
+// instances. Empty until the first change carrying a position is applied.
+func (c *Client) LastSourcePosition() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastSourcePosition
+}
+
 // Lookup returns a row by looking up a field value. Scans all rows (O(n)).
 func (c *Client) Lookup(field string, value any) (laredo.Row, bool) {
 	c.mu.RLock()
@@ -274,80 +335,227 @@ func (c *Client) runWithReconnect(ctx context.Context) {
 	}
 }
 
+type syncStream = connect.ServerStreamForClient[v1.SyncResponse]
+
+// run opens a Sync stream and processes it as the primary. When the server
+// sends GoAway (it is draining), run performs an overlapping handoff: it brings
+// up a new stream (re-dialing the configured address, which a load balancer
+// routes to a healthy instance) and resumes by source position — no full
+// re-sync — keeping the old stream live until the new one has caught up, then
+// closes the old one cleanly.
 func (c *Client) run(ctx context.Context) error {
+	stream, err := c.dial(ctx, false)
+	if err != nil {
+		return err
+	}
+
+	pendingGoAway := false
+	for {
+		if !pendingGoAway {
+			goAway, perr := c.process(ctx, stream)
+			if perr != nil || !goAway {
+				_ = stream.Close()
+				return perr
+			}
+		}
+
+		// Handoff: keep draining the old stream while a new one catches up.
+		oldStream := stream
+		stopOld, oldDone := c.drainInBackground(oldStream)
+
+		newStream, derr := c.dial(ctx, true)
+		if derr != nil {
+			c.stopDrain(stopOld, oldDone, oldStream)
+			return derr
+		}
+
+		sawGoAway, cerr := c.catchUp(ctx, newStream)
+
+		// New stream is caught up (or failed/handed off again) — drop the old.
+		c.stopDrain(stopOld, oldDone, oldStream)
+
+		if cerr != nil {
+			_ = newStream.Close()
+			return cerr
+		}
+
+		stream = newStream
+		pendingGoAway = sawGoAway
+	}
+}
+
+// dial opens a new Sync stream. When resumeByPosition is set (a cross-instance
+// handoff), it resumes strictly by source position: the per-instance sequence
+// is not portable, so it is omitted to avoid matching an unrelated entry on the
+// new instance.
+func (c *Client) dial(ctx context.Context, resumeByPosition bool) (*syncStream, error) {
 	rpcClient := replicationv1connect.NewLaredoReplicationServiceClient(
 		http.DefaultClient,
 		"http://"+c.cfg.serverAddress,
 	)
 
 	c.mu.RLock()
-	lastSeq := c.lastSeq
-	lastSnapID := c.lastSnapshotID
-	c.mu.RUnlock()
-
-	stream, err := rpcClient.Sync(ctx, connect.NewRequest(&v1.SyncRequest{
-		Schema:            c.cfg.schema,
-		Table:             c.cfg.table,
-		ClientId:          c.cfg.clientID,
-		LastKnownSequence: lastSeq,
-		LastSnapshotId:    lastSnapID,
-	}))
-	if err != nil {
-		return fmt.Errorf("sync: %w", err)
+	req := &v1.SyncRequest{
+		Schema:                  c.cfg.schema,
+		Table:                   c.cfg.table,
+		ClientId:                c.cfg.clientID,
+		LastKnownSequence:       c.lastSeq,
+		LastSnapshotId:          c.lastSnapshotID,
+		LastKnownSourcePosition: c.lastSourcePosition,
+		Filters:                 c.cfg.filters,
 	}
-	defer func() { _ = stream.Close() }()
+	c.mu.RUnlock()
+	if resumeByPosition {
+		req.LastKnownSequence = 0
+	}
 
+	stream, err := rpcClient.Sync(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, fmt.Errorf("sync: %w", err)
+	}
+	return stream, nil
+}
+
+// process reads and applies messages from the primary stream until it ends, the
+// context is cancelled, or the server sends GoAway. On GoAway it returns
+// (true, nil) with the stream still open so the caller can keep draining it
+// during handoff.
+func (c *Client) process(ctx context.Context, stream *syncStream) (goAway bool, err error) {
 	for stream.Receive() {
-		c.mu.Lock()
-		c.lastReceived = time.Now()
-		c.mu.Unlock()
-
-		msg := stream.Msg()
-		switch m := msg.GetMessage().(type) {
-		case *v1.SyncResponse_Handshake:
-			_ = m
-
-		case *v1.SyncResponse_SnapshotBegin:
-			// Clear local state for full snapshot.
-			c.mu.Lock()
-			c.store = make(map[string]laredo.Row)
-			c.clearIndexes()
-			c.lastSnapshotID = m.SnapshotBegin.GetSnapshotId()
-			c.mu.Unlock()
-
-		case *v1.SyncResponse_SnapshotRow:
-			if m.SnapshotRow.GetRow() != nil {
-				row := laredo.Row(m.SnapshotRow.GetRow().AsMap())
-				key := rowKey(row)
-				c.mu.Lock()
-				c.store[key] = row
-				c.addToIndexes(key, row)
-				c.mu.Unlock()
-			}
-
-		case *v1.SyncResponse_SnapshotEnd:
-			c.mu.Lock()
-			c.ready = true
-			c.lastSeq = m.SnapshotEnd.GetSequence()
-			c.mu.Unlock()
-
-		case *v1.SyncResponse_JournalEntry:
-			c.applyJournalEntry(m.JournalEntry)
-
-		case *v1.SyncResponse_Heartbeat:
-			// Heartbeat — connection is alive.
-			_ = m
-
-		case *v1.SyncResponse_SchemaChange:
-			// Schema change — could trigger re-baseline.
-			_ = m
+		c.touch()
+		if c.applyMessage(stream.Msg()) {
+			return true, nil
 		}
 	}
-
-	if err := stream.Err(); err != nil && ctx.Err() == nil {
-		return fmt.Errorf("stream error: %w", err)
+	if e := stream.Err(); e != nil && ctx.Err() == nil {
+		return false, fmt.Errorf("stream error: %w", e)
 	}
-	return ctx.Err()
+	return false, ctx.Err()
+}
+
+// catchUp reads and applies messages from a freshly dialed stream until it has
+// delivered everything the new instance had at connect time (its handshake
+// ServerCurrentSequence) — at which point the old stream can be dropped — or
+// until the stream ends/errors or sends its own GoAway. It leaves the stream
+// open for continued processing as the new primary.
+func (c *Client) catchUp(ctx context.Context, stream *syncStream) (sawGoAway bool, err error) {
+	var target int64
+	var haveTarget bool
+	for stream.Receive() {
+		c.touch()
+		msg := stream.Msg()
+		if hs := msg.GetHandshake(); hs != nil {
+			target = hs.GetServerCurrentSequence()
+			haveTarget = true
+		}
+		if c.applyMessage(msg) {
+			return true, nil
+		}
+		if haveTarget {
+			c.mu.RLock()
+			caught := c.lastSeq >= target
+			c.mu.RUnlock()
+			if caught {
+				return false, nil
+			}
+		}
+	}
+	if e := stream.Err(); e != nil && ctx.Err() == nil {
+		return false, fmt.Errorf("stream error: %w", e)
+	}
+	return false, ctx.Err()
+}
+
+// drainInBackground keeps applying messages from a stream (the old instance,
+// during a handoff) until signalled to stop or the stream ends. Idempotent
+// application makes the brief overlap with the new stream safe. Returns a stop
+// channel (close to stop) and a done channel (closed when the goroutine exits).
+func (c *Client) drainInBackground(stream *syncStream) (stop chan struct{}, done chan struct{}) {
+	stop = make(chan struct{})
+	done = make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if !stream.Receive() {
+				return
+			}
+			c.touch()
+			// Ignore GoAway on the old stream: we are already leaving it.
+			_ = c.applyMessage(stream.Msg())
+		}
+	}()
+	return stop, done
+}
+
+// stopDrain tears down a background drainer started by drainInBackground.
+// Closing the stream is what unblocks a goroutine parked in Receive(); the stop
+// channel only guards against applying further messages between iterations.
+func (c *Client) stopDrain(stop, done chan struct{}, stream *syncStream) {
+	close(stop)
+	_ = stream.Close()
+	<-done
+}
+
+// applyMessage applies a single Sync message to the local replica. It returns
+// true if the message is a GoAway (the server is draining).
+func (c *Client) applyMessage(msg *v1.SyncResponse) (goAway bool) {
+	switch m := msg.GetMessage().(type) {
+	case *v1.SyncResponse_Handshake:
+		_ = m
+
+	case *v1.SyncResponse_SnapshotBegin:
+		// Clear local state for full snapshot. The source position is reset; it
+		// is repopulated from subsequent journal entries.
+		c.mu.Lock()
+		c.store = make(map[string]laredo.Row)
+		c.clearIndexes()
+		c.lastSnapshotID = m.SnapshotBegin.GetSnapshotId()
+		c.lastSourcePosition = ""
+		c.mu.Unlock()
+
+	case *v1.SyncResponse_SnapshotRow:
+		if m.SnapshotRow.GetRow() != nil {
+			row := laredo.Row(m.SnapshotRow.GetRow().AsMap())
+			key := rowKey(row)
+			c.mu.Lock()
+			c.store[key] = row
+			c.addToIndexes(key, row)
+			c.mu.Unlock()
+		}
+
+	case *v1.SyncResponse_SnapshotEnd:
+		c.mu.Lock()
+		c.ready = true
+		c.lastSeq = m.SnapshotEnd.GetSequence()
+		c.mu.Unlock()
+
+	case *v1.SyncResponse_JournalEntry:
+		c.applyJournalEntry(m.JournalEntry)
+
+	case *v1.SyncResponse_Heartbeat:
+		// Heartbeat — connection is alive.
+		_ = m
+
+	case *v1.SyncResponse_SchemaChange:
+		// Schema change — could trigger re-baseline.
+		_ = m
+
+	case *v1.SyncResponse_GoAway:
+		return true
+	}
+	return false
+}
+
+// touch records the time of the last received message.
+func (c *Client) touch() {
+	c.mu.Lock()
+	c.lastReceived = time.Now()
+	c.mu.Unlock()
 }
 
 func (c *Client) applyJournalEntry(entry *v1.ReplicationJournalEntry) {
@@ -355,6 +563,9 @@ func (c *Client) applyJournalEntry(entry *v1.ReplicationJournalEntry) {
 	defer c.mu.Unlock()
 
 	c.lastSeq = entry.GetSequence()
+	if pos := entry.GetSourcePosition(); pos != "" {
+		c.lastSourcePosition = pos
+	}
 
 	switch entry.GetAction() {
 	case "INSERT":
@@ -471,17 +682,19 @@ func indexKey(_ []string, values []any) string {
 
 // localSnapshot is the on-disk format for the client's saved state.
 type localSnapshot struct {
-	LastSeq    int64                 `json:"last_seq"`
-	SnapshotID string                `json:"snapshot_id,omitempty"`
-	Rows       map[string]laredo.Row `json:"rows"`
+	LastSeq            int64                 `json:"last_seq"`
+	SnapshotID         string                `json:"snapshot_id,omitempty"`
+	LastSourcePosition string                `json:"last_source_position,omitempty"`
+	Rows               map[string]laredo.Row `json:"rows"`
 }
 
 func (c *Client) saveSnapshot() {
 	c.mu.RLock()
 	snap := localSnapshot{
-		LastSeq:    c.lastSeq,
-		SnapshotID: c.lastSnapshotID,
-		Rows:       make(map[string]laredo.Row, len(c.store)),
+		LastSeq:            c.lastSeq,
+		SnapshotID:         c.lastSnapshotID,
+		LastSourcePosition: c.lastSourcePosition,
+		Rows:               make(map[string]laredo.Row, len(c.store)),
 	}
 	for k, v := range c.store {
 		snap.Rows[k] = v
@@ -510,5 +723,6 @@ func (c *Client) loadSnapshot() {
 	c.store = snap.Rows
 	c.lastSeq = snap.LastSeq
 	c.lastSnapshotID = snap.SnapshotID
+	c.lastSourcePosition = snap.LastSourcePosition
 	c.mu.Unlock()
 }

@@ -14,6 +14,11 @@ type JournalEntry struct {
 	Action    laredo.ChangeAction
 	OldValues laredo.Row
 	NewValues laredo.Row
+	// Position is the opaque source position (e.g. PostgreSQL WAL LSN) of the
+	// change. It is the cross-instance-stable coordinate clients use to resume
+	// on a different server. May be nil for entries appended before the source
+	// position is known (e.g. baseline rows, later backfilled).
+	Position laredo.Position
 }
 
 // journal is a bounded circular buffer of change entries with monotonic
@@ -51,7 +56,7 @@ func (j *journal) unpin(clientID string) {
 }
 
 // append adds a new entry to the journal and returns its sequence number.
-func (j *journal) append(action laredo.ChangeAction, oldValues, newValues laredo.Row) int64 {
+func (j *journal) append(action laredo.ChangeAction, oldValues, newValues laredo.Row, position laredo.Position) int64 {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
@@ -64,10 +69,63 @@ func (j *journal) append(action laredo.ChangeAction, oldValues, newValues laredo
 		Action:    action,
 		OldValues: oldValues,
 		NewValues: newValues,
+		Position:  position,
 	})
 
 	j.pruneLocked()
 	return seq
+}
+
+// backfillNilPositions stamps the given position onto every retained entry that
+// has no position yet. Used after baseline completes, when the baseline end
+// position becomes known, so baseline-derived entries carry a comparable
+// coordinate for cross-instance resume.
+func (j *journal) backfillNilPositions(position laredo.Position) {
+	if position == nil {
+		return
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	for i := range j.entries {
+		if j.entries[i].Position == nil {
+			j.entries[i].Position = position
+		}
+	}
+}
+
+// resumeSeqForPosition returns the journal sequence to resume *after* for a
+// client whose last applied position is the given one, plus whether that
+// position is still covered by the retained journal.
+//
+// The returned sequence is suitable for entriesSince: streaming resumes with
+// the first entry whose position is strictly newer than the client's. covered
+// is false when the client's position is older than the oldest retained entry
+// (entries it still needs were pruned, so it must re-snapshot). cmp compares two
+// positions (e.g. SyncSource.ComparePositions). Entries with a nil position are
+// skipped (treated as older than any real position).
+func (j *journal) resumeSeqForPosition(position laredo.Position, cmp func(a, b laredo.Position) int) (resumeSeq int64, covered bool) {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+
+	if len(j.entries) == 0 {
+		// Empty journal: nothing to send; resume from the current head.
+		return j.nextSeq - 1, true
+	}
+
+	// If the oldest retained entry is already strictly newer than the client's
+	// position, we may have pruned entries the client still needs.
+	if oldest := j.entries[0].Position; oldest != nil && cmp(oldest, position) > 0 {
+		return 0, false
+	}
+
+	// Resume after the last entry whose position is <= the client's position.
+	resumeSeq = j.entries[0].Sequence - 1
+	for _, e := range j.entries {
+		if e.Position != nil && cmp(e.Position, position) <= 0 {
+			resumeSeq = e.Sequence
+		}
+	}
+	return resumeSeq, true
 }
 
 // entriesSince returns all entries with sequence > afterSeq.

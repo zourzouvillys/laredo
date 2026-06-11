@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Fan-out replication**: Per-subscription server-side filtering. A `Sync`
+  client can attach AND-combined column predicates (`equals`, `prefix`, `in`) via
+  the new `SyncRequest.filters` field; the server applies them uniformly across
+  the snapshot, journal catch-up, and live phases, so excluded rows never cross
+  the wire. Enables partition scoping (e.g. one tenant's slice of a shared table)
+  from a single fan-out target.
+- **Fan-out client**: `WithFilterEquals`, `WithFilterPrefix`, and `WithFilterIn`
+  options to set a subscription filter.
+
 ## [0.2.0] - 2026-04-14
 
 ### Added
