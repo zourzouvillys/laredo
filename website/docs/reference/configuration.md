@@ -95,6 +95,14 @@ tables = [
         max_clients = 500
         client_buffer { max_size = 50000, policy = drop_disconnect }
         heartbeat_interval = 5s
+        # optional cold-tier archive (EDR-0005). store = local today; key_prefix
+        # MUST match the laredo-snapshotter prefix for this table.
+        archive {
+          store = local
+          store_config { path = "/var/lib/laredo/archive/events" }
+          format = jsonl                    # jsonl | protobuf; default jsonl
+          key_prefix = "laredo/public.events/"
+        }
 
         # Common
         buffer { max_size = 10000, policy = block }

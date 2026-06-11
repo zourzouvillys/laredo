@@ -221,6 +221,40 @@ from cheap object storage, instead of re-downloading the whole live table.
 
 ### Enabling it
 
+#### From HOCON (stock `laredo-server`)
+
+Add an `archive` block to the `replication-fanout` target. `laredo-server` builds
+the reader and registers it for that table's `(schema, table)` automatically
+([ADR-007](/internals/adrs#adr-007-server-side-fan-out-wiring),
+[EDR-0005](/edr/0005-archive-from-hocon)):
+
+```hocon
+tables = [{
+  source = pg
+  schema = public
+  table  = events
+  targets = [{
+    type = replication-fanout
+    journal { max_entries = 1000000, max_age = 24h }
+    archive {
+      store = local
+      store_config { path = "/var/lib/laredo/archive/events" }
+      format     = jsonl                 # jsonl | protobuf; default jsonl
+      key_prefix = "laredo/public.events/"   # MUST match the snapshotter's prefix
+    }
+  }]
+}]
+```
+
+`key_prefix` **must match** the prefix [`laredo-snapshotter`](./snapshot-writer.md)
+wrote this table under — otherwise the reader finds no manifest and cold replay
+declines to a live snapshot. Today `store = local` is supported (the offline-first
+case: an onboard node archives to local disk and resumes from it); `store = s3`
+is rejected with a clear error pending a shared destination-builder, so use a
+local archive or the engine-level API below for S3.
+
+#### From the library (custom embedding)
+
 Register a read-only archive reader on the replication service, pointed at the
 same destination/prefix the snapshotter writes:
 

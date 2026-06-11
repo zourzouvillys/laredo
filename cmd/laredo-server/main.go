@@ -208,7 +208,18 @@ func run() error {
 	// its own port distinct from the OAM/Query port (ADR-007).
 	var replSrv *service.Server
 	if cfg.Fanout != nil {
-		replSvc := replication.New(eng, replication.WithLogger(slog.Default()))
+		// Register any cold-tier archives declared on fan-out targets, so
+		// too-stale clients can replay from object storage (EDR-0005). A bad
+		// archive block fails startup loudly rather than silently degrading.
+		archiveOpts, err := buildArchiveOptions(cfg)
+		if err != nil {
+			return fmt.Errorf("configure fan-out archive: %w", err)
+		}
+		replOpts := make([]replication.Option, 0, 1+len(archiveOpts))
+		replOpts = append(replOpts, replication.WithLogger(slog.Default()))
+		replOpts = append(replOpts, archiveOpts...)
+
+		replSvc := replication.New(eng, replOpts...)
 		replAddr := fmt.Sprintf(":%d", cfg.Fanout.GRPCPort)
 		replSrv = service.New(
 			service.WithAddress(replAddr),
@@ -275,6 +286,29 @@ func run() error {
 
 	slog.Info("shutdown complete")
 	return nil
+}
+
+// buildArchiveOptions builds a replication.WithArchive option for every
+// replication-fanout target that declares an archive block, so cold-tier replay
+// is available from object storage (EDR-0005). It returns an error (failing
+// startup) if any archive cannot be built — e.g. an unsupported store — rather
+// than silently skipping it.
+func buildArchiveOptions(cfg *config.Config) ([]replication.Option, error) {
+	var opts []replication.Option
+	for _, t := range cfg.Tables {
+		for _, tgt := range t.Targets {
+			if tgt.Fanout == nil || tgt.Fanout.Archive == nil {
+				continue
+			}
+			reader, err := config.BuildArchiveReader(tgt.Fanout.Archive)
+			if err != nil {
+				return nil, fmt.Errorf("table %s.%s: %w", t.Schema, t.Table, err)
+			}
+			opts = append(opts, replication.WithArchive(t.Schema, t.Table, reader))
+			slog.Info("registered cold-tier archive", "schema", t.Schema, "table", t.Table, "store", tgt.Fanout.Archive.Store) //nolint:gosec // structured logging (JSON attrs), not string interpolation
+		}
+	}
+	return opts, nil
 }
 
 // drainFanoutTargets tells every fan-out target's clients to hand off to

@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **laredo-server**: Cold-tier archive from HOCON (EDR-0005). A
+  `replication-fanout` target may carry an `archive { store, store_config,
+  format, key_prefix }` block; `laredo-server` builds a `snapshotter.Reader` and
+  registers it via `replication.WithArchive` for the target's `(schema, table)`,
+  so clients that fall behind the in-memory journal replay from the cold archive
+  (`SYNC_MODE_REPLAY_ARCHIVE`) instead of taking a full live re-snapshot. New
+  `config.BuildArchiveReader`. `store = local` is supported (the offline-first /
+  onboard case); `store = s3` is rejected with a clear error pending a shared
+  destination-builder. A missing/empty archive degrades to the live path; a bad
+  archive block fails startup loudly.
 - **laredo-server**: Serve a fan-out straight from HOCON. A `type =
   replication-fanout` target is now a first-class config target type, and the
   stock binary mounts a single engine-global `LaredoReplicationService` (routing
