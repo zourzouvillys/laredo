@@ -13,6 +13,10 @@ import (
 
 	"github.com/zourzouvillys/laredo"
 	"github.com/zourzouvillys/laredo/filter"
+	"github.com/zourzouvillys/laredo/snapshotter"
+	"github.com/zourzouvillys/laredo/snapshotter/dest/local"
+	"github.com/zourzouvillys/laredo/snapshotter/format/jsonl"
+	"github.com/zourzouvillys/laredo/snapshotter/format/protobuf"
 	"github.com/zourzouvillys/laredo/source/pg"
 	"github.com/zourzouvillys/laredo/target/fanout"
 	"github.com/zourzouvillys/laredo/target/httpsync"
@@ -80,6 +84,34 @@ type FanoutConfig struct {
 	ClientBufferSize   int
 	ClientBufferPolicy string
 	HeartbeatInterval  time.Duration
+	// Archive optionally registers a read-only cold-tier archive (written by
+	// laredo-snapshotter) for this target's table, enabling SYNC_MODE_REPLAY_ARCHIVE
+	// for clients that fall behind the in-memory journal. See EDR-0005.
+	Archive *ArchiveConfig
+}
+
+// ArchiveConfig describes the cold-tier archive a replication-fanout target
+// reads from. It mirrors the snapshotter's destination shape. The archive is
+// read-only here; the snapshotter remains the sole writer.
+type ArchiveConfig struct {
+	// Store is the destination backend: "local" (wired) or "s3" (not yet
+	// supported in laredo-server — see EDR-0005).
+	Store string
+	// Path is the local filesystem root, used when Store == "local".
+	Path string
+	// Bucket/Prefix/Region/Credentials configure an S3 destination (Store == "s3").
+	// Prefix is the storage-level object prefix, distinct from KeyPrefix below.
+	Bucket      string
+	Prefix      string
+	Region      string
+	Credentials string
+	// Formats are the artifact codecs to try, by id ("jsonl", "protobuf").
+	// Empty defaults to ["jsonl"]. The reader tries them in order.
+	Formats []string
+	// KeyPrefix is the per-table object-key prefix. It MUST match the prefix the
+	// snapshotter Writer used for this table, or the reader finds no manifest and
+	// cold replay declines to the live snapshot path.
+	KeyPrefix string
 }
 
 // FilterConfig is the configuration for a pipeline filter.
@@ -469,6 +501,13 @@ func (c *Config) Validate() []error {
 			if tgt.Type == "" {
 				errs = append(errs, fmt.Errorf("%s.targets[%d]: type is required", prefix, j))
 			}
+			// A configured archive must build; surface s3/unknown-store/format
+			// errors here rather than only at server start.
+			if tgt.Fanout != nil && tgt.Fanout.Archive != nil {
+				if _, err := BuildArchiveReader(tgt.Fanout.Archive); err != nil {
+					errs = append(errs, fmt.Errorf("%s.targets[%d]: %w", prefix, j, err))
+				}
+			}
 		}
 	}
 
@@ -684,6 +723,56 @@ func fanoutOptions(fc *FanoutConfig) []fanout.Option {
 	return opts
 }
 
+// BuildArchiveReader constructs a read-only cold-tier archive reader from an
+// ArchiveConfig, for registration via replication.WithArchive. Only the local
+// store is supported in laredo-server today; s3 is rejected with a clear error
+// pending the shared destination-builder extraction (EDR-0005). The reader does
+// not touch storage at construction time, so a local archive whose objects do
+// not yet exist builds fine and simply declines cold replay until they do.
+func BuildArchiveReader(ac *ArchiveConfig) (*snapshotter.Reader, error) {
+	if ac == nil {
+		return nil, nil
+	}
+	formats, err := buildArchiveFormats(ac.Formats)
+	if err != nil {
+		return nil, err
+	}
+	switch ac.Store {
+	case "local":
+		if ac.Path == "" {
+			return nil, fmt.Errorf("archive: local store requires store_config.path")
+		}
+		return snapshotter.NewReader(local.New(ac.Path), ac.KeyPrefix, formats...)
+	case "s3":
+		return nil, fmt.Errorf("archive: store %q is not yet supported in laredo-server; "+
+			"use a local archive, or run laredo-snapshotter for S3 (EDR-0005)", ac.Store)
+	case "":
+		return nil, fmt.Errorf("archive: store is required (local)")
+	default:
+		return nil, fmt.Errorf("archive: unknown store %q (want local)", ac.Store)
+	}
+}
+
+// buildArchiveFormats maps format ids to codecs, defaulting to jsonl when none
+// are given. The reader tries them in order.
+func buildArchiveFormats(ids []string) ([]snapshotter.Format, error) {
+	if len(ids) == 0 {
+		ids = []string{"jsonl"}
+	}
+	formats := make([]snapshotter.Format, 0, len(ids))
+	for _, id := range ids {
+		switch id {
+		case "jsonl":
+			formats = append(formats, jsonl.New())
+		case "protobuf":
+			formats = append(formats, protobuf.New())
+		default:
+			return nil, fmt.Errorf("archive: unknown format %q (want jsonl or protobuf)", id)
+		}
+	}
+	return formats, nil
+}
+
 func createFilter(cfg FilterConfig) (laredo.PipelineFilter, error) {
 	switch cfg.Type {
 	case "field-equals":
@@ -795,6 +884,7 @@ func parseTargetObj(obj hocon.Object) TargetConfig {
 //	max_clients
 //	client_buffer { max_size, policy }
 //	heartbeat_interval
+//	archive       { store, store_config { ... }, format, key_prefix }
 //
 // Zero/absent fields leave the corresponding target/fanout.New default in place.
 func parseFanoutConfig(obj hocon.Object) *FanoutConfig {
@@ -817,7 +907,34 @@ func parseFanoutConfig(obj hocon.Object) *FanoutConfig {
 		fc.ClientBufferSize = objInt(cb, "max_size")
 		fc.ClientBufferPolicy = objStr(cb, "policy")
 	}
+	if a, ok := obj["archive"].(hocon.Object); ok {
+		fc.Archive = parseArchiveConfig(a)
+	}
 	return fc
+}
+
+// parseArchiveConfig reads a replication-fanout target's `archive` block:
+//
+//	archive {
+//	  store = local | s3
+//	  store_config { path = ... | bucket = ..., prefix = ..., region = ..., credentials = ... }
+//	  format = jsonl | protobuf | [jsonl, protobuf]
+//	  key_prefix = "public.events/"
+//	}
+func parseArchiveConfig(obj hocon.Object) *ArchiveConfig {
+	ac := &ArchiveConfig{
+		Store:     objStr(obj, "store"),
+		KeyPrefix: objStr(obj, "key_prefix"),
+		Formats:   objStrOrStrSlice(obj, "format"),
+	}
+	if sc, ok := obj["store_config"].(hocon.Object); ok {
+		ac.Path = objStr(sc, "path")
+		ac.Bucket = objStr(sc, "bucket")
+		ac.Prefix = objStr(sc, "prefix")
+		ac.Region = objStr(sc, "region")
+		ac.Credentials = objStr(sc, "credentials")
+	}
+	return ac
 }
 
 // objStr extracts a string value from a hocon.Object, stripping quotes.
@@ -872,6 +989,21 @@ func objStrSlice(obj hocon.Object, key string) []string {
 		result = append(result, s)
 	}
 	return result
+}
+
+// objStrOrStrSlice accepts either a single scalar (format = jsonl) or an array
+// (format = [jsonl, protobuf]) and returns it as a slice. Returns nil when absent.
+func objStrOrStrSlice(obj hocon.Object, key string) []string {
+	if _, ok := obj[key]; !ok {
+		return nil
+	}
+	if s := objStrSlice(obj, key); s != nil {
+		return s
+	}
+	if s := objStr(obj, key); s != "" {
+		return []string{s}
+	}
+	return nil
 }
 
 // --- hocon.Config safe accessors ---

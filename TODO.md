@@ -36,15 +36,24 @@ options, and the binary mounts a single engine-global `LaredoReplicationService`
       `--drain-grace`/`DrainReplication` now act on the stock binary's fan-out
       targets.
 
+- [x] Cold-tier archive reader from HOCON (EDR-0005): a `replication-fanout`
+      target's `archive` block builds a `snapshotter.Reader` via
+      `config.BuildArchiveReader`, registered with `replication.WithArchive`.
+      Local store shipped; s3 rejected loudly (see below).
+
 Deferred:
 
 - [ ] Durable on-disk fan-out snapshot store from config (`snapshot { store;
       store_config; serializer }`). Today `target/fanout` snapshots are in-memory
       only, so that block has no backing option and is omitted from the config
       contract; add it when a persistent-snapshot option lands on the target.
-- [ ] Wire the cold-tier archive reader (`replication.WithArchive`) from HOCON now
-      that the target is config-wired — needs an archive destination/format config
-      home (shared with the EDR-0003 CLI item below).
+- [ ] S3 cold-tier archive from HOCON (EDR-0005). Extract
+      `cmd/laredo-snapshotter`'s `buildDestinations` / `buildFormats` /
+      `awsConfigCache` into a shared importable package (e.g. `snapshotter/destwire`)
+      so `laredo-server` and `laredo-snapshotter` build destinations + resolve
+      credentials through one path, then accept `archive.store = s3`. The HOCON
+      schema is already final; only the builder needs a home. (Shares the archive
+      destination/format config home with the EDR-0003 CLI item below.)
 - [ ] Optional: co-mount replication on the OAM/Query port, or run multiple
       replication listeners, for operators who want a single port or finer
       isolation. No contract change required.

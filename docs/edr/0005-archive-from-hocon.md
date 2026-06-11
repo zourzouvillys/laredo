@@ -1,7 +1,7 @@
 ---
 id: 5
 title: "Cold-tier archive from HOCON: register a fan-out's archive reader in laredo-server config"
-status: proposed
+status: accepted
 date: 2026-06-11
 authors:
   - "Theo Zourzouvillys <theo@zrz.io>"
@@ -226,3 +226,8 @@ reached unchanged through the registered reader.
 ## Changelog
 
 - **2026-06-11**: Proposed.
+- **2026-06-11**: Accepted; implemented (local archives). A `replication-fanout`
+  target's `archive` block is parsed by `laredo-server`, built into a
+  `snapshotter.Reader` via `config.BuildArchiveReader`, and registered with
+  `replication.WithArchive` per `(schema, table)`. `store = s3` is rejected with
+  a clear error pending the shared destination-builder extraction.
