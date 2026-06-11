@@ -92,3 +92,20 @@ Deferred:
 - [ ] Sub-diff (intra-range) precision would need per-change positions in the
       diff format; out of scope until a use case requires landing between
       artifact boundaries.
+
+### Cascading fan-out source (EDR-0004)
+
+Design landed: [EDR-0004](docs/edr/0004-cascading-fanout-source.md) — a
+`source/fanout` `SyncSource` that wraps `client/fanout` so a downstream engine
+can treat an upstream fan-out as a source (edge / regional cascades).
+Implementation:
+
+- [ ] Expose the handshake `columns` on `client/fanout` (additive) for schema
+      discovery.
+- [ ] `source/fanout` implementing `SyncSource` over the client (Baseline from
+      `All()`, Stream from `Listen`, resume/ack by source position).
+- [ ] Position comparator: default PostgreSQL-LSN order, `WithPositionComparator`
+      override for other upstreams.
+- [ ] Integration test: upstream engine → `target/fanout` (gRPC) consumed by a
+      downstream engine via `source/fanout` → in-memory target; assert baseline +
+      live propagation and resume after a downstream restart. Docs + changelog.
