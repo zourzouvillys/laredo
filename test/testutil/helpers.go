@@ -40,9 +40,14 @@ func SampleChangeEvent(action laredo.ChangeAction, id int, name string) laredo.C
 	}
 }
 
-// AssertEventually polls condition every 10ms until it returns true or timeout expires.
+// AssertEventually polls condition every 10ms until it returns true or timeout
+// expires. The deadline is a ceiling, not a delay — it returns the instant the
+// condition holds — so under the race detector it is scaled up by
+// raceTimeoutScale to absorb the detector's scheduling overhead, with no cost on
+// the happy path. See raceflag.go.
 func AssertEventually(t testing.TB, timeout time.Duration, condition func() bool, msgAndArgs ...interface{}) {
 	t.Helper()
+	timeout *= raceTimeoutScale
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if condition() {
