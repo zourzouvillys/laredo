@@ -178,6 +178,67 @@ matches.
   whole table in memory; filtering controls only what is sent to each subscriber
   (and the isolation between them).
 
+## Cold-tier replay
+
+When a client's resume position predates the bounded change journal, the server
+would normally fall back to a **full snapshot of live state** — losing the delta
+and the history the client missed. If you also run
+[`laredo-snapshotter`](./snapshot-writer.md) to archive the table to object
+storage (base snapshot + diffs + manifest), the server can instead **replay from
+that cold archive**: it reconstructs catch-up from the newest base snapshot and
+the diffs after it (or, when the client's position aligns to a diff boundary,
+only the diffs), then hands off **gaplessly** to the hot journal and the live
+stream. The client receives the ordinary wire messages, so no client change is
+needed; the handshake mode is `SYNC_MODE_REPLAY_ARCHIVE`.
+
+This is the tool for consumers that fall far behind the journal — an onboard or
+edge node reconnecting after a long outage, a regional replica catching up, a
+service restarting after downtime. They resume **with the history they missed**
+from cheap object storage, instead of re-downloading the whole live table.
+
+### Enabling it
+
+Register a read-only archive reader on the replication service, pointed at the
+same destination/prefix the snapshotter writes:
+
+```go
+import (
+    "github.com/zourzouvillys/laredo/service/replication"
+    "github.com/zourzouvillys/laredo/snapshotter"
+    "github.com/zourzouvillys/laredo/snapshotter/format/jsonl"
+)
+
+reader, _ := snapshotter.NewReader(archiveDest, "laredo/public.events/", jsonl.New())
+svc := replication.New(engine,
+    replication.WithArchive("public", "events", reader))
+```
+
+Without a registered archive, behaviour is unchanged (too-stale clients get a
+full live snapshot).
+
+### How the handoff stays gapless
+
+The archive and the hot journal advance independently and share only the
+**source position** (WAL LSN). Cold replay streams the archive up to its head
+position, then resumes the hot journal from the first entry **after** that
+position — the same `ResumeSequenceForPosition` bound that failover uses. Resume
+is **at-least-once** across the boundary; clients apply by primary key, so a
+brief overlap is safe.
+
+### Caveats
+
+- **Correctness never depends on the archive.** If the archive is missing,
+  unreadable, an unknown manifest version, or has fallen so far behind that the
+  journal pruned past its head (a genuine gap), the server logs it and falls back
+  to a full live snapshot **before sending any data**. Cold replay is purely an
+  optimization on the stale path.
+- **Object-storage latency.** Cold catch-up reads object storage and is slower
+  than a hot delta. It runs off the live path and under the usual per-client
+  backpressure, but a fleet reconnecting at once reads the archive hard — size
+  and monitor accordingly.
+- **Read-only.** `laredo-snapshotter` remains the sole writer of the archive; the
+  replication service only reads it.
+
 ## Failover & zero-downtime deploys
 
 A client can hand off from one `laredo-server` instance to another — during a

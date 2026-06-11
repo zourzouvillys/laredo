@@ -1,7 +1,7 @@
 ---
 id: 2
 title: "Cold-tier replay: resume stale fan-out clients from the snapshotter archive"
-status: proposed
+status: accepted
 date: 2026-06-10
 authors:
   - "Theo Zourzouvillys <theo@zrz.io>"
@@ -118,9 +118,12 @@ sides, so reader and writer never drift on layout.
 
 ### 2. `SYNC_MODE_REPLAY_ARCHIVE` — the replication path
 
-A fan-out target may be configured with an optional **archive** it can read
-(the same archive the snapshotter writes). When present, the `Sync` mode
-selection gains one branch, evaluated only on the existing too-stale fallback:
+The replication service may be configured (per table) with an optional,
+read-only **archive** reader — the same archive the snapshotter writes. The
+reader lives on the service, **not** the fan-out target: the snapshotter
+consumes the fan-out, so the core target must not depend on it (a layering
+refinement made during implementation). When present, the `Sync` mode selection
+gains one branch, evaluated only on the existing too-stale fallback:
 
 ```
 position resume covered by hot journal?      → DELTA            (unchanged)
@@ -164,23 +167,20 @@ complete state.
 
 ### Configuration
 
-A fan-out target gains an optional, read-only `archive` block naming the same
-destination/prefix the snapshotter writes, and the formats it may decode:
+The replication service registers a read-only archive reader per table — a
+`snapshotter.Reader` over the same destination/prefix the snapshotter writes,
+and the formats it may decode. In the library:
 
-```hocon
-targets = [{
-  type = replication-fanout
-  # ...existing journal / snapshot / grpc / client_buffer blocks...
-
-  # Optional: serve too-stale clients from the snapshotter's cold archive
-  # instead of a full live re-snapshot.
-  archive {
-    destination = s3
-    destination_config { bucket = "my-bucket", prefix = "laredo/public.events/" }
-    formats = [jsonl]            # decoders to try, in order
-  }
-}]
+```go
+reader, _ := snapshotter.NewReader(dest, "public.events/", jsonl.New())
+svc := replication.New(engine,
+    replication.WithArchive("public", "events", reader))
 ```
+
+Absent any registered archive, behaviour is exactly as today (too-stale → live
+full snapshot). A later change wires this from HOCON alongside the deferred
+"fan-out target in `laredo-server`" config work (see `TODO.md`); the
+engine-level option above is the seam.
 
 Absent the block, behaviour is exactly as today (too-stale → live full snapshot).
 The archive is **read-only** from the fan-out's perspective; the snapshotter
@@ -279,3 +279,7 @@ remains the sole writer.
 ## Changelog
 
 - **2026-06-10**: Proposed.
+- **2026-06-11**: Accepted; implemented — `snapshotter.Reader`,
+  `SYNC_MODE_REPLAY_ARCHIVE`, and `replication.WithArchive`. The archive reader is
+  registered on the replication service rather than the fan-out target, to keep
+  the core target from depending on the snapshotter.
