@@ -305,8 +305,7 @@ func buildArchiveOptions(cfg *config.Config) ([]replication.Option, error) {
 				return nil, fmt.Errorf("table %s.%s: %w", t.Schema, t.Table, err)
 			}
 			opts = append(opts, replication.WithArchive(t.Schema, t.Table, reader))
-			slog.Info("registered cold-tier archive",
-				"schema", t.Schema, "table", t.Table, "store", tgt.Fanout.Archive.Store)
+			slog.Info("registered cold-tier archive", "schema", t.Schema, "table", t.Table, "store", tgt.Fanout.Archive.Store) //nolint:gosec // structured logging (JSON attrs), not string interpolation
 		}
 	}
 	return opts, nil
