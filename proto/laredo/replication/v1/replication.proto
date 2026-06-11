@@ -115,6 +115,15 @@ enum SyncMode {
   SYNC_MODE_FULL_SNAPSHOT = 1;
   SYNC_MODE_DELTA = 2;
   SYNC_MODE_DELTA_FROM_SNAPSHOT = 3;
+  // Cold-tier replay: the client is too far behind the in-memory journal, but
+  // the server is configured with a cold archive (written by laredo-snapshotter)
+  // that can bridge the gap. The server reconstructs catch-up from the archive
+  // (a base snapshot and/or diffs) and hands off to the hot journal and live
+  // stream, instead of a full live re-snapshot. The message stream is the same
+  // as the other modes — snapshot rows and/or journal entries — so a client
+  // needs no special handling; the mode is informational (cold catch-up reads
+  // object storage and may be slower). See EDR-0002.
+  SYNC_MODE_REPLAY_ARCHIVE = 4;
 }
 
 message SnapshotBegin {
