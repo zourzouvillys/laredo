@@ -173,6 +173,14 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("schema and table are required"))
 	}
 
+	// Compile the optional per-subscription filter once; it is applied uniformly
+	// to the snapshot, journal catch-up, and live phases below. A nil filter
+	// matches everything.
+	filter, err := compileSubscriptionFilter(req.Msg.GetFilters())
+	if err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	ft, src := s.findFanoutTargetAndSource(schema, table)
 	if ft == nil {
 		return connect.NewError(connect.CodeNotFound, fmt.Errorf("no fan-out target for %s.%s", schema, table))
@@ -271,16 +279,28 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 		// entries needed for catch-up after the snapshot is sent.
 		ft.PinJournal(clientID, snap.Sequence)
 		defer ft.UnpinJournal(clientID)
+		// Apply the subscription filter to the snapshot rows so RowCount and
+		// RowsSent reflect exactly what the subscriber receives.
+		rows := snap.Rows
+		if filter != nil {
+			rows = make([]laredo.Row, 0, len(snap.Rows))
+			for _, row := range snap.Rows {
+				if filter.matchRow(row) {
+					rows = append(rows, row)
+				}
+			}
+		}
+		sentRows := int64(len(rows))
 		if err := stream.Send(&v1.SyncResponse{
 			Message: &v1.SyncResponse_SnapshotBegin{
 				SnapshotBegin: &v1.SnapshotBegin{
-					SnapshotId: snap.ID, Sequence: snap.Sequence, RowCount: snap.RowCount,
+					SnapshotId: snap.ID, Sequence: snap.Sequence, RowCount: sentRows,
 				},
 			},
 		}); err != nil {
 			return err
 		}
-		for _, row := range snap.Rows {
+		for _, row := range rows {
 			rowStruct, _ := structpb.NewStruct(map[string]any(row))
 			if err := stream.Send(&v1.SyncResponse{
 				Message: &v1.SyncResponse_SnapshotRow{SnapshotRow: &v1.SnapshotRow{Row: rowStruct}},
@@ -290,7 +310,7 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 		}
 		if err := stream.Send(&v1.SyncResponse{
 			Message: &v1.SyncResponse_SnapshotEnd{
-				SnapshotEnd: &v1.SnapshotEnd{Sequence: snap.Sequence, RowsSent: snap.RowCount},
+				SnapshotEnd: &v1.SnapshotEnd{Sequence: snap.Sequence, RowsSent: sentRows},
 			},
 		}); err != nil {
 			return err
@@ -298,8 +318,13 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 		resumeSeq = snap.Sequence
 	}
 
-	// Journal catch-up.
+	// Journal catch-up. Entries the subscription filter excludes are skipped;
+	// the client resumes from its last *received* sequence, so the server simply
+	// re-filters from there on reconnect.
 	for _, e := range ft.JournalEntriesSince(resumeSeq) {
+		if !filter.matchEntry(e) {
+			continue
+		}
 		if err := sendJournalEntry(stream, e, posToStr); err != nil {
 			return err
 		}
@@ -345,17 +370,26 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 			return nil
 		}
 
-		newEntries := ft.JournalEntriesSince(lastSeqSent)
-		if len(newEntries) > 0 {
-			for _, e := range newEntries {
+		// Advance past every new entry (so filtered-out entries are not
+		// re-scanned), but only send those the subscription filter admits. The
+		// heartbeat timer resets only when data was actually sent, so a filtered
+		// subscriber still receives heartbeats during a stretch with no matching
+		// changes — even while the journal is busy with other partitions' rows.
+		sentAny := false
+		for _, e := range ft.JournalEntriesSince(lastSeqSent) {
+			if filter.matchEntry(e) {
 				if err := sendJournalEntry(stream, e, posToStr); err != nil {
 					return err
 				}
 				ft.UpdateClientSequence(clientID, e.Sequence)
-				lastSeqSent = e.Sequence
+				sentAny = true
 			}
+			lastSeqSent = e.Sequence
+		}
+		switch {
+		case sentAny:
 			lastSent = time.Now()
-		} else if time.Since(lastSent) >= ft.HeartbeatInterval() {
+		case time.Since(lastSent) >= ft.HeartbeatInterval():
 			if err := stream.Send(&v1.SyncResponse{
 				Message: &v1.SyncResponse_Heartbeat{
 					Heartbeat: &v1.Heartbeat{

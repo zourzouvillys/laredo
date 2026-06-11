@@ -32,3 +32,18 @@ Items not yet implemented. Everything else from the original v1.0 roadmap has be
 - [ ] Add `source_position` to `SnapshotBegin`/`SnapshotEnd` so a client that
       fails over immediately after a full snapshot (before any journal entry)
       can still resume by position instead of re-snapshotting.
+
+### Subscription filtering — follow-ups
+
+Server-side per-subscription filtering shipped (`SyncRequest.filters`,
+`equals`/`prefix`/`in`, applied across snapshot + catch-up + live). Deferred:
+
+- [ ] Advance a filtered client's resume cursor during long matching-silence
+      (e.g. carry an advanced position on heartbeats and let the client
+      checkpoint it) so a sparse partition does not force a re-snapshot after a
+      reconnect once the journal prunes past the last *received* entry.
+- [ ] Richer predicate types if a use case needs them: numeric/time range
+      comparisons, negation, or a full CEL expression. Kept out of the first cut
+      deliberately — `equals`/`prefix`/`in` cover partition scoping.
+- [ ] Surface per-client filter state in `GetReplicationStatus` /
+      `ConnectedClient` (e.g. whether a client is filtered) for operability.

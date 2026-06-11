@@ -104,6 +104,25 @@ An identifier for this client instance, used for server-side monitoring and logg
 fanout.ClientID("myapp-pod-abc123")
 ```
 
+### Subscription filters
+
+Restrict the replica to a slice of the table with one or more column predicates.
+The server applies them across the snapshot and the live stream, so excluded
+rows never reach this client — the right tool for partition scoping (e.g. one
+tenant's rows out of a shared table).
+
+```go
+fanout.WithFilterEquals("tenant_id", "acme")   // column equals a value
+fanout.WithFilterPrefix("key", "rulesets/")     // string column starts with a prefix
+fanout.WithFilterIn("region", "eu", "us")       // column is one of a set
+```
+
+Multiple filter options are **AND-combined**. Filter values must be JSON scalars
+(string, number, or bool). All query methods (`Get`, `Lookup`, `All`, `Count`)
+and listeners then operate over the filtered slice. See
+[Subscription filtering](./fan-out.md#subscription-filtering) for the matching
+rules and caveats (immutable filter columns, filtered resume).
+
 ## Lifecycle
 
 ### Start

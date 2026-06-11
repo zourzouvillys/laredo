@@ -87,8 +87,20 @@ type SyncRequest struct {
 	// server instances, enabling resume after failover to a different instance
 	// without a full re-sync.
 	LastKnownSourcePosition string `protobuf:"bytes,6,opt,name=last_known_source_position,json=lastKnownSourcePosition,proto3" json:"last_known_source_position,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	// Optional server-side subscription filter. When non-empty, the client
+	// receives only rows and change events whose column values satisfy ALL of
+	// these predicates (logical AND), applied uniformly across the snapshot,
+	// journal catch-up, and live phases.
+	//
+	// The common use is partition scoping: a single equality predicate on a
+	// partition column (e.g. tenant_id) gives each subscriber its own slice of a
+	// shared table without a separate pipeline, and without other partitions'
+	// rows ever crossing the wire. Filter columns are assumed stable for a row's
+	// lifetime (see the fan-out guide for the rationale and resume semantics).
+	// Empty means no filtering — the subscriber receives the whole table.
+	Filters       []*FieldPredicate `protobuf:"bytes,7,rep,name=filters,proto3" json:"filters,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SyncRequest) Reset() {
@@ -163,6 +175,131 @@ func (x *SyncRequest) GetLastKnownSourcePosition() string {
 	return ""
 }
 
+func (x *SyncRequest) GetFilters() []*FieldPredicate {
+	if x != nil {
+		return x.Filters
+	}
+	return nil
+}
+
+// FieldPredicate is one column-level condition in a subscription filter
+// (SyncRequest.filters). It is evaluated against a row's column values: the
+// post-change row for INSERT and UPDATE, and the pre-change row for DELETE.
+// TRUNCATE and schema-change markers always pass — they are structural and
+// apply to the whole replica. A missing or null column never matches.
+type FieldPredicate struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Column name to test.
+	Field string `protobuf:"bytes,1,opt,name=field,proto3" json:"field,omitempty"`
+	// Types that are valid to be assigned to Match:
+	//
+	//	*FieldPredicate_Equals
+	//	*FieldPredicate_Prefix
+	//	*FieldPredicate_In
+	Match         isFieldPredicate_Match `protobuf_oneof:"match"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FieldPredicate) Reset() {
+	*x = FieldPredicate{}
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FieldPredicate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FieldPredicate) ProtoMessage() {}
+
+func (x *FieldPredicate) ProtoReflect() protoreflect.Message {
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FieldPredicate.ProtoReflect.Descriptor instead.
+func (*FieldPredicate) Descriptor() ([]byte, []int) {
+	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *FieldPredicate) GetField() string {
+	if x != nil {
+		return x.Field
+	}
+	return ""
+}
+
+func (x *FieldPredicate) GetMatch() isFieldPredicate_Match {
+	if x != nil {
+		return x.Match
+	}
+	return nil
+}
+
+func (x *FieldPredicate) GetEquals() *structpb.Value {
+	if x != nil {
+		if x, ok := x.Match.(*FieldPredicate_Equals); ok {
+			return x.Equals
+		}
+	}
+	return nil
+}
+
+func (x *FieldPredicate) GetPrefix() string {
+	if x != nil {
+		if x, ok := x.Match.(*FieldPredicate_Prefix); ok {
+			return x.Prefix
+		}
+	}
+	return ""
+}
+
+func (x *FieldPredicate) GetIn() *structpb.ListValue {
+	if x != nil {
+		if x, ok := x.Match.(*FieldPredicate_In); ok {
+			return x.In
+		}
+	}
+	return nil
+}
+
+type isFieldPredicate_Match interface {
+	isFieldPredicate_Match()
+}
+
+type FieldPredicate_Equals struct {
+	// Equality. Numbers compare numerically (a predicate value of 42 matches a
+	// column stored as an integer or a float 42); strings and booleans compare
+	// by value. This is the common partition-key case.
+	Equals *structpb.Value `protobuf:"bytes,2,opt,name=equals,proto3,oneof"`
+}
+
+type FieldPredicate_Prefix struct {
+	// String prefix. Matches only string-typed column values.
+	Prefix string `protobuf:"bytes,3,opt,name=prefix,proto3,oneof"`
+}
+
+type FieldPredicate_In struct {
+	// Membership: the column value equals one of these (same comparison rules
+	// as `equals`).
+	In *structpb.ListValue `protobuf:"bytes,4,opt,name=in,proto3,oneof"`
+}
+
+func (*FieldPredicate_Equals) isFieldPredicate_Match() {}
+
+func (*FieldPredicate_Prefix) isFieldPredicate_Match() {}
+
+func (*FieldPredicate_In) isFieldPredicate_Match() {}
+
 type SyncResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Message:
@@ -182,7 +319,7 @@ type SyncResponse struct {
 
 func (x *SyncResponse) Reset() {
 	*x = SyncResponse{}
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[1]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -194,7 +331,7 @@ func (x *SyncResponse) String() string {
 func (*SyncResponse) ProtoMessage() {}
 
 func (x *SyncResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[1]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -207,7 +344,7 @@ func (x *SyncResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncResponse.ProtoReflect.Descriptor instead.
 func (*SyncResponse) Descriptor() ([]byte, []int) {
-	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{1}
+	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *SyncResponse) GetMessage() isSyncResponse_Message {
@@ -359,7 +496,7 @@ type GoAway struct {
 
 func (x *GoAway) Reset() {
 	*x = GoAway{}
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[2]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -371,7 +508,7 @@ func (x *GoAway) String() string {
 func (*GoAway) ProtoMessage() {}
 
 func (x *GoAway) ProtoReflect() protoreflect.Message {
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[2]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -384,7 +521,7 @@ func (x *GoAway) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GoAway.ProtoReflect.Descriptor instead.
 func (*GoAway) Descriptor() ([]byte, []int) {
-	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{2}
+	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *GoAway) GetReason() string {
@@ -415,7 +552,7 @@ type SyncHandshake struct {
 
 func (x *SyncHandshake) Reset() {
 	*x = SyncHandshake{}
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[3]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -427,7 +564,7 @@ func (x *SyncHandshake) String() string {
 func (*SyncHandshake) ProtoMessage() {}
 
 func (x *SyncHandshake) ProtoReflect() protoreflect.Message {
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[3]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -440,7 +577,7 @@ func (x *SyncHandshake) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncHandshake.ProtoReflect.Descriptor instead.
 func (*SyncHandshake) Descriptor() ([]byte, []int) {
-	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{3}
+	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *SyncHandshake) GetMode() SyncMode {
@@ -496,7 +633,7 @@ type SnapshotBegin struct {
 
 func (x *SnapshotBegin) Reset() {
 	*x = SnapshotBegin{}
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[4]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -508,7 +645,7 @@ func (x *SnapshotBegin) String() string {
 func (*SnapshotBegin) ProtoMessage() {}
 
 func (x *SnapshotBegin) ProtoReflect() protoreflect.Message {
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[4]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -521,7 +658,7 @@ func (x *SnapshotBegin) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotBegin.ProtoReflect.Descriptor instead.
 func (*SnapshotBegin) Descriptor() ([]byte, []int) {
-	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{4}
+	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *SnapshotBegin) GetSnapshotId() string {
@@ -554,7 +691,7 @@ type SnapshotRow struct {
 
 func (x *SnapshotRow) Reset() {
 	*x = SnapshotRow{}
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[5]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -566,7 +703,7 @@ func (x *SnapshotRow) String() string {
 func (*SnapshotRow) ProtoMessage() {}
 
 func (x *SnapshotRow) ProtoReflect() protoreflect.Message {
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[5]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -579,7 +716,7 @@ func (x *SnapshotRow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotRow.ProtoReflect.Descriptor instead.
 func (*SnapshotRow) Descriptor() ([]byte, []int) {
-	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{5}
+	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *SnapshotRow) GetRow() *structpb.Struct {
@@ -599,7 +736,7 @@ type SnapshotEnd struct {
 
 func (x *SnapshotEnd) Reset() {
 	*x = SnapshotEnd{}
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[6]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -611,7 +748,7 @@ func (x *SnapshotEnd) String() string {
 func (*SnapshotEnd) ProtoMessage() {}
 
 func (x *SnapshotEnd) ProtoReflect() protoreflect.Message {
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[6]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -624,7 +761,7 @@ func (x *SnapshotEnd) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotEnd.ProtoReflect.Descriptor instead.
 func (*SnapshotEnd) Descriptor() ([]byte, []int) {
-	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{6}
+	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *SnapshotEnd) GetSequence() int64 {
@@ -655,7 +792,7 @@ type ReplicationJournalEntry struct {
 
 func (x *ReplicationJournalEntry) Reset() {
 	*x = ReplicationJournalEntry{}
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[7]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -667,7 +804,7 @@ func (x *ReplicationJournalEntry) String() string {
 func (*ReplicationJournalEntry) ProtoMessage() {}
 
 func (x *ReplicationJournalEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[7]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -680,7 +817,7 @@ func (x *ReplicationJournalEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplicationJournalEntry.ProtoReflect.Descriptor instead.
 func (*ReplicationJournalEntry) Descriptor() ([]byte, []int) {
-	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{7}
+	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ReplicationJournalEntry) GetSequence() int64 {
@@ -736,7 +873,7 @@ type SchemaChangeNotification struct {
 
 func (x *SchemaChangeNotification) Reset() {
 	*x = SchemaChangeNotification{}
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[8]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -748,7 +885,7 @@ func (x *SchemaChangeNotification) String() string {
 func (*SchemaChangeNotification) ProtoMessage() {}
 
 func (x *SchemaChangeNotification) ProtoReflect() protoreflect.Message {
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[8]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -761,7 +898,7 @@ func (x *SchemaChangeNotification) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SchemaChangeNotification.ProtoReflect.Descriptor instead.
 func (*SchemaChangeNotification) Descriptor() ([]byte, []int) {
-	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{8}
+	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *SchemaChangeNotification) GetSequence() int64 {
@@ -799,7 +936,7 @@ type ColumnDefinition struct {
 
 func (x *ColumnDefinition) Reset() {
 	*x = ColumnDefinition{}
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[9]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -811,7 +948,7 @@ func (x *ColumnDefinition) String() string {
 func (*ColumnDefinition) ProtoMessage() {}
 
 func (x *ColumnDefinition) ProtoReflect() protoreflect.Message {
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[9]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -824,7 +961,7 @@ func (x *ColumnDefinition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ColumnDefinition.ProtoReflect.Descriptor instead.
 func (*ColumnDefinition) Descriptor() ([]byte, []int) {
-	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{9}
+	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ColumnDefinition) GetOrdinalPosition() int32 {
@@ -879,7 +1016,7 @@ type Heartbeat struct {
 
 func (x *Heartbeat) Reset() {
 	*x = Heartbeat{}
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[10]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -891,7 +1028,7 @@ func (x *Heartbeat) String() string {
 func (*Heartbeat) ProtoMessage() {}
 
 func (x *Heartbeat) ProtoReflect() protoreflect.Message {
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[10]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -904,7 +1041,7 @@ func (x *Heartbeat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Heartbeat.ProtoReflect.Descriptor instead.
 func (*Heartbeat) Descriptor() ([]byte, []int) {
-	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{10}
+	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *Heartbeat) GetCurrentSequence() int64 {
@@ -932,7 +1069,7 @@ type ListSnapshotsRequest struct {
 
 func (x *ListSnapshotsRequest) Reset() {
 	*x = ListSnapshotsRequest{}
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[11]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -944,7 +1081,7 @@ func (x *ListSnapshotsRequest) String() string {
 func (*ListSnapshotsRequest) ProtoMessage() {}
 
 func (x *ListSnapshotsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[11]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -957,7 +1094,7 @@ func (x *ListSnapshotsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSnapshotsRequest.ProtoReflect.Descriptor instead.
 func (*ListSnapshotsRequest) Descriptor() ([]byte, []int) {
-	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{11}
+	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ListSnapshotsRequest) GetSchema() string {
@@ -990,7 +1127,7 @@ type ListSnapshotsResponse struct {
 
 func (x *ListSnapshotsResponse) Reset() {
 	*x = ListSnapshotsResponse{}
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[12]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1002,7 +1139,7 @@ func (x *ListSnapshotsResponse) String() string {
 func (*ListSnapshotsResponse) ProtoMessage() {}
 
 func (x *ListSnapshotsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[12]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1015,7 +1152,7 @@ func (x *ListSnapshotsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSnapshotsResponse.ProtoReflect.Descriptor instead.
 func (*ListSnapshotsResponse) Descriptor() ([]byte, []int) {
-	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{12}
+	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ListSnapshotsResponse) GetSnapshots() []*ReplicationSnapshotInfo {
@@ -1039,7 +1176,7 @@ type ReplicationSnapshotInfo struct {
 
 func (x *ReplicationSnapshotInfo) Reset() {
 	*x = ReplicationSnapshotInfo{}
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[13]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1051,7 +1188,7 @@ func (x *ReplicationSnapshotInfo) String() string {
 func (*ReplicationSnapshotInfo) ProtoMessage() {}
 
 func (x *ReplicationSnapshotInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[13]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1064,7 +1201,7 @@ func (x *ReplicationSnapshotInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplicationSnapshotInfo.ProtoReflect.Descriptor instead.
 func (*ReplicationSnapshotInfo) Descriptor() ([]byte, []int) {
-	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{13}
+	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ReplicationSnapshotInfo) GetSnapshotId() string {
@@ -1118,7 +1255,7 @@ type FetchSnapshotRequest struct {
 
 func (x *FetchSnapshotRequest) Reset() {
 	*x = FetchSnapshotRequest{}
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[14]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1130,7 +1267,7 @@ func (x *FetchSnapshotRequest) String() string {
 func (*FetchSnapshotRequest) ProtoMessage() {}
 
 func (x *FetchSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[14]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1143,7 +1280,7 @@ func (x *FetchSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FetchSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*FetchSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{14}
+	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *FetchSnapshotRequest) GetSnapshotId() string {
@@ -1167,7 +1304,7 @@ type FetchSnapshotResponse struct {
 
 func (x *FetchSnapshotResponse) Reset() {
 	*x = FetchSnapshotResponse{}
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[15]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1179,7 +1316,7 @@ func (x *FetchSnapshotResponse) String() string {
 func (*FetchSnapshotResponse) ProtoMessage() {}
 
 func (x *FetchSnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[15]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1192,7 +1329,7 @@ func (x *FetchSnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FetchSnapshotResponse.ProtoReflect.Descriptor instead.
 func (*FetchSnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{15}
+	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *FetchSnapshotResponse) GetChunk() isFetchSnapshotResponse_Chunk {
@@ -1261,7 +1398,7 @@ type GetReplicationStatusRequest struct {
 
 func (x *GetReplicationStatusRequest) Reset() {
 	*x = GetReplicationStatusRequest{}
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[16]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1273,7 +1410,7 @@ func (x *GetReplicationStatusRequest) String() string {
 func (*GetReplicationStatusRequest) ProtoMessage() {}
 
 func (x *GetReplicationStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[16]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1286,7 +1423,7 @@ func (x *GetReplicationStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetReplicationStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetReplicationStatusRequest) Descriptor() ([]byte, []int) {
-	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{16}
+	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *GetReplicationStatusRequest) GetSchema() string {
@@ -1318,7 +1455,7 @@ type GetReplicationStatusResponse struct {
 
 func (x *GetReplicationStatusResponse) Reset() {
 	*x = GetReplicationStatusResponse{}
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[17]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1330,7 +1467,7 @@ func (x *GetReplicationStatusResponse) String() string {
 func (*GetReplicationStatusResponse) ProtoMessage() {}
 
 func (x *GetReplicationStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[17]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1343,7 +1480,7 @@ func (x *GetReplicationStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetReplicationStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetReplicationStatusResponse) Descriptor() ([]byte, []int) {
-	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{17}
+	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *GetReplicationStatusResponse) GetCurrentSequence() int64 {
@@ -1409,7 +1546,7 @@ type ConnectedClient struct {
 
 func (x *ConnectedClient) Reset() {
 	*x = ConnectedClient{}
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[18]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1421,7 +1558,7 @@ func (x *ConnectedClient) String() string {
 func (*ConnectedClient) ProtoMessage() {}
 
 func (x *ConnectedClient) ProtoReflect() protoreflect.Message {
-	mi := &file_laredo_replication_v1_replication_proto_msgTypes[18]
+	mi := &file_laredo_replication_v1_replication_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1434,7 +1571,7 @@ func (x *ConnectedClient) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnectedClient.ProtoReflect.Descriptor instead.
 func (*ConnectedClient) Descriptor() ([]byte, []int) {
-	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{18}
+	return file_laredo_replication_v1_replication_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ConnectedClient) GetClientId() string {
@@ -1483,14 +1620,21 @@ var File_laredo_replication_v1_replication_proto protoreflect.FileDescriptor
 
 const file_laredo_replication_v1_replication_proto_rawDesc = "" +
 	"\n" +
-	"'laredo/replication/v1/replication.proto\x12\x15laredo.replication.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xef\x01\n" +
+	"'laredo/replication/v1/replication.proto\x12\x15laredo.replication.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb0\x02\n" +
 	"\vSyncRequest\x12\x16\n" +
 	"\x06schema\x18\x01 \x01(\tR\x06schema\x12\x14\n" +
 	"\x05table\x18\x02 \x01(\tR\x05table\x12.\n" +
 	"\x13last_known_sequence\x18\x03 \x01(\x03R\x11lastKnownSequence\x12(\n" +
 	"\x10last_snapshot_id\x18\x04 \x01(\tR\x0elastSnapshotId\x12\x1b\n" +
 	"\tclient_id\x18\x05 \x01(\tR\bclientId\x12;\n" +
-	"\x1alast_known_source_position\x18\x06 \x01(\tR\x17lastKnownSourcePosition\"\xeb\x04\n" +
+	"\x1alast_known_source_position\x18\x06 \x01(\tR\x17lastKnownSourcePosition\x12?\n" +
+	"\afilters\x18\a \x03(\v2%.laredo.replication.v1.FieldPredicateR\afilters\"\xa9\x01\n" +
+	"\x0eFieldPredicate\x12\x14\n" +
+	"\x05field\x18\x01 \x01(\tR\x05field\x120\n" +
+	"\x06equals\x18\x02 \x01(\v2\x16.google.protobuf.ValueH\x00R\x06equals\x12\x18\n" +
+	"\x06prefix\x18\x03 \x01(\tH\x00R\x06prefix\x12,\n" +
+	"\x02in\x18\x04 \x01(\v2\x1a.google.protobuf.ListValueH\x00R\x02inB\a\n" +
+	"\x05match\"\xeb\x04\n" +
 	"\fSyncResponse\x12D\n" +
 	"\thandshake\x18\x01 \x01(\v2$.laredo.replication.v1.SyncHandshakeH\x00R\thandshake\x12M\n" +
 	"\x0esnapshot_begin\x18\x02 \x01(\v2$.laredo.replication.v1.SnapshotBeginH\x00R\rsnapshotBegin\x12G\n" +
@@ -1615,70 +1759,76 @@ func file_laredo_replication_v1_replication_proto_rawDescGZIP() []byte {
 }
 
 var file_laredo_replication_v1_replication_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_laredo_replication_v1_replication_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
+var file_laredo_replication_v1_replication_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_laredo_replication_v1_replication_proto_goTypes = []any{
 	(SyncMode)(0),                        // 0: laredo.replication.v1.SyncMode
 	(*SyncRequest)(nil),                  // 1: laredo.replication.v1.SyncRequest
-	(*SyncResponse)(nil),                 // 2: laredo.replication.v1.SyncResponse
-	(*GoAway)(nil),                       // 3: laredo.replication.v1.GoAway
-	(*SyncHandshake)(nil),                // 4: laredo.replication.v1.SyncHandshake
-	(*SnapshotBegin)(nil),                // 5: laredo.replication.v1.SnapshotBegin
-	(*SnapshotRow)(nil),                  // 6: laredo.replication.v1.SnapshotRow
-	(*SnapshotEnd)(nil),                  // 7: laredo.replication.v1.SnapshotEnd
-	(*ReplicationJournalEntry)(nil),      // 8: laredo.replication.v1.ReplicationJournalEntry
-	(*SchemaChangeNotification)(nil),     // 9: laredo.replication.v1.SchemaChangeNotification
-	(*ColumnDefinition)(nil),             // 10: laredo.replication.v1.ColumnDefinition
-	(*Heartbeat)(nil),                    // 11: laredo.replication.v1.Heartbeat
-	(*ListSnapshotsRequest)(nil),         // 12: laredo.replication.v1.ListSnapshotsRequest
-	(*ListSnapshotsResponse)(nil),        // 13: laredo.replication.v1.ListSnapshotsResponse
-	(*ReplicationSnapshotInfo)(nil),      // 14: laredo.replication.v1.ReplicationSnapshotInfo
-	(*FetchSnapshotRequest)(nil),         // 15: laredo.replication.v1.FetchSnapshotRequest
-	(*FetchSnapshotResponse)(nil),        // 16: laredo.replication.v1.FetchSnapshotResponse
-	(*GetReplicationStatusRequest)(nil),  // 17: laredo.replication.v1.GetReplicationStatusRequest
-	(*GetReplicationStatusResponse)(nil), // 18: laredo.replication.v1.GetReplicationStatusResponse
-	(*ConnectedClient)(nil),              // 19: laredo.replication.v1.ConnectedClient
-	(*structpb.Struct)(nil),              // 20: google.protobuf.Struct
-	(*timestamppb.Timestamp)(nil),        // 21: google.protobuf.Timestamp
+	(*FieldPredicate)(nil),               // 2: laredo.replication.v1.FieldPredicate
+	(*SyncResponse)(nil),                 // 3: laredo.replication.v1.SyncResponse
+	(*GoAway)(nil),                       // 4: laredo.replication.v1.GoAway
+	(*SyncHandshake)(nil),                // 5: laredo.replication.v1.SyncHandshake
+	(*SnapshotBegin)(nil),                // 6: laredo.replication.v1.SnapshotBegin
+	(*SnapshotRow)(nil),                  // 7: laredo.replication.v1.SnapshotRow
+	(*SnapshotEnd)(nil),                  // 8: laredo.replication.v1.SnapshotEnd
+	(*ReplicationJournalEntry)(nil),      // 9: laredo.replication.v1.ReplicationJournalEntry
+	(*SchemaChangeNotification)(nil),     // 10: laredo.replication.v1.SchemaChangeNotification
+	(*ColumnDefinition)(nil),             // 11: laredo.replication.v1.ColumnDefinition
+	(*Heartbeat)(nil),                    // 12: laredo.replication.v1.Heartbeat
+	(*ListSnapshotsRequest)(nil),         // 13: laredo.replication.v1.ListSnapshotsRequest
+	(*ListSnapshotsResponse)(nil),        // 14: laredo.replication.v1.ListSnapshotsResponse
+	(*ReplicationSnapshotInfo)(nil),      // 15: laredo.replication.v1.ReplicationSnapshotInfo
+	(*FetchSnapshotRequest)(nil),         // 16: laredo.replication.v1.FetchSnapshotRequest
+	(*FetchSnapshotResponse)(nil),        // 17: laredo.replication.v1.FetchSnapshotResponse
+	(*GetReplicationStatusRequest)(nil),  // 18: laredo.replication.v1.GetReplicationStatusRequest
+	(*GetReplicationStatusResponse)(nil), // 19: laredo.replication.v1.GetReplicationStatusResponse
+	(*ConnectedClient)(nil),              // 20: laredo.replication.v1.ConnectedClient
+	(*structpb.Value)(nil),               // 21: google.protobuf.Value
+	(*structpb.ListValue)(nil),           // 22: google.protobuf.ListValue
+	(*structpb.Struct)(nil),              // 23: google.protobuf.Struct
+	(*timestamppb.Timestamp)(nil),        // 24: google.protobuf.Timestamp
 }
 var file_laredo_replication_v1_replication_proto_depIdxs = []int32{
-	4,  // 0: laredo.replication.v1.SyncResponse.handshake:type_name -> laredo.replication.v1.SyncHandshake
-	5,  // 1: laredo.replication.v1.SyncResponse.snapshot_begin:type_name -> laredo.replication.v1.SnapshotBegin
-	6,  // 2: laredo.replication.v1.SyncResponse.snapshot_row:type_name -> laredo.replication.v1.SnapshotRow
-	7,  // 3: laredo.replication.v1.SyncResponse.snapshot_end:type_name -> laredo.replication.v1.SnapshotEnd
-	8,  // 4: laredo.replication.v1.SyncResponse.journal_entry:type_name -> laredo.replication.v1.ReplicationJournalEntry
-	9,  // 5: laredo.replication.v1.SyncResponse.schema_change:type_name -> laredo.replication.v1.SchemaChangeNotification
-	11, // 6: laredo.replication.v1.SyncResponse.heartbeat:type_name -> laredo.replication.v1.Heartbeat
-	3,  // 7: laredo.replication.v1.SyncResponse.go_away:type_name -> laredo.replication.v1.GoAway
-	0,  // 8: laredo.replication.v1.SyncHandshake.mode:type_name -> laredo.replication.v1.SyncMode
-	10, // 9: laredo.replication.v1.SyncHandshake.columns:type_name -> laredo.replication.v1.ColumnDefinition
-	20, // 10: laredo.replication.v1.SnapshotRow.row:type_name -> google.protobuf.Struct
-	21, // 11: laredo.replication.v1.ReplicationJournalEntry.timestamp:type_name -> google.protobuf.Timestamp
-	20, // 12: laredo.replication.v1.ReplicationJournalEntry.old_values:type_name -> google.protobuf.Struct
-	20, // 13: laredo.replication.v1.ReplicationJournalEntry.new_values:type_name -> google.protobuf.Struct
-	10, // 14: laredo.replication.v1.SchemaChangeNotification.old_columns:type_name -> laredo.replication.v1.ColumnDefinition
-	10, // 15: laredo.replication.v1.SchemaChangeNotification.new_columns:type_name -> laredo.replication.v1.ColumnDefinition
-	21, // 16: laredo.replication.v1.Heartbeat.server_time:type_name -> google.protobuf.Timestamp
-	14, // 17: laredo.replication.v1.ListSnapshotsResponse.snapshots:type_name -> laredo.replication.v1.ReplicationSnapshotInfo
-	21, // 18: laredo.replication.v1.ReplicationSnapshotInfo.created_at:type_name -> google.protobuf.Timestamp
-	5,  // 19: laredo.replication.v1.FetchSnapshotResponse.begin:type_name -> laredo.replication.v1.SnapshotBegin
-	6,  // 20: laredo.replication.v1.FetchSnapshotResponse.row:type_name -> laredo.replication.v1.SnapshotRow
-	7,  // 21: laredo.replication.v1.FetchSnapshotResponse.end:type_name -> laredo.replication.v1.SnapshotEnd
-	19, // 22: laredo.replication.v1.GetReplicationStatusResponse.clients:type_name -> laredo.replication.v1.ConnectedClient
-	14, // 23: laredo.replication.v1.GetReplicationStatusResponse.latest_snapshot:type_name -> laredo.replication.v1.ReplicationSnapshotInfo
-	21, // 24: laredo.replication.v1.ConnectedClient.connected_at:type_name -> google.protobuf.Timestamp
-	1,  // 25: laredo.replication.v1.LaredoReplicationService.Sync:input_type -> laredo.replication.v1.SyncRequest
-	12, // 26: laredo.replication.v1.LaredoReplicationService.ListSnapshots:input_type -> laredo.replication.v1.ListSnapshotsRequest
-	15, // 27: laredo.replication.v1.LaredoReplicationService.FetchSnapshot:input_type -> laredo.replication.v1.FetchSnapshotRequest
-	17, // 28: laredo.replication.v1.LaredoReplicationService.GetReplicationStatus:input_type -> laredo.replication.v1.GetReplicationStatusRequest
-	2,  // 29: laredo.replication.v1.LaredoReplicationService.Sync:output_type -> laredo.replication.v1.SyncResponse
-	13, // 30: laredo.replication.v1.LaredoReplicationService.ListSnapshots:output_type -> laredo.replication.v1.ListSnapshotsResponse
-	16, // 31: laredo.replication.v1.LaredoReplicationService.FetchSnapshot:output_type -> laredo.replication.v1.FetchSnapshotResponse
-	18, // 32: laredo.replication.v1.LaredoReplicationService.GetReplicationStatus:output_type -> laredo.replication.v1.GetReplicationStatusResponse
-	29, // [29:33] is the sub-list for method output_type
-	25, // [25:29] is the sub-list for method input_type
-	25, // [25:25] is the sub-list for extension type_name
-	25, // [25:25] is the sub-list for extension extendee
-	0,  // [0:25] is the sub-list for field type_name
+	2,  // 0: laredo.replication.v1.SyncRequest.filters:type_name -> laredo.replication.v1.FieldPredicate
+	21, // 1: laredo.replication.v1.FieldPredicate.equals:type_name -> google.protobuf.Value
+	22, // 2: laredo.replication.v1.FieldPredicate.in:type_name -> google.protobuf.ListValue
+	5,  // 3: laredo.replication.v1.SyncResponse.handshake:type_name -> laredo.replication.v1.SyncHandshake
+	6,  // 4: laredo.replication.v1.SyncResponse.snapshot_begin:type_name -> laredo.replication.v1.SnapshotBegin
+	7,  // 5: laredo.replication.v1.SyncResponse.snapshot_row:type_name -> laredo.replication.v1.SnapshotRow
+	8,  // 6: laredo.replication.v1.SyncResponse.snapshot_end:type_name -> laredo.replication.v1.SnapshotEnd
+	9,  // 7: laredo.replication.v1.SyncResponse.journal_entry:type_name -> laredo.replication.v1.ReplicationJournalEntry
+	10, // 8: laredo.replication.v1.SyncResponse.schema_change:type_name -> laredo.replication.v1.SchemaChangeNotification
+	12, // 9: laredo.replication.v1.SyncResponse.heartbeat:type_name -> laredo.replication.v1.Heartbeat
+	4,  // 10: laredo.replication.v1.SyncResponse.go_away:type_name -> laredo.replication.v1.GoAway
+	0,  // 11: laredo.replication.v1.SyncHandshake.mode:type_name -> laredo.replication.v1.SyncMode
+	11, // 12: laredo.replication.v1.SyncHandshake.columns:type_name -> laredo.replication.v1.ColumnDefinition
+	23, // 13: laredo.replication.v1.SnapshotRow.row:type_name -> google.protobuf.Struct
+	24, // 14: laredo.replication.v1.ReplicationJournalEntry.timestamp:type_name -> google.protobuf.Timestamp
+	23, // 15: laredo.replication.v1.ReplicationJournalEntry.old_values:type_name -> google.protobuf.Struct
+	23, // 16: laredo.replication.v1.ReplicationJournalEntry.new_values:type_name -> google.protobuf.Struct
+	11, // 17: laredo.replication.v1.SchemaChangeNotification.old_columns:type_name -> laredo.replication.v1.ColumnDefinition
+	11, // 18: laredo.replication.v1.SchemaChangeNotification.new_columns:type_name -> laredo.replication.v1.ColumnDefinition
+	24, // 19: laredo.replication.v1.Heartbeat.server_time:type_name -> google.protobuf.Timestamp
+	15, // 20: laredo.replication.v1.ListSnapshotsResponse.snapshots:type_name -> laredo.replication.v1.ReplicationSnapshotInfo
+	24, // 21: laredo.replication.v1.ReplicationSnapshotInfo.created_at:type_name -> google.protobuf.Timestamp
+	6,  // 22: laredo.replication.v1.FetchSnapshotResponse.begin:type_name -> laredo.replication.v1.SnapshotBegin
+	7,  // 23: laredo.replication.v1.FetchSnapshotResponse.row:type_name -> laredo.replication.v1.SnapshotRow
+	8,  // 24: laredo.replication.v1.FetchSnapshotResponse.end:type_name -> laredo.replication.v1.SnapshotEnd
+	20, // 25: laredo.replication.v1.GetReplicationStatusResponse.clients:type_name -> laredo.replication.v1.ConnectedClient
+	15, // 26: laredo.replication.v1.GetReplicationStatusResponse.latest_snapshot:type_name -> laredo.replication.v1.ReplicationSnapshotInfo
+	24, // 27: laredo.replication.v1.ConnectedClient.connected_at:type_name -> google.protobuf.Timestamp
+	1,  // 28: laredo.replication.v1.LaredoReplicationService.Sync:input_type -> laredo.replication.v1.SyncRequest
+	13, // 29: laredo.replication.v1.LaredoReplicationService.ListSnapshots:input_type -> laredo.replication.v1.ListSnapshotsRequest
+	16, // 30: laredo.replication.v1.LaredoReplicationService.FetchSnapshot:input_type -> laredo.replication.v1.FetchSnapshotRequest
+	18, // 31: laredo.replication.v1.LaredoReplicationService.GetReplicationStatus:input_type -> laredo.replication.v1.GetReplicationStatusRequest
+	3,  // 32: laredo.replication.v1.LaredoReplicationService.Sync:output_type -> laredo.replication.v1.SyncResponse
+	14, // 33: laredo.replication.v1.LaredoReplicationService.ListSnapshots:output_type -> laredo.replication.v1.ListSnapshotsResponse
+	17, // 34: laredo.replication.v1.LaredoReplicationService.FetchSnapshot:output_type -> laredo.replication.v1.FetchSnapshotResponse
+	19, // 35: laredo.replication.v1.LaredoReplicationService.GetReplicationStatus:output_type -> laredo.replication.v1.GetReplicationStatusResponse
+	32, // [32:36] is the sub-list for method output_type
+	28, // [28:32] is the sub-list for method input_type
+	28, // [28:28] is the sub-list for extension type_name
+	28, // [28:28] is the sub-list for extension extendee
+	0,  // [0:28] is the sub-list for field type_name
 }
 
 func init() { file_laredo_replication_v1_replication_proto_init() }
@@ -1687,6 +1837,11 @@ func file_laredo_replication_v1_replication_proto_init() {
 		return
 	}
 	file_laredo_replication_v1_replication_proto_msgTypes[1].OneofWrappers = []any{
+		(*FieldPredicate_Equals)(nil),
+		(*FieldPredicate_Prefix)(nil),
+		(*FieldPredicate_In)(nil),
+	}
+	file_laredo_replication_v1_replication_proto_msgTypes[2].OneofWrappers = []any{
 		(*SyncResponse_Handshake)(nil),
 		(*SyncResponse_SnapshotBegin)(nil),
 		(*SyncResponse_SnapshotRow)(nil),
@@ -1696,7 +1851,7 @@ func file_laredo_replication_v1_replication_proto_init() {
 		(*SyncResponse_Heartbeat)(nil),
 		(*SyncResponse_GoAway)(nil),
 	}
-	file_laredo_replication_v1_replication_proto_msgTypes[15].OneofWrappers = []any{
+	file_laredo_replication_v1_replication_proto_msgTypes[16].OneofWrappers = []any{
 		(*FetchSnapshotResponse_Begin)(nil),
 		(*FetchSnapshotResponse_Row)(nil),
 		(*FetchSnapshotResponse_End)(nil),
@@ -1707,7 +1862,7 @@ func file_laredo_replication_v1_replication_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_laredo_replication_v1_replication_proto_rawDesc), len(file_laredo_replication_v1_replication_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   19,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

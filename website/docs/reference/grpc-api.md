@@ -181,6 +181,22 @@ rpc Sync(SyncRequest) returns (stream SyncResponse);
 | `last_snapshot_id` | `string` | ID of the last snapshot the client loaded (used for `DELTA_FROM_SNAPSHOT` mode). |
 | `client_id` | `string` | Unique identifier for this client. If empty, the server assigns an anonymous ID (`anon-<timestamp>`). |
 | `last_known_source_position` | `string` | The source position (e.g. WAL LSN) of the last change the client applied. Unlike `last_known_sequence` this is stable across server instances, so it is used to resume after failing over to a different instance. |
+| `filters` | `repeated FieldPredicate` | Optional server-side subscription filter. When non-empty, the client receives only rows and changes whose column values satisfy **all** predicates, applied uniformly across the snapshot, catch-up, and live phases. Empty means no filtering. See [FieldPredicate](#fieldpredicate). |
+
+#### FieldPredicate
+
+A single column-level condition in a subscription filter. Multiple predicates on one `Sync` request are **AND**-combined. A predicate is evaluated against the post-change row for `INSERT`/`UPDATE` and the pre-change row for `DELETE`; `TRUNCATE` and schema-change markers always pass (they are structural). A missing or null column never matches.
+
+| Field | Type | Description |
+|---|---|---|
+| `field` | `string` | Column name to test (required). |
+| `equals` | `google.protobuf.Value` | The column equals this value. Numbers compare numerically (a predicate `42` matches an integer or float 42); strings and booleans by value. The common partition-key case. |
+| `prefix` | `string` | The (string) column starts with this prefix. |
+| `in` | `google.protobuf.ListValue` | The column equals one of these values (same comparison rules as `equals`). |
+
+`equals`, `prefix`, and `in` form a `oneof` — set exactly one per predicate.
+
+The common use is **partition scoping**: one equality predicate on a partition column (e.g. `tenant_id`) gives each subscriber its own slice of a shared table, with no other partition's rows ever crossing the wire. See the [fan-out guide](../guides/fan-out.md#subscription-filtering) for patterns and caveats (immutable filter columns, filtered resume).
 
 #### Protocol phases
 

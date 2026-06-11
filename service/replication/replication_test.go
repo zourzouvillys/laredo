@@ -210,3 +210,69 @@ func TestSync_DrainSendsGoAway(t *testing.T) {
 		t.Fatal("did not receive GoAway after drain")
 	}
 }
+
+// TestSync_SubscriptionFilter verifies that a per-subscription filter is applied
+// uniformly to the snapshot and the live stream: a subscriber sees only matching
+// rows, and excluded rows never cross the wire.
+func TestSync_SubscriptionFilter(t *testing.T) {
+	client, ft, src := startReplService(t)
+	tbl := testutil.SampleTable()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Filter on name prefix "a": baseline alice matches, bob does not.
+	stream, err := client.Sync(ctx, connect.NewRequest(&v1.SyncRequest{
+		Schema:   tbl.Schema,
+		Table:    tbl.Table,
+		ClientId: "filtered",
+		Filters:  []*v1.FieldPredicate{prefixPred("name", "a")},
+	}))
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	var snapshotRowCount int64
+	var snapshotNames []string
+	var changesEmitted bool
+	var firstChangeName string
+
+	for stream.Receive() {
+		switch m := stream.Msg().GetMessage().(type) {
+		case *v1.SyncResponse_SnapshotBegin:
+			snapshotRowCount = m.SnapshotBegin.GetRowCount()
+		case *v1.SyncResponse_SnapshotRow:
+			row := laredo.Row(m.SnapshotRow.GetRow().AsMap())
+			snapshotNames = append(snapshotNames, row.GetString("name"))
+		case *v1.SyncResponse_SnapshotEnd:
+			// Snapshot taken. Emit anna (matches), plus carol and a bob update
+			// (both excluded). carol is journaled before anna, so if filtering
+			// were broken it would arrive first — receiving anna first proves
+			// carol was filtered out of the live stream.
+			src.EmitInsert(tbl, testutil.SampleRow(3, "carol"))
+			src.EmitInsert(tbl, testutil.SampleRow(4, "anna"))
+			src.EmitUpdate(tbl, testutil.SampleRow(2, "bart"), testutil.SampleRow(2, "bob"))
+			waitJournalSeq(t, ft, 5)
+			changesEmitted = true
+		case *v1.SyncResponse_JournalEntry:
+			if !changesEmitted {
+				continue
+			}
+			row := laredo.Row(m.JournalEntry.GetNewValues().AsMap())
+			firstChangeName = row.GetString("name")
+		}
+		if firstChangeName != "" {
+			break
+		}
+	}
+
+	if snapshotRowCount != 1 {
+		t.Fatalf("SnapshotBegin.RowCount = %d, want 1 (only the filtered row)", snapshotRowCount)
+	}
+	if len(snapshotNames) != 1 || snapshotNames[0] != "alice" {
+		t.Fatalf("snapshot rows = %v, want [alice]", snapshotNames)
+	}
+	if firstChangeName != "anna" {
+		t.Fatalf("first delivered change = %q, want \"anna\" (carol and bob must be filtered out)", firstChangeName)
+	}
+}

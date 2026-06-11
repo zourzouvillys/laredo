@@ -1123,3 +1123,69 @@ func TestClient_FailoverByPosition(t *testing.T) {
 		t.Fatalf("sync calls = %d, want 2", n)
 	}
 }
+
+// TestClient_SendsFilters verifies the WithFilter* options are encoded into the
+// SyncRequest sent to the server.
+func TestClient_SendsFilters(t *testing.T) {
+	ts := &testServer{}
+	gotFilters := make(chan []*v1.FieldPredicate, 1)
+	ts.setSyncFn(func(ctx context.Context, req *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
+		select {
+		case gotFilters <- req.Msg.GetFilters():
+		default:
+		}
+		// A minimal empty snapshot so the client reaches ready.
+		if err := stream.Send(&v1.SyncResponse{
+			Message: &v1.SyncResponse_SnapshotBegin{SnapshotBegin: &v1.SnapshotBegin{SnapshotId: "s1", Sequence: 1}},
+		}); err != nil {
+			return err
+		}
+		if err := stream.Send(&v1.SyncResponse{
+			Message: &v1.SyncResponse_SnapshotEnd{SnapshotEnd: &v1.SnapshotEnd{Sequence: 1}},
+		}); err != nil {
+			return err
+		}
+		<-ctx.Done()
+		return nil
+	})
+	addr := startTestServer(t, ts)
+
+	c := New(
+		ServerAddress(addr),
+		Table("public", "test_table"),
+		ClientID("filtered"),
+		WithFilterEquals("tenant_id", "acme"),
+		WithFilterPrefix("key", "rulesets/"),
+		WithFilterIn("region", "eu", "us"),
+	)
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(c.Stop)
+	if !c.AwaitReady(2 * time.Second) {
+		t.Fatal("client not ready")
+	}
+
+	var filters []*v1.FieldPredicate
+	select {
+	case filters = <-gotFilters:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server never received a Sync request")
+	}
+
+	if len(filters) != 3 {
+		t.Fatalf("got %d filters, want 3", len(filters))
+	}
+	if filters[0].GetField() != "tenant_id" || filters[0].GetEquals().GetStringValue() != "acme" {
+		t.Errorf("filter[0] = %v, want tenant_id == acme", filters[0])
+	}
+	if filters[1].GetField() != "key" || filters[1].GetPrefix() != "rulesets/" {
+		t.Errorf("filter[1] = %v, want key prefix rulesets/", filters[1])
+	}
+	if filters[2].GetField() != "region" {
+		t.Errorf("filter[2] field = %q, want region", filters[2].GetField())
+	}
+	if in := filters[2].GetIn().GetValues(); len(in) != 2 || in[0].GetStringValue() != "eu" || in[1].GetStringValue() != "us" {
+		t.Errorf("filter[2] in = %v, want [eu us]", in)
+	}
+}

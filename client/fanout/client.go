@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/zourzouvillys/laredo"
 	v1 "github.com/zourzouvillys/laredo/gen/laredo/replication/v1"
@@ -60,6 +61,7 @@ type config struct {
 	clientID          string
 	localSnapshotPath string
 	indexes           []indexConfig
+	filters           []*v1.FieldPredicate
 }
 
 // Option configures the fan-out client.
@@ -93,6 +95,52 @@ func LocalSnapshotPath(path string) Option {
 func WithIndex(name string, fields ...string) Option {
 	return func(c *config) {
 		c.indexes = append(c.indexes, indexConfig{name: name, fields: fields})
+	}
+}
+
+// WithFilterEquals adds a server-side subscription filter requiring the given
+// column to equal value (a JSON scalar: string, number, or bool). The server
+// then sends only matching rows and changes, across the snapshot, catch-up, and
+// live phases — other partitions' rows never cross the wire. This is the common
+// partition-scoping case, e.g. WithFilterEquals("tenant_id", "acme"). Multiple
+// filter options are AND-combined. Values of unsupported types are ignored.
+func WithFilterEquals(field string, value any) Option {
+	return func(c *config) {
+		v, err := structpb.NewValue(value)
+		if err != nil {
+			return
+		}
+		c.filters = append(c.filters, &v1.FieldPredicate{
+			Field: field,
+			Match: &v1.FieldPredicate_Equals{Equals: v},
+		})
+	}
+}
+
+// WithFilterPrefix adds a server-side subscription filter requiring the given
+// (string) column to start with prefix. AND-combined with other filters.
+func WithFilterPrefix(field, prefix string) Option {
+	return func(c *config) {
+		c.filters = append(c.filters, &v1.FieldPredicate{
+			Field: field,
+			Match: &v1.FieldPredicate_Prefix{Prefix: prefix},
+		})
+	}
+}
+
+// WithFilterIn adds a server-side subscription filter requiring the given column
+// to equal one of values (JSON scalars). AND-combined with other filters.
+// Unsupported value types are ignored.
+func WithFilterIn(field string, values ...any) Option {
+	return func(c *config) {
+		lv, err := structpb.NewList(values)
+		if err != nil {
+			return
+		}
+		c.filters = append(c.filters, &v1.FieldPredicate{
+			Field: field,
+			Match: &v1.FieldPredicate_In{In: lv},
+		})
 	}
 }
 
@@ -354,6 +402,7 @@ func (c *Client) dial(ctx context.Context, resumeByPosition bool) (*syncStream, 
 		LastKnownSequence:       c.lastSeq,
 		LastSnapshotId:          c.lastSnapshotID,
 		LastKnownSourcePosition: c.lastSourcePosition,
+		Filters:                 c.cfg.filters,
 	}
 	c.mu.RUnlock()
 	if resumeByPosition {
