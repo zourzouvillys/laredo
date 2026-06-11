@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PlanAsOf`) materialize a table's full state as of any source position from the
   archive (newest base snapshot + the folded diffs up to it), returning the rows
   and the effective position. Library-only; see EDR-0003.
+- **Cascading replication**: `source/fanout` — a `SyncSource` that consumes an
+  upstream laredo fan-out, so a downstream engine can treat a fan-out as a source
+  (edge / regional trees) without each leaf holding a PostgreSQL slot. Inherits
+  snapshot, resume, cold-tier replay, and failover from `client/fanout`; orders
+  positions with a pluggable comparator (default PostgreSQL-LSN). See EDR-0004.
+- **Fan-out client**: `Columns()` (table schema from the handshake) and
+  `ListenWithPosition` (change listener that also receives the source position).
+- **Fan-out replication**: the `Sync` handshake now carries the table's column
+  definitions, so cascading consumers can discover the schema.
 
 ## [0.2.0] - 2026-04-14
 

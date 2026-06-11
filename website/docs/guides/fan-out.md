@@ -239,6 +239,55 @@ brief overlap is safe.
 - **Read-only.** `laredo-snapshotter` remains the sole writer of the archive; the
   replication service only reads it.
 
+## Cascading: a fan-out as a source
+
+A downstream engine can treat an upstream fan-out as a **source**, so fan-outs
+**chain**: one upstream slot fans out to regional engines, each of which
+re-serves its own fan-out, in-memory targets, or HTTP sync to local consumers —
+no PostgreSQL slot per leaf. `source/fanout` is a `SyncSource` over
+`client/fanout`, so it inherits snapshot, resume, cold-tier replay, and failover.
+
+```go
+import (
+    "github.com/zourzouvillys/laredo"
+    srcfanout "github.com/zourzouvillys/laredo/source/fanout"
+    "github.com/zourzouvillys/laredo/target/memory"
+)
+
+src := srcfanout.New(
+    srcfanout.ServerAddress("upstream-laredo:4002"),
+    srcfanout.Table("public", "events"),
+    srcfanout.ClientID("region-eu"),
+)
+engine, _ := laredo.NewEngine(
+    laredo.WithSource("upstream", src),
+    laredo.WithPipeline("upstream", laredo.Table("public", "events"), memory.NewIndexedTarget(memory.LookupFields("id"))),
+)
+```
+
+The downstream engine receives the upstream's baseline and live changes and
+applies them to its targets like any other source.
+
+### Positions across the cascade
+
+A fan-out's changes carry the **upstream's** source position (a PostgreSQL WAL
+LSN). `source/fanout` orders them with a pluggable comparator that **defaults to
+PostgreSQL-LSN order** — so a cascade over a PostgreSQL-backed fan-out is
+zero-config. For a non-PostgreSQL upstream, supply your own:
+
+```go
+srcfanout.WithPositionComparator(func(a, b string) int { /* order a vs b */ })
+```
+
+### Caveats
+
+- **Lag compounds.** Each hop adds propagation delay and a re-materialized
+  in-memory copy. Size chains accordingly.
+- **Loops are yours to avoid.** Nothing stops A→B→A if mis-wired; topology
+  hygiene is the operator's responsibility.
+- **Pause is best-effort.** `Pause`/`Resume` flip state but keep the upstream
+  connection.
+
 ## Failover & zero-downtime deploys
 
 A client can hand off from one `laredo-server` instance to another — during a
