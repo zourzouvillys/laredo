@@ -5,34 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 )
 
 // manifestKey is the object key of the manifest within each destination.
-func (w *Writer) manifestKey() string { return w.cfg.KeyPrefix + "manifest.json" }
+func (w *Writer) manifestKey() string { return ManifestObjectKey(w.cfg.KeyPrefix) }
 
-// artifactKey builds the object key for one encoded artifact. Positions (WAL
-// LSNs like "0/1A2B3C") are sanitized for use in a path.
+// artifactKey builds the object key for one encoded artifact.
 func (w *Writer) artifactKey(art Artifact, ext string) string {
-	to := sanitizePosition(art.ToPosition)
-	var name string
-	if art.Kind == KindSnapshot {
-		name = fmt.Sprintf("snapshot-%s%s", to, ext)
-	} else {
-		from := "start"
-		if art.FromPosition != nil {
-			from = sanitizePosition(*art.FromPosition)
-		}
-		name = fmt.Sprintf("diff-%s-%s%s", from, to, ext)
-	}
-	return fmt.Sprintf("%sepoch=%d/%s", w.cfg.KeyPrefix, art.Epoch, name)
-}
-
-func sanitizePosition(p string) string {
-	if p == "" {
-		return "0"
-	}
-	return strings.NewReplacer("/", "_", ":", "_", " ", "_").Replace(p)
+	return ArtifactObjectKey(w.cfg.KeyPrefix, art, ext)
 }
 
 // putArtifact writes one encoded format to every destination and returns the

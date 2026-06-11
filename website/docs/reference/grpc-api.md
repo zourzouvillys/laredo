@@ -222,11 +222,13 @@ The server sends a single `SyncHandshake` message that tells the client which sy
 | `SYNC_MODE_FULL_SNAPSHOT` | Client has no state (or its state is too old for delta). Server sends a full snapshot followed by journal catch-up. |
 | `SYNC_MODE_DELTA` | Client's `last_known_sequence` is still within the journal window. Server sends only the journal entries since that sequence. |
 | `SYNC_MODE_DELTA_FROM_SNAPSHOT` | Client has a snapshot but needs journal entries applied on top of it. |
+| `SYNC_MODE_REPLAY_ARCHIVE` | Client's position predates the journal, but a configured cold archive (written by [`laredo-snapshotter`](../guides/snapshot-writer.md)) can bridge the gap. The server reconstructs catch-up from the archive (a base snapshot and/or diffs), then hands off to the hot journal and live stream — instead of a full live re-snapshot. The message stream is the same as the other modes, so a client needs no special handling. See [Cold-tier replay](../guides/fan-out.md#cold-tier-replay). |
 
 The server selects the mode automatically (in priority order):
 - If `last_known_source_position` is set and still covered by the journal, the server uses `SYNC_MODE_DELTA` resumed from that position. This is the cross-instance failover path — the source position is stable across instances, unlike the sequence.
 - Else if `last_known_sequence > 0` and the sequence is still in the journal (i.e., `>= journal_oldest_sequence`), the server uses `SYNC_MODE_DELTA`.
 - Else if `last_snapshot_id` matches a retained snapshot, the server uses `SYNC_MODE_DELTA_FROM_SNAPSHOT`.
+- Else if `last_known_source_position` predates the journal but a configured cold archive can bridge the gap to the journal, the server uses `SYNC_MODE_REPLAY_ARCHIVE`.
 - Otherwise, the server uses `SYNC_MODE_FULL_SNAPSHOT`.
 
 **2. Snapshot (only for `SYNC_MODE_FULL_SNAPSHOT`)**

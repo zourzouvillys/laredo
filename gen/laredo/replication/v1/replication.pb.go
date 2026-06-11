@@ -30,6 +30,15 @@ const (
 	SyncMode_SYNC_MODE_FULL_SNAPSHOT       SyncMode = 1
 	SyncMode_SYNC_MODE_DELTA               SyncMode = 2
 	SyncMode_SYNC_MODE_DELTA_FROM_SNAPSHOT SyncMode = 3
+	// Cold-tier replay: the client is too far behind the in-memory journal, but
+	// the server is configured with a cold archive (written by laredo-snapshotter)
+	// that can bridge the gap. The server reconstructs catch-up from the archive
+	// (a base snapshot and/or diffs) and hands off to the hot journal and live
+	// stream, instead of a full live re-snapshot. The message stream is the same
+	// as the other modes — snapshot rows and/or journal entries — so a client
+	// needs no special handling; the mode is informational (cold catch-up reads
+	// object storage and may be slower). See EDR-0002.
+	SyncMode_SYNC_MODE_REPLAY_ARCHIVE SyncMode = 4
 )
 
 // Enum value maps for SyncMode.
@@ -39,12 +48,14 @@ var (
 		1: "SYNC_MODE_FULL_SNAPSHOT",
 		2: "SYNC_MODE_DELTA",
 		3: "SYNC_MODE_DELTA_FROM_SNAPSHOT",
+		4: "SYNC_MODE_REPLAY_ARCHIVE",
 	}
 	SyncMode_value = map[string]int32{
 		"SYNC_MODE_UNSPECIFIED":         0,
 		"SYNC_MODE_FULL_SNAPSHOT":       1,
 		"SYNC_MODE_DELTA":               2,
 		"SYNC_MODE_DELTA_FROM_SNAPSHOT": 3,
+		"SYNC_MODE_REPLAY_ARCHIVE":      4,
 	}
 )
 
@@ -1734,12 +1745,13 @@ const file_laredo_replication_v1_replication_proto_rawDesc = "" +
 	"\fbehind_count\x18\x03 \x01(\x03R\vbehindCount\x12!\n" +
 	"\fbuffer_depth\x18\x04 \x01(\x05R\vbufferDepth\x12=\n" +
 	"\fconnected_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\vconnectedAt\x12\x14\n" +
-	"\x05state\x18\x06 \x01(\tR\x05state*z\n" +
+	"\x05state\x18\x06 \x01(\tR\x05state*\x98\x01\n" +
 	"\bSyncMode\x12\x19\n" +
 	"\x15SYNC_MODE_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17SYNC_MODE_FULL_SNAPSHOT\x10\x01\x12\x13\n" +
 	"\x0fSYNC_MODE_DELTA\x10\x02\x12!\n" +
-	"\x1dSYNC_MODE_DELTA_FROM_SNAPSHOT\x10\x032\xc8\x03\n" +
+	"\x1dSYNC_MODE_DELTA_FROM_SNAPSHOT\x10\x03\x12\x1c\n" +
+	"\x18SYNC_MODE_REPLAY_ARCHIVE\x10\x042\xc8\x03\n" +
 	"\x18LaredoReplicationService\x12Q\n" +
 	"\x04Sync\x12\".laredo.replication.v1.SyncRequest\x1a#.laredo.replication.v1.SyncResponse0\x01\x12j\n" +
 	"\rListSnapshots\x12+.laredo.replication.v1.ListSnapshotsRequest\x1a,.laredo.replication.v1.ListSnapshotsResponse\x12l\n" +

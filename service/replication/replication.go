@@ -4,6 +4,7 @@ package replication
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
@@ -13,18 +14,51 @@ import (
 	"github.com/zourzouvillys/laredo"
 	v1 "github.com/zourzouvillys/laredo/gen/laredo/replication/v1"
 	"github.com/zourzouvillys/laredo/gen/laredo/replication/v1/replicationv1connect"
+	"github.com/zourzouvillys/laredo/snapshotter"
 	"github.com/zourzouvillys/laredo/target/fanout"
 )
 
 // Service implements the LaredoReplicationService for fan-out targets.
 type Service struct {
 	replicationv1connect.UnimplementedLaredoReplicationServiceHandler
-	engine laredo.Engine
+	engine   laredo.Engine
+	archives map[laredo.TableIdentifier]*snapshotter.Reader
+	log      *slog.Logger
+}
+
+// Option configures a Service.
+type Option func(*Service)
+
+// WithArchive registers a cold archive (written by laredo-snapshotter) that the
+// server may replay to resume a client whose position predates the in-memory
+// journal, instead of a full live re-snapshot (SYNC_MODE_REPLAY_ARCHIVE; see
+// EDR-0002). The reader is read-only; the snapshotter remains the sole writer.
+func WithArchive(schema, table string, r *snapshotter.Reader) Option {
+	return func(s *Service) {
+		if s.archives == nil {
+			s.archives = make(map[laredo.TableIdentifier]*snapshotter.Reader)
+		}
+		s.archives[laredo.Table(schema, table)] = r
+	}
+}
+
+// WithLogger sets the logger used for operational messages such as cold-replay
+// fallbacks. Defaults to slog.Default().
+func WithLogger(l *slog.Logger) Option {
+	return func(s *Service) {
+		if l != nil {
+			s.log = l
+		}
+	}
 }
 
 // New creates a new Replication service.
-func New(engine laredo.Engine) *Service {
-	return &Service{engine: engine}
+func New(engine laredo.Engine, opts ...Option) *Service {
+	s := &Service{engine: engine, log: slog.Default()}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // GetReplicationStatus returns current replication status for a fan-out target.
@@ -217,6 +251,20 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 		}
 	}
 
+	// Cold-tier replay: the client has a position but it predates the hot journal.
+	// If a cold archive is configured and can bridge to the journal, replay from
+	// it instead of a full live re-snapshot (EDR-0002). Everything is materialized
+	// up front, so any failure falls through to the live modes before the
+	// handshake is sent.
+	var cold *coldReplay
+	if mode == v1.SyncMode_SYNC_MODE_UNSPECIFIED && clientPosStr != "" && src != nil {
+		if cr, ok := s.planColdReplay(ctx, laredo.Table(schema, table), ft, src, clientPosStr); ok {
+			mode = v1.SyncMode_SYNC_MODE_REPLAY_ARCHIVE
+			cold = cr
+			resumeSeq = cr.resumeSeq
+		}
+	}
+
 	switch {
 	case mode != v1.SyncMode_SYNC_MODE_UNSPECIFIED:
 		// Already resolved via source-position resume above.
@@ -316,6 +364,19 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 			return err
 		}
 		resumeSeq = snap.Sequence
+	}
+
+	// Cold-tier replay: stream the materialized archive (base snapshot + diffs),
+	// pinning the hot journal at the resume point so it cannot prune past the
+	// handoff. The shared catch-up + live loop below then hands off to the hot
+	// journal and live tail from resumeSeq.
+	if mode == v1.SyncMode_SYNC_MODE_REPLAY_ARCHIVE {
+		ft.PinJournal(clientID, cold.resumeSeq)
+		defer ft.UnpinJournal(clientID)
+		if err := streamColdReplay(stream, cold, filter); err != nil {
+			return err
+		}
+		resumeSeq = cold.resumeSeq
 	}
 
 	// Journal catch-up. Entries the subscription filter excludes are skipped;

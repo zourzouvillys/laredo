@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from a single fan-out target.
 - **Fan-out client**: `WithFilterEquals`, `WithFilterPrefix`, and `WithFilterIn`
   options to set a subscription filter.
+- **Fan-out replication**: Cold-tier replay (`SYNC_MODE_REPLAY_ARCHIVE`). A `Sync`
+  client whose position predates the in-memory journal can be resumed from the
+  cold archive written by `laredo-snapshotter` (base snapshot + diffs) instead of
+  a full live re-snapshot, then handed off gaplessly to the hot journal and live
+  stream. Register an archive per table with `replication.WithArchive`; any
+  archive problem falls back to a full live snapshot before any data is sent. See
+  EDR-0002.
+- **Snapshotter**: `snapshotter.Reader` — the read-side inverse of `Writer`
+  (`LoadManifest`, `ReadSnapshot` / `ReadDiff`, and `Plan` chain selection), plus
+  exported `ManifestObjectKey` / `ArtifactObjectKey` helpers, so consumers can
+  reconstruct a table from the archive.
 
 ## [0.2.0] - 2026-04-14
 

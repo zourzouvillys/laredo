@@ -50,18 +50,30 @@ Server-side per-subscription filtering shipped (`SyncRequest.filters`,
 
 ### Cold-tier replay (EDR-0002)
 
-Design landed: [EDR-0002](docs/edr/0002-cold-tier-replay.md) — serve too-stale
-fan-out clients from the snapshotter's cold archive (`SYNC_MODE_REPLAY_ARCHIVE`)
-instead of a full live re-snapshot. Implementation:
+Shipped: [EDR-0002](docs/edr/0002-cold-tier-replay.md) — serve too-stale fan-out
+clients from the snapshotter's cold archive (`SYNC_MODE_REPLAY_ARCHIVE`) instead
+of a full live re-snapshot.
 
-- [ ] `snapshotter.Reader` — `LoadManifest`, artifact decode (reuse `Format`),
+- [x] `snapshotter.Reader` — `LoadManifest`, artifact decode (reuse `Format`),
       and `Plan(manifest, fromPosition, cmp)` chain selection (diff-only /
       snapshot-base / none).
-- [ ] Export `ManifestObjectKey` / `ArtifactObjectKey` (refactor the writer's
+- [x] Export `ManifestObjectKey` / `ArtifactObjectKey` (refactor the writer's
       private key logic; no write-side behaviour change).
-- [ ] `SYNC_MODE_REPLAY_ARCHIVE` in the proto + the replication cold-replay path:
+- [x] `SYNC_MODE_REPLAY_ARCHIVE` in the proto + the replication cold-replay path:
       hot-journal pin, gapless position-based handoff, fall back to
       `FULL_SNAPSHOT` on any cold-path failure.
-- [ ] Fan-out target `archive` config (read-only destination + formats).
-- [ ] Tests: reader unit (diff-only, snapshot-base, gap, unknown version,
-      missing artifact) + cold-replay integration; docs + runbook.
+- [x] Archive wired via `replication.WithArchive` (per table). Placed on the
+      replication service, not the fan-out target, to keep the core target from
+      depending on the snapshotter.
+- [x] Tests: reader unit (diff-only, snapshot-base, gap, unknown version,
+      missing artifact) + cold-replay integration; docs.
+
+Deferred:
+
+- [ ] Wire the archive from HOCON when the fan-out target itself is wired into
+      `laredo-server` from config (see the fan-out "Deferred" item above).
+- [ ] Cold-replay operations runbook (fleet-reconnect read amplification on the
+      archive, monitoring).
+- [ ] Diff-only resume when the client's position aligns to a diff boundary is
+      implemented; consider serving partial-diff ranges for non-aligned positions
+      if a use case needs to avoid the base-snapshot re-read.
