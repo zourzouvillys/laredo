@@ -158,7 +158,7 @@ Implement fan-out as a target type (`target/fanout`). It satisfies the `SyncTarg
 - **No engine changes.** The engine treats a fan-out target the same as an indexed memory target or an HTTP sync target. Pipeline configuration, ACK coordination, error isolation, and snapshot scheduling all work without modification.
 - **Composable with pipeline features.** Filters and transforms apply before the fan-out target sees the data. This means different fan-out pipelines can serve different filtered views of the same source table.
 - **Self-contained deployment.** A single `laredo-server` instance can run in-memory targets for local queries and fan-out targets for remote consumers. No separate proxy service to deploy and manage.
-- **Embedded gRPC server.** The fan-out target runs its own gRPC listener (default port 4002) for the replication protocol. This is separate from the main OAM/Query port (4001). Each fan-out target instance can bind to a different port if multiple fan-out pipelines are configured.
+- **Embedded gRPC server.** The fan-out target serves the replication protocol on a gRPC listener (default port 4002), separate from the main OAM/Query port (4001). _Revised by [ADR-007](#adr-007-server-side-fan-out-wiring): the protocol is served by a single **engine-global** replication service that routes by table, not by a per-target listener — so multiple fan-out targets on one server share one 4002 listener rather than each binding their own port._
 - **Single-process bottleneck.** All fan-out clients connect to the one Laredo instance that holds the fan-out target. If that instance fails, all downstream clients lose their connection. Clients handle this through reconnection with delta sync (resuming from their last-known position) or snapshot restore.
 - **Journal and snapshot management.** The fan-out target must manage its own change journal (for delta sync) and snapshot lifecycle (for new clients or clients that fall too far behind). This adds complexity to the target implementation, but keeps it isolated from the engine core.
 
@@ -219,6 +219,71 @@ journal are untouched.
 - **Whole table still resident.** Filtering reduces delivery, not memory — the
   fan-out target keeps the full table in memory. Memory-bounded partitioning, if
   ever needed, would be a separate concern.
+
+## ADR-007: Server-side fan-out wiring
+
+**Status:** Accepted
+
+**Amends:** [ADR-005](#adr-005-fan-out-replication-as-a-target-type)
+
+### Context
+
+ADR-005 described each fan-out target as running "its own gRPC listener … each
+fan-out target instance can bind to a different port." The replication service
+that was actually built (`service/replication`) is **engine-global**:
+`replication.New(engine)` answers every `Sync`, `GetReplicationStatus`,
+`ListSnapshots`, and `FetchSnapshot` request by looking up the right
+`*fanout.Target` in `engine.Targets()` using the table identifier carried in the
+request. One service instance already serves every fan-out table — so the
+"one listener per target" model never matched the code.
+
+Wiring the stock `laredo-server` binary to serve a fan-out from HOCON forced the
+question into the open: how many listeners, on which port, configured how. The
+documented config block also referenced a persistent `snapshot { store; serializer }`
+that no `target/fanout` option backs.
+
+### Decision
+
+1. **One engine-global replication service per server.** Built from the engine,
+   it serves every `replication-fanout` target and routes by table. There is no
+   per-target listener.
+2. **One dedicated listener, default port 4002**, separate from the OAM/Query
+   port (4001). This preserves ADR-005's separate-port intent — and every
+   published client example that dials `:4002` — while dropping per-target ports.
+3. **Mounted like OAM and Query.** The service is a Connect handler registered
+   via `service.EnableReplication`, so it inherits the same TLS, graceful
+   shutdown, and gRPC/gRPC-Web/Connect multiplexing (consistent with
+   [ADR-002](#adr-002-connect-rpc-for-service-communication)).
+4. **HOCON shape.** A top-level `fanout { grpc { port = 4002 } }` block
+   configures the (engine-global) listener; each `type = replication-fanout`
+   target configures its own `journal`, `snapshot` retention, `client_buffer`,
+   `max_clients`, and `heartbeat_interval`, which map onto `target/fanout.New`
+   options. `laredo-server` starts the listener **iff** at least one
+   `replication-fanout` target is configured, defaulting the port when the block
+   is omitted.
+5. **Persistent snapshot store is out of scope here.** `target/fanout` snapshots
+   are in-memory (interval + retention only); the durable
+   `snapshot { store; store_config; serializer }` shape is removed from the
+   config contract until an option backs it. Cold-tier replay
+   ([EDR-0002](/edr)) is wired separately on the replication service via a
+   read-only archive reader, not on the target.
+
+### Consequences
+
+- **`max_clients` is per target; the port is global.** The old per-target
+  `grpc { port; max_clients }` block splits: `port` becomes the top-level
+  `fanout.grpc.port`; `max_clients` stays on each target (it bounds that
+  target's client registry).
+- **No client-facing churn.** Clients still dial `:4002` and name their table;
+  [ADR-006](#adr-006-subscription-scoped-server-side-filtering-on-the-fan-out)
+  subscription filters are unchanged.
+- **Single-process bottleneck (ADR-005) is unchanged.** The listener and its
+  targets share one process; failover remains client reconnect by source
+  position, plus cold-tier replay where an archive is registered.
+- **Stream isolation is preserved.** Long-lived fan-out streams sit on their own
+  port, away from short OAM/Query RPCs. Co-mounting on the OAM/Query port, or
+  running several replication listeners, can be added later without a contract
+  change.
 
 ## Further reading
 

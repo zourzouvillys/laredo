@@ -21,14 +21,36 @@ Items not yet implemented. Everything else from the original v1.0 roadmap has be
       the OAM `DrainReplication` admin RPC); client overlaps the cutover and
       disconnects the old instance cleanly.
 
-### Deferred
+### Server wiring (ADR-007)
 
-- [ ] Wire the fan-out target + replication service into the pre-built
-      `laredo-server` from HOCON config (a `replication-fanout` target type and
-      mounting `LaredoReplicationService`). Today these are library components;
-      the SIGTERM/OAM drain hooks are in place but only act on fan-out targets
-      once an engine is built with them (e.g. via a custom `main`). Until then,
-      `--drain-grace`/`DrainReplication` are no-ops on the stock binary.
+Shipped: ADR-007 (amends ADR-005) — the stock `laredo-server` serves a fan-out
+from HOCON. A `replication-fanout` target type maps onto `target/fanout.New`
+options, and the binary mounts a single engine-global `LaredoReplicationService`
+(routing by table) on a dedicated listener (default `4002`) via
+`service.EnableReplication` whenever a fan-out target is configured.
+
+- [x] `replication-fanout` config target type (`journal` / `snapshot` retention /
+      `client_buffer` / `max_clients` / `heartbeat_interval`).
+- [x] Top-level `fanout { grpc { port } }` listener block (engine-global).
+- [x] `service.EnableReplication`; mount + graceful shutdown in `laredo-server`.
+      `--drain-grace`/`DrainReplication` now act on the stock binary's fan-out
+      targets.
+
+Deferred:
+
+- [ ] Durable on-disk fan-out snapshot store from config (`snapshot { store;
+      store_config; serializer }`). Today `target/fanout` snapshots are in-memory
+      only, so that block has no backing option and is omitted from the config
+      contract; add it when a persistent-snapshot option lands on the target.
+- [ ] Wire the cold-tier archive reader (`replication.WithArchive`) from HOCON now
+      that the target is config-wired — needs an archive destination/format config
+      home (shared with the EDR-0003 CLI item below).
+- [ ] Optional: co-mount replication on the OAM/Query port, or run multiple
+      replication listeners, for operators who want a single port or finer
+      isolation. No contract change required.
+
+### Deferred (protocol)
+
 - [ ] Add `source_position` to `SnapshotBegin`/`SnapshotEnd` so a client that
       fails over immediately after a full snapshot (before any journal entry)
       can still resume by position instead of re-snapshotting.
@@ -70,8 +92,8 @@ of a full live re-snapshot.
 
 Deferred:
 
-- [ ] Wire the archive from HOCON when the fan-out target itself is wired into
-      `laredo-server` from config (see the fan-out "Deferred" item above).
+- [ ] Wire the archive from HOCON — now unblocked (the fan-out target is
+      config-wired per ADR-007); tracked under "Server wiring → Deferred" above.
 - [ ] Cold-replay operations runbook (fleet-reconnect read amplification on the
       archive, monitoring).
 - [ ] Diff-only resume when the client's position aligns to a diff boundary is

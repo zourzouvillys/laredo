@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **laredo-server**: Serve a fan-out straight from HOCON. A `type =
+  replication-fanout` target is now a first-class config target type, and the
+  stock binary mounts a single engine-global `LaredoReplicationService` (routing
+  by table) on a dedicated listener — default port `4002`, separate from the
+  OAM/Query port — whenever any fan-out target is configured. The target's
+  `journal`, in-memory `snapshot` retention, `client_buffer`, `max_clients`, and
+  `heartbeat_interval` map onto `target/fanout.New` options; a top-level
+  `fanout { grpc { port } }` block overrides the listener port. New
+  `service.EnableReplication` mounts the handler like `EnableOAM` / `EnableQuery`.
+  See ADR-007 (amends ADR-005).
 - **Fan-out replication**: Per-subscription server-side filtering. A `Sync`
   client can attach AND-combined column predicates (`equals`, `prefix`, `in`) via
   the new `SyncRequest.filters` field; the server applies them uniformly across

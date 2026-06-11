@@ -25,6 +25,7 @@ import (
 	"github.com/zourzouvillys/laredo/service"
 	"github.com/zourzouvillys/laredo/service/oam"
 	"github.com/zourzouvillys/laredo/service/query"
+	"github.com/zourzouvillys/laredo/service/replication"
 )
 
 func main() {
@@ -201,6 +202,26 @@ func run() error {
 		}()
 	}
 
+	// Start the fan-out replication server. cfg.Fanout is non-nil exactly when a
+	// replication-fanout target is configured. A single engine-global
+	// LaredoReplicationService serves every fan-out target, routing by table, on
+	// its own port distinct from the OAM/Query port (ADR-007).
+	var replSrv *service.Server
+	if cfg.Fanout != nil {
+		replSvc := replication.New(eng, replication.WithLogger(slog.Default()))
+		replAddr := fmt.Sprintf(":%d", cfg.Fanout.GRPCPort)
+		replSrv = service.New(
+			service.WithAddress(replAddr),
+			service.EnableReplication(replSvc),
+		)
+		go func() {
+			slog.Info("fan-out replication server listening", "port", cfg.Fanout.GRPCPort) //nolint:gosec // structured logging
+			if err := replSrv.Start(); err != nil {
+				slog.Error("replication server", "error", err)
+			}
+		}()
+	}
+
 	// Wait for shutdown signal.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
@@ -230,6 +251,15 @@ func run() error {
 	if grpcSrv != nil {
 		if err := grpcSrv.Stop(shutdownCtx); err != nil {
 			slog.Warn("gRPC shutdown", "error", err)
+		}
+	}
+
+	// Stop the fan-out replication server. Clients were already told to hand off
+	// during the drain window above; this closes the listener and waits for any
+	// remaining streams to finish within the shutdown deadline.
+	if replSrv != nil {
+		if err := replSrv.Stop(shutdownCtx); err != nil {
+			slog.Warn("replication shutdown", "error", err)
 		}
 	}
 

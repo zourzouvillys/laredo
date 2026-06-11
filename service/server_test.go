@@ -8,6 +8,8 @@ import (
 
 	"connectrpc.com/connect"
 
+	replv1 "github.com/zourzouvillys/laredo/gen/laredo/replication/v1"
+	"github.com/zourzouvillys/laredo/gen/laredo/replication/v1/replicationv1connect"
 	v1 "github.com/zourzouvillys/laredo/gen/laredo/v1"
 	"github.com/zourzouvillys/laredo/gen/laredo/v1/laredov1connect"
 	"github.com/zourzouvillys/laredo/service"
@@ -69,6 +71,35 @@ func TestServer_WithOAMService(t *testing.T) {
 		t.Fatal("expected error from unimplemented RPC")
 	}
 	// Should be CodeUnimplemented.
+	if connect.CodeOf(err) != connect.CodeUnimplemented {
+		t.Errorf("expected CodeUnimplemented, got %v", connect.CodeOf(err))
+	}
+}
+
+func TestServer_WithReplicationService(t *testing.T) {
+	// Mount a minimal replication handler and verify the path is registered. A
+	// reachable-but-unimplemented RPC (CodeUnimplemented) proves EnableReplication
+	// wired the service; an unmounted service would yield a routing error instead.
+	handler := replicationv1connect.UnimplementedLaredoReplicationServiceHandler{}
+
+	srv := service.New(
+		service.WithAddress("127.0.0.1:0"),
+		service.EnableReplication(handler),
+	)
+
+	go func() { _ = srv.Start() }()
+	time.Sleep(50 * time.Millisecond)
+	defer func() { _ = srv.Stop(context.Background()) }()
+
+	client := replicationv1connect.NewLaredoReplicationServiceClient(
+		http.DefaultClient,
+		"http://"+srv.Addr(),
+	)
+
+	_, err := client.GetReplicationStatus(context.Background(), connect.NewRequest(&replv1.GetReplicationStatusRequest{}))
+	if err == nil {
+		t.Fatal("expected error from unimplemented RPC")
+	}
 	if connect.CodeOf(err) != connect.CodeUnimplemented {
 		t.Errorf("expected CodeUnimplemented, got %v", connect.CodeOf(err))
 	}
