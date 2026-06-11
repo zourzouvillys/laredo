@@ -37,6 +37,13 @@ snapshotter binary's destination/credential builder into a shared package* rathe
 than duplicating AWS assume-role logic into the config path. The HOCON schema is
 designed so S3 slots in as another `store` value with no contract change.
 
+> **Update (S3 shipped).** The deferred follow-up has since landed: the shared
+> builder was extracted as `snapshotter/destwire`, the snapshotter binary now
+> delegates to it, and `laredo-server` accepts `archive.store = s3` (ambient AWS
+> credentials). The "deferred / rejected" statements below record the original
+> phasing; both `local` and `s3` are now wired. Named profiles / assume-role for
+> the server archive remain future work. See the Changelog.
+
 ## Context
 
 Three things are already true, and they line up into a one-block gap:
@@ -165,14 +172,15 @@ reached unchanged through the registered reader.
 
 ## Scope — out
 
-- **S3 archives in `laredo-server`.** Deferred to the destination-builder
-  extraction described above. Tracked in `TODO.md`.
-- **The `snapshotter/destwire` extraction itself.** It is the enabling refactor
-  for S3 and gets its own change (it touches the snapshotter binary); this EDR
-  only commits to the *direction*, not the refactor.
+- _(Originally out, since shipped — see the Update above.)_ **S3 archives in
+  `laredo-server`** and **the `snapshotter/destwire` extraction**: both landed.
+  Recorded here as the original phasing.
+- **Named profiles / assume-role for the server archive.** S3 uses the ambient
+  credential chain; profile-based credentials (which the snapshotter supports via
+  its config) are not wired into the `laredo-server` archive block. Future work.
 - **New `Format` / `Destination` backends**, S3-compatible endpoints (MinIO/R2),
-  or credential schemes beyond what the snapshotter already supports — they arrive
-  with the shared builder, not here.
+  or credential schemes beyond what the snapshotter already supports — out of
+  scope.
 - **Durable on-disk *fan-out* snapshots.** Separate concern (the in-memory
   snapshot retention from ADR-007); unrelated to the cold archive.
 - **Any change to cold-replay semantics.** Mode selection, fallback, and handoff
@@ -231,3 +239,9 @@ reached unchanged through the registered reader.
   `snapshotter.Reader` via `config.BuildArchiveReader`, and registered with
   `replication.WithArchive` per `(schema, table)`. `store = s3` is rejected with
   a clear error pending the shared destination-builder extraction.
+- **2026-06-11**: S3 shipped. Extracted `cmd/laredo-snapshotter`'s
+  destination/format building into the importable `snapshotter/destwire` package
+  (`BuildDestination`, `BuildFormats`, `AmbientAWSConfig`); the snapshotter binary
+  now delegates to it. `laredo-server` accepts `archive.store = s3` (ambient AWS
+  credentials) through the same package — no duplicated wiring. Named profiles /
+  assume-role for the server archive remain future work.

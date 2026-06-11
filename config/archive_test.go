@@ -126,10 +126,11 @@ func TestBuildArchiveReader_Errors(t *testing.T) {
 		cfg     *ArchiveConfig
 		wantSub string
 	}{
-		{"s3 rejected", &ArchiveConfig{Store: "s3", Bucket: "b"}, "not yet supported"},
-		{"unknown store", &ArchiveConfig{Store: "gcs"}, "unknown store"},
-		{"empty store", &ArchiveConfig{Store: ""}, "store is required"},
-		{"local without path", &ArchiveConfig{Store: "local"}, "requires store_config.path"},
+		{"unknown store", &ArchiveConfig{Store: "gcs"}, "unknown destination type"},
+		{"empty store", &ArchiveConfig{Store: ""}, "type is required"},
+		{"local without path", &ArchiveConfig{Store: "local"}, "requires a path"},
+		{"s3 without bucket", &ArchiveConfig{Store: "s3", Region: "us-east-1"}, "requires a bucket"},
+		{"credentials unsupported", &ArchiveConfig{Store: "s3", Bucket: "b", Credentials: "prod"}, "credentials is not supported"},
 		{"unknown format", &ArchiveConfig{Store: "local", Path: "/tmp/x", Formats: []string{"xml"}}, "unknown format"},
 	}
 	for _, c := range cases {
@@ -145,6 +146,24 @@ func TestBuildArchiveReader_Errors(t *testing.T) {
 	}
 }
 
+// TestBuildArchiveReader_S3 verifies an s3 archive builds a reader. Construction
+// is network-free (AWS credentials resolve lazily), so no live S3 is needed.
+func TestBuildArchiveReader_S3(t *testing.T) {
+	r, err := BuildArchiveReader(&ArchiveConfig{
+		Store:     "s3",
+		Bucket:    "laredo-archive",
+		Prefix:    "laredo/",
+		Region:    "us-east-1",
+		KeyPrefix: "public.events/",
+	})
+	if err != nil {
+		t.Fatalf("BuildArchiveReader(s3): %v", err)
+	}
+	if r == nil {
+		t.Fatal("expected a non-nil s3 reader")
+	}
+}
+
 func TestBuildArchiveReader_Nil(t *testing.T) {
 	r, err := BuildArchiveReader(nil)
 	if err != nil || r != nil {
@@ -152,9 +171,9 @@ func TestBuildArchiveReader_Nil(t *testing.T) {
 	}
 }
 
-// TestValidate_ArchiveS3Rejected verifies an s3 archive is caught at validation
-// time, not only at server start.
-func TestValidate_ArchiveS3Rejected(t *testing.T) {
+// TestValidate_ArchiveBadStore verifies a malformed archive (here, an unknown
+// store) is caught at validation time, not only at server start.
+func TestValidate_ArchiveBadStore(t *testing.T) {
 	input := `
 sources {
   pg { type = postgresql, connection = "postgres://localhost/db" }
@@ -167,7 +186,7 @@ tables = [
     targets = [
       {
         type = replication-fanout
-        archive { store = s3, store_config { bucket = b } }
+        archive { store = gcs }
       }
     ]
   }
@@ -179,11 +198,11 @@ tables = [
 	}
 	found := false
 	for _, e := range cfg.Validate() {
-		if strings.Contains(e.Error(), "not yet supported") {
+		if strings.Contains(e.Error(), "unknown destination type") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected validation to reject s3 archive, got %v", cfg.Validate())
+		t.Fatalf("expected validation to reject unknown archive store, got %v", cfg.Validate())
 	}
 }

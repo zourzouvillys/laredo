@@ -39,7 +39,11 @@ options, and the binary mounts a single engine-global `LaredoReplicationService`
 - [x] Cold-tier archive reader from HOCON (EDR-0005): a `replication-fanout`
       target's `archive` block builds a `snapshotter.Reader` via
       `config.BuildArchiveReader`, registered with `replication.WithArchive`.
-      Local store shipped; s3 rejected loudly (see below).
+- [x] S3 cold-tier archive (EDR-0005): extracted
+      `cmd/laredo-snapshotter`'s destination/format building into the importable
+      `snapshotter/destwire` package; the snapshotter delegates to it and
+      `laredo-server` accepts `archive.store = s3` (ambient AWS credentials)
+      through the same path — one wiring, no duplication.
 
 Deferred:
 
@@ -47,13 +51,11 @@ Deferred:
       store_config; serializer }`). Today `target/fanout` snapshots are in-memory
       only, so that block has no backing option and is omitted from the config
       contract; add it when a persistent-snapshot option lands on the target.
-- [ ] S3 cold-tier archive from HOCON (EDR-0005). Extract
-      `cmd/laredo-snapshotter`'s `buildDestinations` / `buildFormats` /
-      `awsConfigCache` into a shared importable package (e.g. `snapshotter/destwire`)
-      so `laredo-server` and `laredo-snapshotter` build destinations + resolve
-      credentials through one path, then accept `archive.store = s3`. The HOCON
-      schema is already final; only the builder needs a home. (Shares the archive
-      destination/format config home with the EDR-0003 CLI item below.)
+- [ ] Named profiles / assume-role for the `laredo-server` archive. S3 currently
+      uses ambient credentials; the snapshotter supports profile-based creds via
+      its config, but that profile map is not wired into the archive block. Add a
+      neutral credential spec to `destwire` (or thread an `AWSConfigFunc`) when a
+      cross-account archive read is needed.
 - [ ] Optional: co-mount replication on the OAM/Query port, or run multiple
       replication listeners, for operators who want a single port or finer
       isolation. No contract change required.

@@ -6,7 +6,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awskinesis "github.com/aws/aws-sdk-go-v2/service/kinesis"
-	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	awssns "github.com/aws/aws-sdk-go-v2/service/sns"
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 
@@ -14,14 +13,11 @@ import (
 	"github.com/zourzouvillys/laredo/snapshotter"
 	"github.com/zourzouvillys/laredo/snapshotter/awsx"
 	"github.com/zourzouvillys/laredo/snapshotter/config"
-	localdest "github.com/zourzouvillys/laredo/snapshotter/dest/local"
-	s3dest "github.com/zourzouvillys/laredo/snapshotter/dest/s3"
+	"github.com/zourzouvillys/laredo/snapshotter/destwire"
 	kinesissink "github.com/zourzouvillys/laredo/snapshotter/event/kinesis"
 	snssink "github.com/zourzouvillys/laredo/snapshotter/event/sns"
 	sqssink "github.com/zourzouvillys/laredo/snapshotter/event/sqs"
 	"github.com/zourzouvillys/laredo/snapshotter/fanoutsub"
-	"github.com/zourzouvillys/laredo/snapshotter/format/jsonl"
-	"github.com/zourzouvillys/laredo/snapshotter/format/protobuf"
 )
 
 // awsConfigCache memoizes resolved aws.Config per (profile, region).
@@ -76,11 +72,11 @@ func buildWriters(ctx context.Context, cfg *config.Config) ([]*snapshotter.Write
 		if err != nil {
 			return nil, fmt.Errorf("tables[%d] (%s): %w", i, tbl.Source.Table, err)
 		}
-		snapFmts, err := buildFormats(tbl.SnapshotFormats)
+		snapFmts, err := destwire.BuildFormats(tbl.SnapshotFormats)
 		if err != nil {
 			return nil, fmt.Errorf("tables[%d] snapshot formats: %w", i, err)
 		}
-		diffFmts, err := buildFormats(tbl.DiffFormats)
+		diffFmts, err := destwire.BuildFormats(tbl.DiffFormats)
 		if err != nil {
 			return nil, fmt.Errorf("tables[%d] diff formats: %w", i, err)
 		}
@@ -125,20 +121,20 @@ func buildWriters(ctx context.Context, cfg *config.Config) ([]*snapshotter.Write
 }
 
 func buildDestinations(ctx context.Context, awsCfg *awsConfigCache, dcs []config.Destination) ([]snapshotter.Destination, error) {
-	var out []snapshotter.Destination
+	out := make([]snapshotter.Destination, 0, len(dcs))
 	for _, dc := range dcs {
-		switch dc.Type {
-		case "local":
-			out = append(out, localdest.New(dc.Path))
-		case "s3":
-			cfg, err := awsCfg.get(ctx, dc.Credentials, dc.Region)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, s3dest.New(awss3.NewFromConfig(cfg), dc.Bucket, dc.Prefix))
-		default:
-			return nil, fmt.Errorf("unknown destination type %q", dc.Type)
+		dest, err := destwire.BuildDestination(ctx, destwire.DestinationSpec{
+			Type:        dc.Type,
+			Path:        dc.Path,
+			Bucket:      dc.Bucket,
+			Prefix:      dc.Prefix,
+			Region:      dc.Region,
+			Credentials: dc.Credentials,
+		}, awsCfg.get)
+		if err != nil {
+			return nil, err
 		}
+		out = append(out, dest)
 	}
 	return out, nil
 }
@@ -159,21 +155,6 @@ func buildSinks(ctx context.Context, awsCfg *awsConfigCache, ecs []config.Event)
 			out = append(out, kinesissink.New(awskinesis.NewFromConfig(cfg), ec.Stream))
 		default:
 			return nil, fmt.Errorf("unknown event sink type %q", ec.Type)
-		}
-	}
-	return out, nil
-}
-
-func buildFormats(ids []string) ([]snapshotter.Format, error) {
-	var out []snapshotter.Format
-	for _, id := range ids {
-		switch id {
-		case "jsonl":
-			out = append(out, jsonl.New())
-		case "protobuf":
-			out = append(out, protobuf.New())
-		default:
-			return nil, fmt.Errorf("unknown format %q", id)
 		}
 	}
 	return out, nil
