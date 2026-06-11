@@ -36,6 +36,43 @@ message SyncRequest {
   // server instances, enabling resume after failover to a different instance
   // without a full re-sync.
   string last_known_source_position = 6;
+
+  // Optional server-side subscription filter. When non-empty, the client
+  // receives only rows and change events whose column values satisfy ALL of
+  // these predicates (logical AND), applied uniformly across the snapshot,
+  // journal catch-up, and live phases.
+  //
+  // The common use is partition scoping: a single equality predicate on a
+  // partition column (e.g. tenant_id) gives each subscriber its own slice of a
+  // shared table without a separate pipeline, and without other partitions'
+  // rows ever crossing the wire. Filter columns are assumed stable for a row's
+  // lifetime (see the fan-out guide for the rationale and resume semantics).
+  // Empty means no filtering — the subscriber receives the whole table.
+  repeated FieldPredicate filters = 7;
+}
+
+// FieldPredicate is one column-level condition in a subscription filter
+// (SyncRequest.filters). It is evaluated against a row's column values: the
+// post-change row for INSERT and UPDATE, and the pre-change row for DELETE.
+// TRUNCATE and schema-change markers always pass — they are structural and
+// apply to the whole replica. A missing or null column never matches.
+message FieldPredicate {
+  // Column name to test.
+  string field = 1;
+
+  oneof match {
+    // Equality. Numbers compare numerically (a predicate value of 42 matches a
+    // column stored as an integer or a float 42); strings and booleans compare
+    // by value. This is the common partition-key case.
+    google.protobuf.Value equals = 2;
+
+    // String prefix. Matches only string-typed column values.
+    string prefix = 3;
+
+    // Membership: the column value equals one of these (same comparison rules
+    // as `equals`).
+    google.protobuf.ListValue in = 4;
+  }
 }
 
 message SyncResponse {

@@ -117,6 +117,67 @@ client.Listen(func(old, new laredo.Row) {
 client.Stop() // saves local snapshot for fast restart
 ```
 
+## Subscription filtering
+
+A client can ask for **only the rows it cares about** by attaching one or more
+column predicates to its `Sync` request. The server applies them uniformly
+across the snapshot, journal catch-up, and live phases, so the subscriber gets a
+consistent slice of the table — and **rows it filters out never cross the wire**.
+
+The common use is **partition scoping**: a single equality predicate on a
+partition column gives each subscriber its own slice of a shared table without a
+separate pipeline. This is the right tool for multi-tenant fan-out — one fan-out
+target for an `events` table, each tenant subscribing with `tenant_id` equal to
+its own id — with hard isolation, because other tenants' rows are never sent.
+
+### From the Go client
+
+```go
+client := fanout.New(
+    fanout.ServerAddress("laredo-server:4002"),
+    fanout.Table("public", "events"),
+    fanout.WithFilterEquals("tenant_id", "acme"), // partition scope
+    // ...AND-combined with any further predicates:
+    // fanout.WithFilterPrefix("key", "rulesets/"),
+    // fanout.WithFilterIn("region", "eu", "us"),
+)
+```
+
+The client's local replica then contains only matching rows; `Count()`, `Get`,
+`Lookup`, `All`, `Listen`, and any secondary indexes operate over the filtered
+slice.
+
+### Predicate types
+
+| Client option / wire field | Matches |
+|---|---|
+| `WithFilterEquals(field, v)` / `equals` | the column equals `v`. Numbers compare numerically (a predicate of `42` matches an integer or float 42); strings and bools by value. |
+| `WithFilterPrefix(field, p)` / `prefix` | the (string) column starts with `p`. |
+| `WithFilterIn(field, v...)` / `in` | the column equals one of the values. |
+
+Multiple predicates are **AND-combined**. A predicate is evaluated against the
+post-change row for inserts and updates, and the pre-change row for deletes;
+`TRUNCATE` always passes (it is structural). A missing or null column never
+matches.
+
+### Caveats
+
+- **Filter columns must be stable for a row's lifetime.** Subscription filtering
+  assumes a row never changes the partition it belongs to. If an update moves a
+  row from one partition value to another, a subscriber on the old value is not
+  told the row left, and a subscriber on the new value sees it as an update. For
+  partition keys like `tenant_id` this never happens; design filter columns to be
+  immutable.
+- **Filtered resume.** A filtered client resumes from the last sequence it
+  *received*. If no matching change occurs for a long time while the journal
+  prunes past that point, a reconnect falls back to a (filtered) full snapshot —
+  correct, just without the delta optimization. Size `journal.max_entries` /
+  `journal.max_age` with your sparsest partition in mind, the same way you size
+  for your slowest consumer.
+- **Filtering is about delivery, not memory.** The fan-out target still holds the
+  whole table in memory; filtering controls only what is sent to each subscriber
+  (and the isolation between them).
+
 ## Failover & zero-downtime deploys
 
 A client can hand off from one `laredo-server` instance to another — during a

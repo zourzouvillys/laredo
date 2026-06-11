@@ -20,7 +20,7 @@ Laredo is organized in three layers:
 - **HTTP Sync** — forward changes as batched HTTP requests
 - **Compiled In-Memory** — domain objects via pluggable compiler functions
 - **Indexed In-Memory** — raw rows with configurable secondary indexes
-- **Replication Fan-Out** — multiplex one source to N gRPC clients (snapshot + journal + live stream)
+- **Replication Fan-Out** — multiplex one source to N gRPC clients (snapshot + journal + live stream), with optional per-subscription server-side filtering (partition scoping)
 
 ### Pipeline
 
