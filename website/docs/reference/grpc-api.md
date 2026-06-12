@@ -5,7 +5,7 @@ title: gRPC API
 
 # gRPC API Reference
 
-Laredo exposes three gRPC services. OAM and Query share a single port (default 4001). The Replication service runs on a separate port per fan-out target (default 4002).
+Laredo exposes three gRPC services. OAM and Query share a single port (default 4001). The Replication service is engine-global — a single listener (default 4002, configurable via `fanout.grpc.port`) serves every replication-fanout target, routing by table (see [ADR-007](/internals/adrs#adr-007-server-side-fan-out-wiring)).
 
 All services use Connect (compatible with gRPC, gRPC-Web, and Connect protocols).
 
@@ -152,9 +152,9 @@ Each `SubscribeResponse` represents a single change event:
 
 ## Replication Service (`laredo.replication.v1.TableSyncReplication`)
 
-Port: 4002 (per fan-out target, configurable)
+Port: 4002 (engine-global listener shared by all replication-fanout targets, configurable via `fanout.grpc.port`)
 
-The Replication service implements the fan-out replication protocol. It allows downstream Laredo instances (or any gRPC client) to replicate table data from an upstream server. Each fan-out target maintains an in-memory copy of the table rows and a change journal, enabling clients to connect, catch up from a known position, and then receive live changes.
+The Replication service implements the fan-out replication protocol. It allows downstream Laredo instances (or any gRPC client) to replicate table data from an upstream server. One engine-global service serves every fan-out target, routing each request by table; each fan-out target maintains an in-memory copy of the table rows and a change journal, enabling clients to connect, catch up from a known position, and then receive live changes.
 
 | RPC | Type | Description |
 |---|---|---|
