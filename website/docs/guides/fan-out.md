@@ -318,6 +318,8 @@ A downstream engine can treat an upstream fan-out as a **source**, so fan-outs
 re-serves its own fan-out, in-memory targets, or HTTP sync to local consumers —
 no PostgreSQL slot per leaf. `source/fanout` is a `SyncSource` over
 `client/fanout`, so it inherits snapshot, resume, cold-tier replay, and failover.
+For the design rationale, see
+[EDR-0004 — Cascading replication](/edr/0004-cascading-fanout-source).
 
 ```go
 import (

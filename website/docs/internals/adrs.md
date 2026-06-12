@@ -285,6 +285,9 @@ that no `target/fanout` option backs.
   running several replication listeners, can be added later without a contract
   change.
 
+See [EDR-0005](/edr/0005-archive-from-hocon) for how a fan-out target's
+cold-tier archive is wired from the same HOCON config.
+
 ## Further reading
 
 - [Architecture](/concepts/architecture) -- the three-layer design these decisions support
