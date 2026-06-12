@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Cascading fan-out source** (`source/fanout`): `Pause` is now a true pause —
+  `Stream` buffers incoming changes and forwards nothing while paused, and
+  `Resume` flushes the backlog. The upstream client connection is kept, so resume
+  needs no re-snapshot. Previously `Pause`/`Resume` only flipped reported state.
+
 ### Added
 - **laredo CLI**: `laredo archive reconstruct --at <position>` materializes a
   table's state as of a source position from the snapshotter's cold archive
