@@ -4,8 +4,9 @@
 # ecosystem into a single weekly PR to keep noise low, and held for a 48h cooldown
 # after a release so freshly-published (and potentially compromised) versions are
 # not adopted immediately. The npm ecosystem reads website/pnpm-lock.yaml.
-# Non-major bumps are auto-merged once their CI passes — see
-# .github/workflows/dependabot-auto-merge.yml.
+# Non-major bumps (and github-actions majors — low-risk, CI-gated action version
+# bumps) are auto-merged once their CI passes; go-module and npm majors wait for
+# a human. See .github/workflows/dependabot-auto-merge.yml.
 version: 2
 updates:
   - package-ecosystem: github-actions

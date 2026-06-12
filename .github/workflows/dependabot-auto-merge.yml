@@ -4,8 +4,12 @@ name: Dependabot auto-merge
 # laredo's CI (.github/workflows/ci.yml) runs lint/test/build/integration on
 # every PR, so this job waits for all of those to go green before merging.
 # Repo-level auto-merge is disabled, so rather than `gh pr merge --auto` we poll
-# the head commit's check-runs and merge ourselves once they pass. Major version
-# bumps are left for a human (they can change behaviour even when tests pass).
+# the head commit's check-runs and merge ourselves once they pass.
+#
+# Major version bumps are auto-merged for the github-actions ecosystem only
+# (CI-gated action version bumps are low-risk and still subject to the 48h
+# cooldown). Go-module and npm majors are left for a human, since a major
+# library bump can change behaviour even when the tests pass.
 
 on: pull_request
 
@@ -22,8 +26,11 @@ jobs:
         id: meta
         uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2.5.0
 
-      - name: Wait for CI, then merge (non-major only)
-        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+      - name: Wait for CI, then merge (non-major, or any github-actions bump)
+        # Auto-merge unless it is a major bump outside the github-actions
+        # ecosystem. package-ecosystem comes from the trusted fetch-metadata
+        # action (not a spoofable branch name); confirmed value 'github_actions'.
+        if: steps.meta.outputs.update-type != 'version-update:semver-major' || steps.meta.outputs.package-ecosystem == 'github_actions'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
