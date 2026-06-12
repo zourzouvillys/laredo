@@ -148,7 +148,8 @@ a `SyncSource` that consumes an upstream fan-out so engines can cascade.
 
 Deferred:
 
-- [ ] True `Pause` (stop the upstream stream while paused, not just a state flip).
+- [x] True `Pause` — `Stream` buffers changes and forwards nothing while paused;
+      `Resume` flushes the backlog (upstream connection kept, so no re-snapshot).
 - [ ] Resume-after-downstream-restart test (the client re-snapshots; the source
       re-baselines) and lag reporting via `GetLag`.
 - [ ] Topology helpers: loop detection / depth limits for multi-hop cascades.

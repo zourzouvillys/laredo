@@ -96,8 +96,10 @@ the queue and forwards. This buffering is what closes the baseline→stream gap.
 - **Topology management.** `source/fanout` is the building block; orchestrating
   trees (discovery, health, **loop prevention** across hops) is a higher layer's
   concern.
-- **True pause.** `Pause`/`Resume` are best-effort state flips; the client keeps
-  its connection. A future revision may stop the upstream stream while paused.
+- **True pause.** _(Shipped — see Changelog.)_ `Pause` now stops downstream
+  forwarding and buffers upstream changes; `Resume` flushes the backlog without
+  a re-snapshot. The upstream connection is kept by design (tearing it down would
+  force a re-snapshot), so this pauses emission rather than the upstream stream.
 - **A new wire protocol.** Cascading reuses the existing replication `Sync`.
 
 ## Consequences
@@ -132,3 +134,6 @@ the queue and forwards. This buffering is what closes the baseline→stream gap.
 - **2026-06-11**: Proposed.
 - **2026-06-11**: Accepted; implemented — `source/fanout`, `client/fanout`
   `Columns()` + `ListenWithPosition`, and handshake column propagation.
+- **2026-06-11**: True `Pause` — `Stream` holds changes in its queue and forwards
+  nothing while paused; `Resume` wakes it to flush the backlog. The upstream
+  client connection is kept (changes buffer), so resume needs no re-snapshot.

@@ -98,6 +98,11 @@ func (s *Source) enqueue(old, new laredo.Row, position string) {
 	s.mu.Lock()
 	s.queue = append(s.queue, changeRec{old: old, new: new, position: position})
 	s.mu.Unlock()
+	s.wake()
+}
+
+// wake delivers a non-blocking nudge to the Stream loop's select.
+func (s *Source) wake() {
 	select {
 	case s.signal <- struct{}{}:
 	default:
@@ -162,8 +167,14 @@ func (s *Source) Stream(ctx context.Context, from laredo.Position, handler lared
 	s.setState(laredo.SourceStreaming)
 	for {
 		s.mu.Lock()
-		pending := s.queue
-		s.queue = nil
+		// While paused, hold changes in the queue and forward nothing; the
+		// upstream client keeps its connection so buffered changes flush on
+		// Resume without a re-snapshot.
+		var pending []changeRec
+		if s.state != laredo.SourcePaused {
+			pending = s.queue
+			s.queue = nil
+		}
 		s.mu.Unlock()
 
 		for _, rec := range pending {
@@ -245,17 +256,21 @@ func (s *Source) PositionToString(p laredo.Position) string {
 // PositionFromString deserializes a position (positions are already strings).
 func (s *Source) PositionFromString(str string) (laredo.Position, error) { return str, nil }
 
-// Pause is best-effort: it marks the source paused. The underlying client keeps
-// its connection; streaming resumes on Resume. (A future revision may stop the
-// upstream stream while paused.)
+// Pause stops forwarding changes downstream: Stream holds incoming changes in
+// its queue and emits nothing until Resume. The upstream client keeps its
+// connection (changes still arrive and buffer), so Resume flushes the backlog
+// without a re-snapshot. Pausing for longer than the upstream journal retains
+// will fall back to a re-snapshot on the next reconnect, like any slow consumer.
 func (s *Source) Pause(_ context.Context) error {
 	s.setState(laredo.SourcePaused)
 	return nil
 }
 
-// Resume returns the source to streaming after a Pause.
+// Resume returns the source to streaming after a Pause and wakes Stream so it
+// flushes any changes buffered while paused.
 func (s *Source) Resume(_ context.Context) error {
 	s.setState(laredo.SourceStreaming)
+	s.wake()
 	return nil
 }
 
