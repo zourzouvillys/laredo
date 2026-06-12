@@ -100,8 +100,8 @@ tables = [
         # ambient AWS credentials.
         archive {
           store = local                     # or: s3
-          store_config { path = "/var/lib/laredo/archive/events" }   # s3: bucket, prefix, region
-          format = jsonl                    # jsonl | protobuf; default jsonl
+          store_config { path = "/var/lib/laredo/archive/events" }   # s3: bucket, prefix, region (no credentials — ambient AWS only)
+          format = jsonl                    # jsonl | protobuf; default jsonl; may be a list [jsonl, protobuf]
           key_prefix = "laredo/public.events/"
         }
 

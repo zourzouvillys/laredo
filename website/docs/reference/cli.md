@@ -161,3 +161,34 @@ laredo fanout clients public.config_document
 laredo fanout snapshots public.config_document
 laredo fanout journal public.config_document --tail 5
 ```
+
+### `laredo archive reconstruct`
+
+Materialize a table's state as of a source position from the snapshotter's cold
+archive. Reads object storage **directly** — no `laredo-server` connection — so
+it works offline (forensics, an onboard node). See
+[Snapshot Writer → Point-in-time reads](/guides/snapshot-writer#point-in-time-reads).
+
+```bash
+# Local archive
+laredo archive reconstruct --store local --path /var/lib/laredo/archive/events \
+  --key-prefix "public.events/" --format jsonl --key-fields id --at 0/1A2B3C0
+
+# S3 archive (ambient AWS credentials)
+laredo archive reconstruct --store s3 --bucket laredo-archive --prefix laredo/ \
+  --region us-east-1 --key-prefix "public.events/" --at 0/1A2B3C0
+```
+
+| Flag | Description |
+|---|---|
+| `--at` | Source position (WAL LSN) to reconstruct as of (**required**) |
+| `--store` | Archive store: `local` or `s3` (default: `local`) |
+| `--path` | Local filesystem root (`store=local`) |
+| `--bucket` / `--prefix` / `--region` | S3 destination (`store=s3`) |
+| `--key-prefix` | Archive key prefix — **must match** the snapshotter's prefix for this table |
+| `--format` | Artifact format: `jsonl` or `protobuf` (default: `jsonl`) |
+| `--key-fields` | Comma-separated primary key columns (default: `id`) |
+
+Prints `{position, row_count, rows}` as JSON, where `position` is the effective
+artifact boundary at or before `--at`. Exits non-zero if the archive cannot
+reach the requested position.

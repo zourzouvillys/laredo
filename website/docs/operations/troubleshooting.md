@@ -70,6 +70,9 @@ GRANT CREATE ON DATABASE mydb TO laredo_user;
 - Check `laredo fanout clients <table>` for client lag
 - Increase `client_buffer.max_size` if using `drop_disconnect` policy
 - Use `LocalSnapshotPath` in the client for faster reconnects
+- Configure a cold-tier `archive` on the fan-out target so a client that falls
+  past the journal resumes from object storage instead of a full re-snapshot —
+  see [Cold-tier replay](../guides/fan-out.md#cold-tier-replay)
 
 ## High memory usage
 
