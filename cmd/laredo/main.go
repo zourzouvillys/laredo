@@ -80,6 +80,8 @@ func main() {
 		resetSourceCmd(args)
 	case "fanout":
 		fanoutCmd(args)
+	case "archive":
+		archiveCmd(args)
 	case "dead-letters":
 		deadLettersCmd(args)
 	case "help", "--help", "-h":
@@ -118,6 +120,8 @@ Commands:
   reset-source       Reset a source (drop/recreate slot)
   dead-letters       List dead letters for a pipeline
   dead-letters purge Purge dead letters
+  archive reconstruct  Reconstruct a table's state as of a position (reads the
+                       cold archive directly; works offline)
   version            Print version
 
 Global settings:

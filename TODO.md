@@ -117,11 +117,17 @@ Shipped: [EDR-0003](docs/edr/0003-point-in-time-reconstruction.md) —
 `Reader.ReconstructAsOf` / `PlanAsOf` materialize a table's state as of any
 source position from the archive (library-only).
 
+- [x] CLI surface: `laredo archive reconstruct --at <position>` materializes the
+      table from the archive, reading object storage directly (local or s3) via
+      `snapshotter/destwire` — works offline.
+
 Deferred:
 
-- [ ] Expose reconstruction through a surface: a `laredo` CLI subcommand
-      (`archive reconstruct --at <position>`) and/or a read RPC, once archive
-      destination/format config has a config home.
+- [ ] A read RPC over the archive (the other surface named in EDR-0003), if a
+      networked point-in-time read is wanted in addition to the offline CLI.
+- [ ] Share the WAL-LSN string comparator (currently a small copy in the CLI and
+      in `source/fanout`) — e.g. a `source/pg` string helper — if a third
+      consumer appears.
 - [ ] Sub-diff (intra-range) precision would need per-change positions in the
       diff format; out of scope until a use case requires landing between
       artifact boundaries.
