@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **laredo CLI**: `laredo archive reconstruct --at <position>` materializes a
+  table's state as of a source position from the snapshotter's cold archive
+  (EDR-0003's point-in-time reconstruction, now exposed as a command). It reads
+  object storage directly — local or s3, via `snapshotter/destwire` — so it works
+  offline (forensics, onboard), with no `laredo-server` connection. Prints the
+  rows and the effective position as JSON.
 - **snapshotter/laredo-server**: S3 cold-tier archives from HOCON (EDR-0005).
   Extracted the snapshotter binary's destination/format building into a new
   importable `snapshotter/destwire` package (`BuildDestination`, `BuildFormats`,

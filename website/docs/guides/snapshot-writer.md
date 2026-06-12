@@ -66,6 +66,30 @@ point-in-time exports, and historical diffs — all from object storage, with no
 live system in the loop. For *resuming forward* from a position (the fan-out
 cold-replay case) see [Cold-tier replay](./fan-out.md#cold-tier-replay).
 
+#### From the CLI
+
+`laredo archive reconstruct` exposes the same thing without writing code. It
+reads object storage directly — no `laredo-server` connection — so it works
+offline (forensics, an onboard node). It builds the reader through the same
+`snapshotter/destwire` path the server and snapshotter use:
+
+```console
+$ laredo archive reconstruct \
+    --store local --path /var/lib/laredo/archive/events \
+    --key-prefix "public.events/" --format jsonl \
+    --key-fields id --at 0/1A2B3C0
+{
+  "position": "0/1A2B3C0",
+  "row_count": 1234,
+  "rows": [ ... ]
+}
+```
+
+For an S3 archive, use `--store s3 --bucket <b> --prefix <p> --region <r>`
+(ambient AWS credentials). It prints the **effective** position (the artifact
+boundary at or before `--at`), and exits non-zero if the archive cannot reach
+the requested position. Positions are ordered as PostgreSQL WAL LSNs.
+
 ## Install
 
 ```bash

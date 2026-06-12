@@ -75,7 +75,9 @@ no new artifact format, storage backend, or wire change.
 
 - **No CLI / RPC surface.** A `laredo` CLI command or a read RPC over the archive
   is a natural follow-up but not required for the library capability. Noted in
-  `TODO.md`.
+  `TODO.md`. _(Update: the **CLI** shipped — `laredo archive reconstruct`, reading
+  the archive directly through `snapshotter/destwire`. A read RPC remains future
+  work. See the Changelog.)_
 - **No sub-diff (intra-range) precision.** As-of resolves to artifact boundaries;
   splitting a diff to land exactly on a non-boundary position is out of scope
   (and would need per-change positions the archive does not record).
@@ -110,3 +112,8 @@ no new artifact format, storage backend, or wire change.
 ## Changelog
 
 - **2026-06-11**: Accepted; implemented alongside this EDR.
+- **2026-06-11**: CLI surface shipped — `laredo archive reconstruct --at <pos>`
+  materializes a table's state from the archive, building the reader through
+  `snapshotter/destwire` (the same path laredo-server and the snapshotter use).
+  It reads object storage directly, so it works offline. A read RPC remains
+  future work.
