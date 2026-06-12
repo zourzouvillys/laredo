@@ -3,9 +3,13 @@
 # .github/workflows/*) stays secure without going stale. Updates are grouped per
 # ecosystem into a single weekly PR to keep noise low, and held for a 48h cooldown
 # after a release so freshly-published (and potentially compromised) versions are
-# not adopted immediately. The npm ecosystem reads website/pnpm-lock.yaml.
+# not adopted immediately. The website's JS deps are pnpm: Dependabot has no
+# `pnpm` ecosystem, so `package-ecosystem: npm` is its label for the whole JS
+# ecosystem and it updates website/pnpm-lock.yaml *as pnpm*. pnpm enforces its
+# own 48h supply-chain cooldown at install time via website/.npmrc
+# (minimum-release-age=2880), so the cooldown holds on both sides.
 # Non-major bumps (and github-actions majors — low-risk, CI-gated action version
-# bumps) are auto-merged once their CI passes; go-module and npm majors wait for
+# bumps) are auto-merged once their CI passes; go-module and pnpm majors wait for
 # a human. See .github/workflows/dependabot-auto-merge.yml.
 version: 2
 updates:
@@ -33,6 +37,8 @@ updates:
     commit-message:
       prefix: go
 
+  # pnpm. `npm` is Dependabot's identifier for the JS ecosystem (npm/yarn/pnpm);
+  # it detects pnpm from website/pnpm-lock.yaml. There is no `pnpm` ecosystem.
   - package-ecosystem: npm
     directory: /website
     schedule:
