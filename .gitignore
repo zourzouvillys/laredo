@@ -31,3 +31,6 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Claude Code worktrees (local git worktrees created under .claude/)
+.claude/worktrees/
