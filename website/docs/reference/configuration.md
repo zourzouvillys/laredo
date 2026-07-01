@@ -24,6 +24,9 @@ sources {
     connection = "postgresql://user:pass@host:5432/dbname"
     slot_mode = ephemeral | stateful         # default: ephemeral
     slot_name = "laredo_01"                  # required for stateful
+    always_baseline = false                  # default: false; force a full COPY
+                                             # every startup even in stateful mode
+                                             # (use for non-durable/in-memory targets)
 
     publication {
       name = "laredo_01_pub"                 # default: {slot_name}_pub

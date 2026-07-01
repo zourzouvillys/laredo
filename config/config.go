@@ -34,10 +34,11 @@ type Config struct {
 
 // SourceConfig is the configuration for a data source.
 type SourceConfig struct {
-	Type       string
-	Connection string
-	SlotMode   string
-	SlotName   string
+	Type           string
+	Connection     string
+	SlotMode       string
+	SlotName       string
+	AlwaysBaseline bool
 }
 
 // TableConfig is the configuration for a table pipeline.
@@ -292,10 +293,11 @@ func Parse(input string) (*Config, error) {
 	for key := range sourcesObj {
 		prefix := "sources." + key
 		cfg.Sources[key] = SourceConfig{
-			Type:       safeStr(hc, prefix+".type"),
-			Connection: safeStr(hc, prefix+".connection"),
-			SlotMode:   safeStr(hc, prefix+".slot_mode"),
-			SlotName:   safeStr(hc, prefix+".slot_name"),
+			Type:           safeStr(hc, prefix+".type"),
+			Connection:     safeStr(hc, prefix+".connection"),
+			SlotMode:       safeStr(hc, prefix+".slot_mode"),
+			SlotName:       safeStr(hc, prefix+".slot_name"),
+			AlwaysBaseline: safeBool(hc, prefix+".always_baseline"),
 		}
 	}
 
@@ -421,6 +423,7 @@ func (c *Config) ApplyEnvOverrides() {
 		src.Type = envOverride(prefix+".type", src.Type)
 		src.SlotMode = envOverride(prefix+".slot_mode", src.SlotMode)
 		src.SlotName = envOverride(prefix+".slot_name", src.SlotName)
+		src.AlwaysBaseline = envOverrideBool(prefix+".always_baseline", src.AlwaysBaseline)
 		c.Sources[id] = src
 	}
 
@@ -451,6 +454,20 @@ func envOverride(hoconPath, current string) string {
 		return v
 	}
 	return current
+}
+
+// envOverrideBool returns the env var value (parsed as a bool) for the given
+// HOCON path if set, otherwise returns the current value. Accepts "true"/"1"
+// as true and "false"/"0" as false; any other value leaves current unchanged.
+func envOverrideBool(hoconPath string, current bool) bool {
+	switch envLookup(hoconPath) {
+	case "true", "1":
+		return true
+	case "false", "0":
+		return false
+	default:
+		return current
+	}
 }
 
 // envLookup checks for an env var matching the HOCON path.
@@ -639,6 +656,9 @@ func createSource(cfg SourceConfig) (laredo.SyncSource, error) {
 		}
 		if cfg.SlotName != "" {
 			opts = append(opts, pg.SlotName(cfg.SlotName))
+		}
+		if cfg.AlwaysBaseline {
+			opts = append(opts, pg.AlwaysBaseline(true))
 		}
 		return pg.New(opts...), nil
 	default:

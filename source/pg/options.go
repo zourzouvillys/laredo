@@ -78,12 +78,13 @@ type BeforeConnectHook func(ctx context.Context, cfg *pgconn.Config) error
 type Option func(*sourceConfig)
 
 type sourceConfig struct {
-	connString    string
-	slotMode      SlotMode
-	slotName      string
-	publication   PublicationConfig
-	reconnect     ReconnectConfig
-	beforeConnect BeforeConnectHook
+	connString     string
+	slotMode       SlotMode
+	slotName       string
+	publication    PublicationConfig
+	reconnect      ReconnectConfig
+	beforeConnect  BeforeConnectHook
+	alwaysBaseline bool
 }
 
 func defaultConfig() sourceConfig {
@@ -143,5 +144,24 @@ func Reconnect(cfg ReconnectConfig) Option {
 func BeforeConnect(h BeforeConnectHook) Option {
 	return func(c *sourceConfig) {
 		c.beforeConnect = h
+	}
+}
+
+// AlwaysBaseline forces a full baseline COPY on every startup, even in
+// stateful mode where the source could otherwise resume from the last ACKed
+// LSN.
+//
+// Resuming from a persistent slot only reconstructs a target that is durable
+// across process restarts. An in-memory target (for example loading config or
+// rules into memory) is rebuilt empty on every start, so resuming from the
+// last ACKed position would leave it empty and only ever apply changes written
+// after the restart. Enable this so such a target is fully repopulated from the
+// current table contents on each startup while still keeping a persistent slot
+// (so WAL is retained while the process is running).
+//
+// This has no effect in ephemeral mode, which already baselines every startup.
+func AlwaysBaseline(enabled bool) Option {
+	return func(c *sourceConfig) {
+		c.alwaysBaseline = enabled
 	}
 }

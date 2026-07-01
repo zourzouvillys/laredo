@@ -42,6 +42,17 @@ Common issues and how to resolve them.
 
 **Solution**: Laredo auto-creates the slot on startup in stateful mode. If it was dropped, restart Laredo for a full re-baseline.
 
+## Target is empty after restart (in-memory target)
+
+**Symptom**: A pipeline into an in-memory target comes up with **zero rows** after a restart, even though the source table has data. New writes appear, but pre-existing rows never do until they happen to be updated.
+
+**Cause**: In **stateful** mode the engine resumes streaming from the last ACKed LSN and skips the baseline. That is correct for a durable target (e.g. an external database) but not for an in-memory target, which is rebuilt empty on every process start — so it only receives changes written *after* the restart.
+
+**Solutions** (pick one):
+- Set `always_baseline = true` on the source to force a full COPY on every startup (see the [PostgreSQL guide](../guides/postgresql.md#always-baseline-non-durable-targets)).
+- Use **ephemeral** mode, which baselines every startup.
+- Configure [snapshots](../concepts/snapshots.md) so the in-memory state is persisted and restored on restart.
+
 ## Permission denied on replication
 
 **Symptom**: `ERROR: must be superuser or replication role to use replication slots`

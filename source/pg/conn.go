@@ -146,10 +146,15 @@ func (cm *connManager) discoverTableColumns(ctx context.Context, table laredo.Ta
 }
 
 // baseline performs a consistent-point-in-time snapshot of the given tables
-// using a REPEATABLE READ transaction. It captures the current WAL LSN before
-// reading data, then SELECTs all rows from each table and delivers them via
-// the rowCallback. Returns the LSN at which the snapshot was taken.
-func (cm *connManager) baseline(ctx context.Context, tables []laredo.TableIdentifier, schemas map[laredo.TableIdentifier][]laredo.ColumnDefinition, rowCallback func(laredo.TableIdentifier, laredo.Row)) (LSN, error) {
+// using a REPEATABLE READ transaction, then SELECTs all rows from each table
+// and delivers them via the rowCallback.
+//
+// If snapshotName is non-empty, it imports that exported snapshot (SET
+// TRANSACTION SNAPSHOT) so the copy reads at exactly the replication slot's
+// consistent point; the returned LSN is unused in that case (the caller streams
+// from the slot's consistent point instead). If snapshotName is empty, it
+// captures the current WAL position as the point-in-time and returns it.
+func (cm *connManager) baseline(ctx context.Context, tables []laredo.TableIdentifier, snapshotName string, rowCallback func(laredo.TableIdentifier, laredo.Row)) (LSN, error) {
 	tx, err := cm.queryConn.BeginTx(ctx, pgx.TxOptions{
 		IsoLevel:   pgx.RepeatableRead,
 		AccessMode: pgx.ReadOnly,
@@ -159,20 +164,29 @@ func (cm *connManager) baseline(ctx context.Context, tables []laredo.TableIdenti
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // rollback on error path
 
-	// Capture current WAL position. This is the point-in-time for the snapshot.
-	var lsnStr string
-	if err := tx.QueryRow(ctx, "SELECT pg_current_wal_lsn()::text").Scan(&lsnStr); err != nil {
-		return 0, fmt.Errorf("get current LSN: %w", err)
+	// SET TRANSACTION SNAPSHOT must run before any query in the transaction.
+	if snapshotName != "" {
+		if _, err := tx.Exec(ctx, "SET TRANSACTION SNAPSHOT "+pgQuoteLiteral(snapshotName)); err != nil {
+			return 0, fmt.Errorf("import exported snapshot %q: %w", snapshotName, err)
+		}
 	}
-	lsn, err := ParseLSN(lsnStr)
-	if err != nil {
-		return 0, fmt.Errorf("parse LSN %q: %w", lsnStr, err)
+
+	// Without an exported snapshot to anchor to, capture the current WAL
+	// position as this copy's point-in-time (the stream-start LSN).
+	var lsn LSN
+	if snapshotName == "" {
+		var lsnStr string
+		if err := tx.QueryRow(ctx, "SELECT pg_current_wal_lsn()::text").Scan(&lsnStr); err != nil {
+			return 0, fmt.Errorf("get current LSN: %w", err)
+		}
+		if lsn, err = ParseLSN(lsnStr); err != nil {
+			return 0, fmt.Errorf("parse LSN %q: %w", lsnStr, err)
+		}
 	}
 
 	// Read all rows from each table.
 	for _, table := range tables {
-		cols := schemas[table]
-		if err := cm.baselineTable(ctx, tx, table, cols, rowCallback); err != nil {
+		if err := cm.baselineTable(ctx, tx, table, rowCallback); err != nil {
 			return 0, fmt.Errorf("baseline %s: %w", table, err)
 		}
 	}
@@ -185,7 +199,7 @@ func (cm *connManager) baseline(ctx context.Context, tables []laredo.TableIdenti
 }
 
 // baselineTable reads all rows from a single table and delivers them via callback.
-func (cm *connManager) baselineTable(ctx context.Context, tx pgx.Tx, table laredo.TableIdentifier, cols []laredo.ColumnDefinition, rowCallback func(laredo.TableIdentifier, laredo.Row)) error {
+func (cm *connManager) baselineTable(ctx context.Context, tx pgx.Tx, table laredo.TableIdentifier, rowCallback func(laredo.TableIdentifier, laredo.Row)) error {
 	query := fmt.Sprintf("SELECT * FROM %s.%s", pgQuoteIdent(table.Schema), pgQuoteIdent(table.Table))
 
 	rows, err := tx.Query(ctx, query)
@@ -226,4 +240,11 @@ func (cm *connManager) baselineTable(ctx context.Context, tx pgx.Tx, table lared
 // pgQuoteIdent quotes a PostgreSQL identifier to prevent SQL injection.
 func pgQuoteIdent(s string) string {
 	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+}
+
+// pgQuoteLiteral quotes a PostgreSQL string literal to prevent SQL injection.
+// Used for values that cannot be passed as bind parameters, such as the
+// argument to SET TRANSACTION SNAPSHOT.
+func pgQuoteLiteral(s string) string {
+	return `'` + strings.ReplaceAll(s, `'`, `''`) + `'`
 }

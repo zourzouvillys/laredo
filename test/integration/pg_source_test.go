@@ -407,7 +407,111 @@ func TestPGSource_StatefulMode_Resume(t *testing.T) {
 		t.Fatal("engine2 did not become ready")
 	}
 
+	// On resume the engine skips baseline and streams from the last ACKed LSN.
+	// That reconstructs a durable target, but a fresh in-memory target starts
+	// empty and only receives post-resume changes — so the count here is not
+	// asserted (it also depends on whether the streamed row's LSN was flushed
+	// before stop). AlwaysBaseline addresses this footgun; see the test below.
 	t.Logf("second run: %d rows, resume mode", target2.Count())
+
+	if err := eng2.Stop(ctx); err != nil {
+		t.Fatalf("stop2: %v", err)
+	}
+}
+
+// TestPGSource_StatefulMode_AlwaysBaseline verifies that AlwaysBaseline forces a
+// full COPY on restart even with a persistent slot, so a non-durable (in-memory)
+// target is fully repopulated instead of coming up empty. This is the regression
+// test for the "fresh subscriber starts empty on restart" bug.
+func TestPGSource_StatefulMode_AlwaysBaseline(t *testing.T) {
+	pgc := testutil.NewTestPostgres(t)
+	pgc.CreateTestTable(t)
+	pgc.InsertTestRows(t, 2)
+
+	ctx := context.Background()
+	slotName := "laredo_always_baseline_test"
+	pubName := "laredo_always_baseline_pub"
+
+	newSource := func() *pg.Source {
+		return pg.New(
+			pg.Connection(pgc.ConnStr),
+			pg.SlotModeOpt(pg.SlotStateful),
+			pg.SlotName(slotName),
+			pg.AlwaysBaseline(true),
+			pg.Publication(pg.PublicationConfig{Name: pubName, Create: true}),
+		)
+	}
+
+	// First run: baseline the 2 pre-existing rows, then stream one insert.
+	target1 := memory.NewIndexedTarget(memory.LookupFields("name"))
+	eng1, errs := laredo.NewEngine(
+		laredo.WithSource("pg", newSource()),
+		laredo.WithPipeline("pg", laredo.Table("public", "test_users"), target1),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("engine1 errors: %v", errs)
+	}
+	if err := eng1.Start(ctx); err != nil {
+		t.Fatalf("start1: %v", err)
+	}
+	if !eng1.AwaitReady(30 * time.Second) {
+		t.Fatal("engine1 did not become ready")
+	}
+	if target1.Count() != 2 {
+		t.Fatalf("expected 2 baseline rows, got %d", target1.Count())
+	}
+
+	conn, err := pgx.Connect(ctx, pgc.ConnStr)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	_, _ = conn.Exec(ctx, "INSERT INTO test_users (name, email) VALUES ($1, $2)", "streamed-1", "s@e.com")
+	testutil.AssertEventually(t, 15*time.Second, func() bool {
+		return target1.Count() == 3
+	}, "expected 3 rows after streamed insert")
+	conn.Close(ctx)
+
+	if err := eng1.Stop(ctx); err != nil {
+		t.Fatalf("stop1: %v", err)
+	}
+
+	// Second run: same persistent slot, fresh empty in-memory target. With
+	// AlwaysBaseline the engine re-COPIES all 3 current rows rather than
+	// resuming into an empty target.
+	src2 := newSource()
+	if !src2.SupportsResume() {
+		t.Fatal("expected SupportsResume=true (slot is still persistent)")
+	}
+
+	target2 := memory.NewIndexedTarget(memory.LookupFields("name"))
+	eng2, errs := laredo.NewEngine(
+		laredo.WithSource("pg", src2),
+		laredo.WithPipeline("pg", laredo.Table("public", "test_users"), target2),
+	)
+	if len(errs) > 0 {
+		t.Fatalf("engine2 errors: %v", errs)
+	}
+	if err := eng2.Start(ctx); err != nil {
+		t.Fatalf("start2: %v", err)
+	}
+	if !eng2.AwaitReady(30 * time.Second) {
+		t.Fatal("engine2 did not become ready")
+	}
+
+	if target2.Count() != 3 {
+		t.Fatalf("expected 3 rows re-baselined on restart, got %d", target2.Count())
+	}
+
+	// Streaming still works after the forced baseline.
+	conn2, err := pgx.Connect(ctx, pgc.ConnStr)
+	if err != nil {
+		t.Fatalf("connect2: %v", err)
+	}
+	defer func() { _ = conn2.Close(ctx) }()
+	_, _ = conn2.Exec(ctx, "INSERT INTO test_users (name, email) VALUES ($1, $2)", "streamed-2", "s2@e.com")
+	testutil.AssertEventually(t, 15*time.Second, func() bool {
+		return target2.Count() == 4
+	}, "expected 4 rows after post-restart insert")
 
 	if err := eng2.Stop(ctx); err != nil {
 		t.Fatalf("stop2: %v", err)
