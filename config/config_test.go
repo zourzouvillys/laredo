@@ -544,6 +544,48 @@ func TestApplyEnvOverrides_BareEnvVar(t *testing.T) {
 	}
 }
 
+func TestParse_AlwaysBaseline(t *testing.T) {
+	cfg, err := Parse(`
+sources {
+  pg_main {
+    type = postgresql
+    connection = "postgresql://localhost:5432/mydb"
+    slot_mode = stateful
+    always_baseline = true
+  }
+}
+`)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !cfg.Sources["pg_main"].AlwaysBaseline {
+		t.Error("expected always_baseline=true")
+	}
+
+	// Defaults to false when omitted.
+	def, err := Parse(basicConfig)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if def.Sources["pg_main"].AlwaysBaseline {
+		t.Error("expected always_baseline default false")
+	}
+}
+
+func TestApplyEnvOverrides_AlwaysBaseline(t *testing.T) {
+	cfg, err := Parse(basicConfig) // always_baseline omitted → false
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	t.Setenv("LAREDO_SOURCES_PG_MAIN_ALWAYS_BASELINE", "true")
+	cfg.ApplyEnvOverrides()
+
+	if !cfg.Sources["pg_main"].AlwaysBaseline {
+		t.Error("expected always_baseline overridden to true via env")
+	}
+}
+
 func TestApplyEnvOverrides_PrefixTakesPrecedence(t *testing.T) {
 	cfg, err := Parse(basicConfig)
 	if err != nil {

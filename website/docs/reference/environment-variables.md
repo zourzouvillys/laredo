@@ -70,6 +70,7 @@ All source fields can be overridden through environment variables. Given a sourc
 | `sources.pg_main.type` | `LAREDO_SOURCES_PG_MAIN_TYPE` | Source type (`postgresql`, `pg`) |
 | `sources.pg_main.slot_mode` | `LAREDO_SOURCES_PG_MAIN_SLOT_MODE` | Slot mode (`ephemeral`, `stateful`) |
 | `sources.pg_main.slot_name` | `LAREDO_SOURCES_PG_MAIN_SLOT_NAME` | Replication slot name |
+| `sources.pg_main.always_baseline` | `LAREDO_SOURCES_PG_MAIN_ALWAYS_BASELINE` | Force a full COPY every startup (`true`/`false`) |
 
 This is the recommended way to inject database credentials in containerized environments:
 
@@ -132,6 +133,7 @@ laredo --address laredo.internal:4001 status
 | `LAREDO_SOURCES_<ID>_TYPE` | `laredo-server` | (from config) | Source type override |
 | `LAREDO_SOURCES_<ID>_SLOT_MODE` | `laredo-server` | (from config) | Source slot mode override |
 | `LAREDO_SOURCES_<ID>_SLOT_NAME` | `laredo-server` | (from config) | Source slot name override |
+| `LAREDO_SOURCES_<ID>_ALWAYS_BASELINE` | `laredo-server` | (from config) | Force a full COPY every startup (`true`/`false`) |
 | `LAREDO_TABLES_<N>_TARGETS_<M>_BASE_URL` | `laredo-server` | (from config) | Target base URL override |
 | `LAREDO_TABLES_<N>_TARGETS_<M>_AUTH_HEADER` | `laredo-server` | (from config) | Target auth header override |
 | `LAREDO_GRPC_PORT` | `laredo-server` | (from config) | gRPC listen port override |

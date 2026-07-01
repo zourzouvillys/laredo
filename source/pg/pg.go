@@ -17,13 +17,14 @@ import (
 
 // Source implements laredo.SyncSource using PostgreSQL logical replication.
 type Source struct {
-	cfg         sourceConfig
-	conn        connManager
-	repl        replicationManager
-	schemas     map[laredo.TableIdentifier][]laredo.ColumnDefinition
-	tables      []laredo.TableIdentifier
-	slotLSN     LSN  // LSN from slot creation
-	slotExisted bool // true if we reused an existing slot (stateful resume)
+	cfg          sourceConfig
+	conn         connManager
+	repl         replicationManager
+	schemas      map[laredo.TableIdentifier][]laredo.ColumnDefinition
+	tables       []laredo.TableIdentifier
+	slotLSN      LSN    // LSN from slot creation (consistent point) or reused slot's confirmed flush
+	slotSnapshot string // exported snapshot name from a freshly created slot ("" if none/reused)
+	slotExisted  bool   // true if we reused an existing slot (stateful resume)
 
 	mu    sync.Mutex
 	state laredo.SourceState
@@ -130,12 +131,13 @@ func (s *Source) Init(ctx context.Context, config laredo.SourceConfig) (map[lare
 		}
 	}
 
-	slotLSN, err := s.repl.createSlot(ctx, s.cfg.slotName, temporary)
+	slotLSN, snapshotName, err := s.repl.createSlot(ctx, s.cfg.slotName, temporary)
 	if err != nil {
 		s.setState(laredo.SourceError)
 		return nil, fmt.Errorf("pg source: %w", err)
 	}
 	s.slotLSN = slotLSN
+	s.slotSnapshot = snapshotName
 
 	return schemas, nil
 }
@@ -267,14 +269,31 @@ func (s *Source) ValidateTables(_ context.Context, _ []laredo.TableIdentifier) [
 }
 
 // Baseline performs a consistent point-in-time snapshot using a REPEATABLE READ
-// transaction. It captures the current WAL LSN, then reads all rows from each
-// table via SELECT *.
+// transaction, reading all rows from each table via SELECT *.
+//
+// When a freshly created slot exported a snapshot, the baseline imports it (SET
+// TRANSACTION SNAPSHOT) so the COPY reads at exactly the slot's consistent
+// point, and streaming then resumes from that same point — no gap, no
+// duplicates. This is single-use: the exported snapshot is only valid before
+// streaming starts, so it is consumed here and a later mid-stream reload falls
+// back to a plain snapshot anchored to the current WAL position.
 //
 //nolint:revive // implements SyncSource.
 func (s *Source) Baseline(ctx context.Context, tables []laredo.TableIdentifier, rowCallback func(laredo.TableIdentifier, laredo.Row)) (laredo.Position, error) {
-	lsn, err := s.conn.baseline(ctx, tables, s.schemas, rowCallback)
+	snapshotName := s.slotSnapshot
+	s.slotSnapshot = ""
+
+	lsn, err := s.conn.baseline(ctx, tables, snapshotName, rowCallback)
 	if err != nil {
 		return nil, fmt.Errorf("pg source: %w", err)
+	}
+
+	// With the slot's exported snapshot, the copy is anchored to the slot's
+	// consistent point, so stream from there for a seamless handoff. Without it
+	// (reused slot or mid-stream reload), the copy captured the current WAL
+	// position instead.
+	if snapshotName != "" {
+		return s.slotLSN, nil
 	}
 	return lsn, nil
 }
@@ -383,6 +402,12 @@ func (s *Source) SupportsResume() bool {
 //
 //nolint:revive // implements SyncSource.
 func (s *Source) LastAckedPosition(_ context.Context) (laredo.Position, error) {
+	// When configured to always baseline, never report a resume position so the
+	// engine runs a full COPY on every startup (needed for non-durable targets;
+	// see AlwaysBaseline).
+	if s.cfg.alwaysBaseline {
+		return nil, nil
+	}
 	// Only return a position if we reused an existing slot (stateful resume).
 	// For newly created slots, return nil so the engine runs baseline first.
 	if !s.slotExisted {

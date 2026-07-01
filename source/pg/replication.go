@@ -56,21 +56,32 @@ func (rm *replicationManager) close(ctx context.Context) error {
 
 // createSlot creates a logical replication slot using the pgoutput plugin.
 // For ephemeral mode, the slot is temporary.
-func (rm *replicationManager) createSlot(ctx context.Context, slotName string, temporary bool) (LSN, error) {
+//
+// It requests EXPORT_SNAPSHOT so the slot's consistent point is also available
+// as an exported snapshot. The returned snapshot name can be imported by the
+// baseline transaction (via SET TRANSACTION SNAPSHOT) so the initial COPY reads
+// at exactly the slot's consistent point — the same gap-free, duplicate-free
+// handoff PostgreSQL's native tablesync uses for copy_data = true.
+//
+// The exported snapshot is only valid while this replication connection stays
+// open and has not issued another command, so the caller must run the baseline
+// before StartReplication.
+func (rm *replicationManager) createSlot(ctx context.Context, slotName string, temporary bool) (lsn LSN, snapshotName string, err error) {
 	result, err := pglogrepl.CreateReplicationSlot(ctx, rm.conn, slotName, "pgoutput",
 		pglogrepl.CreateReplicationSlotOptions{
-			Temporary: temporary,
+			Temporary:      temporary,
+			SnapshotAction: "EXPORT_SNAPSHOT",
 		})
 	if err != nil {
-		return 0, fmt.Errorf("create slot %q: %w", slotName, err)
+		return 0, "", fmt.Errorf("create slot %q: %w", slotName, err)
 	}
 
-	lsn, err := pglogrepl.ParseLSN(result.ConsistentPoint)
+	parsed, err := pglogrepl.ParseLSN(result.ConsistentPoint)
 	if err != nil {
-		return 0, fmt.Errorf("parse slot LSN: %w", err)
+		return 0, "", fmt.Errorf("parse slot LSN: %w", err)
 	}
 
-	return LSN(lsn), nil
+	return LSN(parsed), result.SnapshotName, nil
 }
 
 // dropSlot drops a replication slot.

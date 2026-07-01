@@ -26,6 +26,82 @@ func TestNew_Defaults(t *testing.T) {
 	}
 }
 
+func TestAlwaysBaseline_Option(t *testing.T) {
+	if New().cfg.alwaysBaseline {
+		t.Error("expected alwaysBaseline default false")
+	}
+	if !New(AlwaysBaseline(true)).cfg.alwaysBaseline {
+		t.Error("expected alwaysBaseline true after AlwaysBaseline(true)")
+	}
+	// Enabling AlwaysBaseline must not change resume support: the slot stays
+	// persistent, only the initial COPY decision changes.
+	if !New(SlotModeOpt(SlotStateful), AlwaysBaseline(true)).SupportsResume() {
+		t.Error("expected SupportsResume() = true for stateful mode with AlwaysBaseline")
+	}
+}
+
+func TestLastAckedPosition(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("resumes from a reused stateful slot", func(t *testing.T) {
+		src := New(SlotModeOpt(SlotStateful))
+		src.slotExisted = true
+		src.slotLSN = LSN(42)
+
+		pos, err := src.LastAckedPosition(ctx)
+		if err != nil {
+			t.Fatalf("LastAckedPosition: %v", err)
+		}
+		if pos != LSN(42) {
+			t.Errorf("expected resume position LSN(42), got %v", pos)
+		}
+	})
+
+	t.Run("nil for a freshly created slot", func(t *testing.T) {
+		src := New(SlotModeOpt(SlotStateful))
+		src.slotLSN = LSN(42) // set but slotExisted is false
+
+		pos, err := src.LastAckedPosition(ctx)
+		if err != nil {
+			t.Fatalf("LastAckedPosition: %v", err)
+		}
+		if pos != nil {
+			t.Errorf("expected nil resume position for fresh slot, got %v", pos)
+		}
+	})
+
+	t.Run("nil when AlwaysBaseline forces a full COPY", func(t *testing.T) {
+		src := New(SlotModeOpt(SlotStateful), AlwaysBaseline(true))
+		src.slotExisted = true
+		src.slotLSN = LSN(42)
+
+		pos, err := src.LastAckedPosition(ctx)
+		if err != nil {
+			t.Fatalf("LastAckedPosition: %v", err)
+		}
+		if pos != nil {
+			t.Errorf("expected nil resume position with AlwaysBaseline, got %v", pos)
+		}
+	})
+}
+
+func TestPgQuoteLiteral(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"", "''"},
+		{"00000003-0000001B-1", "'00000003-0000001B-1'"},
+		{"o'brien", "'o''brien'"},
+		{"'; DROP TABLE users; --", "'''; DROP TABLE users; --'"},
+	}
+	for _, tt := range tests {
+		if got := pgQuoteLiteral(tt.in); got != tt.want {
+			t.Errorf("pgQuoteLiteral(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestNew_WithOptions(t *testing.T) {
 	src := New(
 		Connection("postgres://localhost/mydb"),

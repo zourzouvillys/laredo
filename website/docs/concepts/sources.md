@@ -90,3 +90,5 @@ Whether a source can resume from a previously ACKed position is a property of th
 
 - **Ephemeral**: every startup requires a full baseline. Simple, no state to manage.
 - **Stateful**: resume from the last ACKed position. No data reprocessing on restart, but requires persistent position tracking (e.g., a named PostgreSQL replication slot).
+
+Resuming only reconstructs a target whose state **survives the restart** (e.g. an external database). A non-durable target — an in-memory target rebuilt empty on each start — would come up empty and only see post-restart changes. For those, use ephemeral mode, [snapshots](./snapshots.md), or the PostgreSQL source's [`always_baseline`](../guides/postgresql.md#always-baseline-non-durable-targets) option to force a full COPY on every startup.

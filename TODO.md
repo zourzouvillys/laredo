@@ -9,6 +9,12 @@ Items not yet implemented. Everything else from the original v1.0 roadmap has be
 - [x] Sync publication on startup (add/remove tables, update publish operations)
 - [x] Row filters and column lists (PostgreSQL 15+)
 - [x] Ephemeral mode reconnect: signal engine for full re-baseline
+- [x] Consistent baseline handoff: create slot with `EXPORT_SNAPSHOT`, import it in
+      the baseline tx (`SET TRANSACTION SNAPSHOT`), stream from the slot's
+      consistent point — no gap/duplicate window between COPY and stream
+- [x] `AlwaysBaseline` option (+ `always_baseline` HOCON/env config): force a full
+      COPY on every startup even in stateful mode, so non-durable (in-memory)
+      targets are not left empty on restart
 
 ## Fan-Out Replication Protocol
 
