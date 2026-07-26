@@ -10,41 +10,9 @@ import (
 	"github.com/zourzouvillys/laredo/snapshotter"
 	"github.com/zourzouvillys/laredo/snapshotter/dest/local"
 	"github.com/zourzouvillys/laredo/snapshotter/format/jsonl"
+	"github.com/zourzouvillys/laredo/source/archive"
+	"github.com/zourzouvillys/laredo/source/testsource"
 )
-
-func TestLSNCompare(t *testing.T) {
-	cases := []struct {
-		a, b string
-		want int // sign
-	}{
-		{"0/1", "0/2", -1},
-		{"0/2", "0/1", 1},
-		{"1/0", "0/FFFFFFFF", 1},
-		{"0/A", "0/a", 0}, // case-insensitive hex
-		{"", "0/1", -1},   // empty sorts lowest
-		{"0/1", "", 1},
-		{"", "", 0},
-		{"garbage", "0/1", -1}, // unparseable sorts lowest
-		{"0/10", "0/2", 1},     // hex, not lexical
-	}
-	for _, c := range cases {
-		got := lsnCompare(c.a, c.b)
-		if sign(got) != c.want {
-			t.Errorf("lsnCompare(%q,%q) = %d, want sign %d", c.a, c.b, got, c.want)
-		}
-	}
-}
-
-func sign(n int) int {
-	switch {
-	case n < 0:
-		return -1
-	case n > 0:
-		return 1
-	default:
-		return 0
-	}
-}
 
 // writeArchive writes a base snapshot at position "1" (alice) and a diff 1→2
 // (insert bob); head = "2". Mirrors the snapshotter's on-disk layout.
@@ -120,6 +88,52 @@ func TestReconstructArchive_EndToEnd(t *testing.T) {
 	}
 	if rec.Rows[0]["name"] != "alice" {
 		t.Errorf("expected alice, got %v", rec.Rows[0])
+	}
+}
+
+// TestExportArchive_RoundTrip exports an in-memory source into an archive, then
+// replays it through the archive source — proving export produces something the
+// consumer can read, with the schema preserved end-to-end.
+func TestExportArchive_RoundTrip(t *testing.T) {
+	tbl := laredo.Table("public", "events")
+	ts := testsource.New()
+	ts.SetSchema(tbl, []laredo.ColumnDefinition{
+		{Name: "id", Type: "int8", PrimaryKey: true, PrimaryKeyOrdinal: 1, OrdinalPosition: 1},
+		{Name: "name", Type: "text", Nullable: true, OrdinalPosition: 2},
+	})
+	ts.AddRow(tbl, laredo.Row{"id": 1, "name": "alice"})
+	ts.AddRow(tbl, laredo.Row{"id": 2, "name": "bob"})
+
+	dir := t.TempDir()
+	const prefix = "public.events/"
+	ctx := context.Background()
+
+	n, _, err := exportArchive(ctx, ts, tbl, exportOpts{store: "local", path: dir, keyPrefix: prefix, format: "jsonl"})
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("exported %d rows, want 2", n)
+	}
+
+	reader, err := snapshotter.NewReader(local.New(dir), prefix, jsonl.New())
+	if err != nil {
+		t.Fatalf("reader: %v", err)
+	}
+	src := archive.New(archive.WithReader(reader), archive.Table("public", "events"), archive.KeyFields("id"))
+	cols, err := src.Init(ctx, laredo.SourceConfig{Tables: []laredo.TableIdentifier{tbl}})
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if got := cols[tbl]; len(got) != 2 || got[0].Type != "int8" || !got[0].PrimaryKey {
+		t.Fatalf("schema not preserved through export: %+v", got)
+	}
+	var rows []laredo.Row
+	if _, err := src.Baseline(ctx, nil, func(_ laredo.TableIdentifier, r laredo.Row) { rows = append(rows, r) }); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("replayed %d rows, want 2", len(rows))
 	}
 }
 

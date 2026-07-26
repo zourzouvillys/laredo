@@ -120,6 +120,8 @@ Commands:
   reset-source       Reset a source (drop/recreate slot)
   dead-letters       List dead letters for a pipeline
   dead-letters purge Purge dead letters
+  archive export     Export a table to a one-shot archive file (connects to
+                       PostgreSQL directly; for backup/seeding, works offline)
   archive reconstruct  Reconstruct a table's state as of a position (reads the
                        cold archive directly; works offline)
   version            Print version

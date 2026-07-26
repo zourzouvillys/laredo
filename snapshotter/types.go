@@ -58,6 +58,12 @@ type Manifest struct {
 	UpdatedAt       time.Time  `json:"updated_at"`
 	HeadPosition    string     `json:"head_position"`
 	Artifacts       []Artifact `json:"artifacts"`
+	// Columns is the table's schema, recorded so an offline consumer (e.g. the
+	// archive source) can report column definitions without a live catalog. It is
+	// optional and additive: older archives omit it (readers fall back to
+	// inferring column names from a snapshot row), so its presence does not change
+	// the manifest version.
+	Columns []laredo.ColumnDefinition `json:"columns,omitempty"`
 }
 
 // ManifestVersion is the current manifest schema version.

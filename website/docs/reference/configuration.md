@@ -18,7 +18,7 @@ Laredo uses HOCON configuration. Config is resolved in order (later overrides ea
 ```hocon
 sources {
   <source_id> {
-    type = postgresql | s3-kinesis
+    type = postgresql | s3-kinesis | archive
 
     # PostgreSQL
     connection = "postgresql://user:pass@host:5432/dbname"
@@ -54,6 +54,22 @@ sources {
     consumer_group = "laredo-01"
     checkpoint_table = "dynamodb://table"
     region = us-east-1
+
+    # Archive (type = archive | file) — replay a snapshotter archive from disk
+    # instead of a database. One archive source serves one table (a manifest is
+    # per-table); configure one source per table. The store/store_config/format/
+    # key_prefix shape mirrors the snapshotter and a fan-out target's archive block.
+    store = local | s3                       # required
+    store_config { path = "/var/lib/laredo/archive/events" }  # local
+    # store_config { bucket = ..., prefix = ..., region = ... } # s3 (ambient creds)
+    format = jsonl                           # jsonl | protobuf; or a list, tried in order
+    key_prefix = "public.events/"            # MUST match the archive's write prefix
+    key_fields = [id]                        # primary key the archive was written with
+    follow = false                           # keep watching for appended diffs and
+                                             # wholesale replacement (re-baselines)
+    poll_interval = 5s                       # manifest re-read interval while following
+    state_path = "/var/lib/laredo/archive/events.ack"  # persist position → resume on
+                                             # restart; omit to re-baseline each start
   }
 }
 ```

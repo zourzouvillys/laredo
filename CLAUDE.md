@@ -84,6 +84,8 @@ Pipeline model: each pipeline binds (source, table, filters, transforms, target)
 | `internal/engine/` | Private engine implementation: pipeline orchestrator, change buffer, ACK tracker, TTL manager, readiness tracker, graceful shutdown coordinator |
 | `source/pg/` | PostgreSQL logical replication source (ephemeral + stateful modes, publication management, reconnection) |
 | `source/kinesis/` | S3 baseline + Kinesis change stream source |
+| `source/archive/` | Archive source: replays a snapshotter archive (base + diffs) from disk — offline backup/restore, startup with no database, dev seeding (EDR-0006) |
+| `source/fanout/` | Cascading source: consumes an upstream fan-out as a `SyncSource` (EDR-0004) |
 | `source/testsource/` | In-memory test source for integration testing |
 | `target/httpsync/` | HTTP sync target (batched POST, retry, durability tracking) |
 | `target/memory/` | `IndexedTarget` (raw rows + secondary indexes) and `CompiledTarget` (domain objects via compiler function) |

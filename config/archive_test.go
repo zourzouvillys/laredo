@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zourzouvillys/laredo"
 	"github.com/zourzouvillys/laredo/snapshotter"
@@ -168,6 +169,151 @@ func TestBuildArchiveReader_Nil(t *testing.T) {
 	r, err := BuildArchiveReader(nil)
 	if err != nil || r != nil {
 		t.Errorf("nil archive: got (%v, %v), want (nil, nil)", r, err)
+	}
+}
+
+// writeSeedArchive writes a one-row base snapshot (alice) plus a manifest at
+// head "1" under prefix — the minimal archive a source can replay.
+func writeSeedArchive(t *testing.T, dir, prefix string) {
+	t.Helper()
+	ctx := context.Background()
+	dest := local.New(dir)
+	f := jsonl.New()
+	snapArt := snapshotter.Artifact{
+		Kind: snapshotter.KindSnapshot, Epoch: 1, ToPosition: "1", RowCount: 1,
+		Formats: map[string]snapshotter.FormatRef{"jsonl": {}},
+	}
+	var sb bytes.Buffer
+	if err := f.WriteSnapshot(&sb, []laredo.Row{{"id": 1, "name": "alice"}}); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+	if _, _, err := dest.Put(ctx, snapshotter.ArtifactObjectKey(prefix, snapArt, f.Extension()), bytes.NewReader(sb.Bytes())); err != nil {
+		t.Fatalf("put snapshot: %v", err)
+	}
+	m := snapshotter.Manifest{
+		ManifestVersion: snapshotter.ManifestVersion, Table: "public.events",
+		Epoch: 1, HeadPosition: "1", Artifacts: []snapshotter.Artifact{snapArt},
+	}
+	data, _ := json.Marshal(m)
+	if _, _, err := dest.Put(ctx, snapshotter.ManifestObjectKey(prefix), bytes.NewReader(data)); err != nil {
+		t.Fatalf("put manifest: %v", err)
+	}
+}
+
+const archiveSourceConfig = `
+sources {
+  seed {
+    type = archive
+    store = local
+    store_config { path = "/var/lib/laredo/archive/events" }
+    format = jsonl
+    key_prefix = "public.events/"
+    follow = true
+    poll_interval = 2s
+    state_path = "/var/lib/laredo/archive/events.ack"
+    key_fields = [id]
+  }
+}
+tables = [
+  { source = seed, schema = public, table = events, targets = [ { type = indexed-memory } ] }
+]
+`
+
+// TestParse_ArchiveSource verifies the archive source block maps onto SourceConfig.
+func TestParse_ArchiveSource(t *testing.T) {
+	cfg, err := Parse(archiveSourceConfig)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	sc, ok := cfg.Sources["seed"]
+	if !ok {
+		t.Fatal("expected seed source")
+	}
+	if sc.Type != "archive" {
+		t.Errorf("type: got %q", sc.Type)
+	}
+	if sc.Archive == nil || sc.Archive.Store != "local" || sc.Archive.Path != "/var/lib/laredo/archive/events" {
+		t.Fatalf("archive store config: %+v", sc.Archive)
+	}
+	if sc.Archive.KeyPrefix != "public.events/" {
+		t.Errorf("key_prefix: got %q", sc.Archive.KeyPrefix)
+	}
+	if !sc.Follow {
+		t.Error("follow should be true")
+	}
+	if sc.PollInterval != 2*time.Second {
+		t.Errorf("poll_interval: got %v, want 2s", sc.PollInterval)
+	}
+	if sc.StatePath != "/var/lib/laredo/archive/events.ack" {
+		t.Errorf("state_path: got %q", sc.StatePath)
+	}
+	if len(sc.KeyFields) != 1 || sc.KeyFields[0] != "id" {
+		t.Errorf("key_fields: got %v", sc.KeyFields)
+	}
+}
+
+// TestCreateSource_ArchiveEndToEnd proves the config → source → read path: build
+// an archive source from config and replay a real on-disk archive with no
+// database involved.
+func TestCreateSource_ArchiveEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	const prefix = "public.events/"
+	writeSeedArchive(t, dir, prefix)
+
+	src, err := createSource(SourceConfig{
+		Type:      "archive",
+		Archive:   &ArchiveConfig{Store: "local", Path: dir, KeyPrefix: prefix},
+		KeyFields: []string{"id"},
+	})
+	if err != nil {
+		t.Fatalf("createSource: %v", err)
+	}
+	ctx := context.Background()
+	tbl := laredo.Table("public", "events")
+	if _, err := src.Init(ctx, laredo.SourceConfig{Tables: []laredo.TableIdentifier{tbl}}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	var rows []laredo.Row
+	pos, err := src.Baseline(ctx, nil, func(_ laredo.TableIdentifier, r laredo.Row) { rows = append(rows, r) })
+	if err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	if len(rows) != 1 || rows[0]["name"] != "alice" {
+		t.Fatalf("baseline rows: got %v", rows)
+	}
+	if pos != "1" {
+		t.Errorf("position: got %v, want 1", pos)
+	}
+	_ = src.Close(ctx)
+}
+
+// TestCreateSource_ArchiveMissingStore verifies a store-less archive source fails
+// to build with a clear error.
+func TestCreateSource_ArchiveMissingStore(t *testing.T) {
+	if _, err := createSource(SourceConfig{Type: "file"}); err == nil {
+		t.Fatal("expected an error when no store is configured")
+	}
+}
+
+// TestValidate_ArchiveSourceMissingStore verifies a store-less archive source is
+// rejected at validation time.
+func TestValidate_ArchiveSourceMissingStore(t *testing.T) {
+	input := `
+sources { seed { type = archive } }
+tables = [ { source = seed, schema = public, table = events, targets = [ { type = indexed-memory } ] } ]
+`
+	cfg, err := Parse(input)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	found := false
+	for _, e := range cfg.Validate() {
+		if strings.Contains(e.Error(), "archive source requires a store") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected validation to reject store-less archive source, got %v", cfg.Validate())
 	}
 }
 
