@@ -29,6 +29,7 @@ type Observer struct {
 	deadLetters     *prometheus.CounterVec
 	rowsExpired     *prometheus.CounterVec
 	snapshotsTotal  *prometheus.CounterVec
+	reBaselineTotal *prometheus.CounterVec
 	validationRuns  *prometheus.CounterVec
 
 	// Histograms
@@ -102,6 +103,11 @@ func New(reg *prometheus.Registry) *Observer {
 			Help: "Total number of rows removed by TTL expiry per pipeline.",
 		}, []string{"pipeline"}),
 
+		reBaselineTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "laredo_source_rebaseline_total",
+			Help: "Total number of mid-stream re-baselines triggered per source (e.g. reconnect or archive replacement).",
+		}, []string{"source"}),
+
 		snapshotsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "laredo_snapshots_total",
 			Help: "Total number of snapshots by outcome (created, failed).",
@@ -158,6 +164,7 @@ func New(reg *prometheus.Registry) *Observer {
 		o.deadLetters,
 		o.rowsExpired,
 		o.snapshotsTotal,
+		o.reBaselineTotal,
 		o.validationRuns,
 		o.changeApplyDuration,
 		o.baselineDuration,
@@ -220,6 +227,13 @@ func (o *Observer) OnChangeApplied(pipelineID string, _ laredo.TableIdentifier, 
 //nolint:revive // EngineObserver implementation.
 func (o *Observer) OnChangeError(pipelineID string, _ laredo.TableIdentifier, _ laredo.ChangeAction, _ laredo.ErrorInfo) {
 	o.changeErrors.WithLabelValues(pipelineID).Inc()
+}
+
+// --- Re-baseline ---
+
+//nolint:revive // EngineObserver implementation.
+func (o *Observer) OnReBaselineTriggered(sourceID string) {
+	o.reBaselineTotal.WithLabelValues(sourceID).Inc()
 }
 
 // --- ACK ---

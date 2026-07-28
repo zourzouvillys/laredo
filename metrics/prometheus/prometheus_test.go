@@ -194,6 +194,31 @@ func TestObserver_Snapshots(t *testing.T) {
 	}
 }
 
+func TestObserver_ReBaseline(t *testing.T) {
+	obs, reg := newTestObserver(t)
+
+	obs.OnReBaselineTriggered("pg-main")
+	obs.OnReBaselineTriggered("pg-main")
+	obs.OnReBaselineTriggered("archive-seed")
+
+	fam := getMetric(t, reg, "laredo_source_rebaseline_total")
+	if fam == nil {
+		t.Fatal("expected laredo_source_rebaseline_total metric")
+	}
+	for _, m := range fam.GetMetric() {
+		switch getLabel(m, "source") {
+		case "pg-main":
+			if m.GetCounter().GetValue() != 2 {
+				t.Errorf("pg-main: got %f, want 2", m.GetCounter().GetValue())
+			}
+		case "archive-seed":
+			if m.GetCounter().GetValue() != 1 {
+				t.Errorf("archive-seed: got %f, want 1", m.GetCounter().GetValue())
+			}
+		}
+	}
+}
+
 func TestObserver_DeadLetters(t *testing.T) {
 	obs, reg := newTestObserver(t)
 

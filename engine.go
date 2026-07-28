@@ -1052,6 +1052,7 @@ func (e *coreEngine) streamFromPosition(ctx context.Context, sourceID string, so
 
 		// ErrReBaselineRequired: signal the caller to re-baseline instead of erroring.
 		if errors.Is(err, ErrReBaselineRequired) {
+			e.observer.OnReBaselineTriggered(sourceID)
 			return true
 		}
 		e.transitionPipelines(pipelineIdxs, PipelineError)

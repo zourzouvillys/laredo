@@ -126,8 +126,6 @@ pipeline that binds the source, so it is not repeated in the source block.
 
 ## Scope — out
 
-- **Multi-table in one source.** One source serves one table; a multi-table
-  "source group" convenience is deferred.
 - **A server-side export RPC.** Export stays a CLI/offline operation, consistent
   with EDR-0003; no new OAM surface.
 - **Named profiles / assume-role for the export/source S3 path.** Ambient AWS
@@ -180,3 +178,12 @@ pipeline that binds the source, so it is not repeated in the source block.
   --follow` drives the Writer with it — a live base-plus-diffs archive sourced
   straight from PostgreSQL. An optional `snapshotter.SchemaProvider` lets the
   Writer record the schema (non-breaking for the fan-out subscription).
+- **2026-07-28**: Multi-table groups and re-baseline observability shipped.
+  `group = true` on an archive source block expands, in `ToEngineOptions`, to one
+  single-table source per referencing table (derived `key_prefix` and per-table
+  state file), so one block covers many tables — no engine change. A new
+  `EngineObserver.OnReBaselineTriggered(sourceID)` hook, fired where the engine
+  handles `ErrReBaselineRequired`, surfaces `laredo_source_rebaseline_total` /
+  `laredo.source.rebaseline` in the Prometheus and OTel observers — making
+  re-baselines (archive replacement, PostgreSQL reconnect) observable for all
+  sources.

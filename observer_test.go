@@ -39,6 +39,7 @@ func (o *miniObserver) OnChangeApplied(string, TableIdentifier, ChangeAction, ti
 func (o *miniObserver) OnChangeError(string, TableIdentifier, ChangeAction, ErrorInfo) {
 	o.record("ChangeError")
 }
+func (o *miniObserver) OnReBaselineTriggered(string)          { o.record("ReBaselineTriggered") }
 func (o *miniObserver) OnAckAdvanced(string, Position)        { o.record("AckAdvanced") }
 func (o *miniObserver) OnBufferDepthChanged(string, int, int) { o.record("BufferDepthChanged") }
 func (o *miniObserver) OnBufferPolicyTriggered(string, BufferPolicy) {

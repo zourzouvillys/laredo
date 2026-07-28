@@ -57,8 +57,8 @@ sources {
 
     # Archive (type = archive | file) — replay a snapshotter archive from disk
     # instead of a database. One archive source serves one table (a manifest is
-    # per-table); configure one source per table. The store/store_config/format/
-    # key_prefix shape mirrors the snapshotter and a fan-out target's archive block.
+    # per-table). The store/store_config/format/key_prefix shape mirrors the
+    # snapshotter and a fan-out target's archive block.
     store = local | s3                       # required
     store_config { path = "/var/lib/laredo/archive/events" }  # local
     # store_config { bucket = ..., prefix = ..., region = ... } # s3 (ambient creds)
@@ -70,9 +70,32 @@ sources {
     poll_interval = 5s                       # manifest re-read interval while following
     state_path = "/var/lib/laredo/archive/events.ack"  # persist position → resume on
                                              # restart; omit to re-baseline each start
+
+    # group = true expands ONE archive block into one source per table that
+    # references it, deriving each table's key_prefix from "<schema>.<table>/".
+    # Omit key_prefix; store_config.path is the archive ROOT, and state_path (if
+    # set) is treated as a directory holding per-table "<schema>.<table>.pos" files.
+    group = false
   }
 }
 ```
+
+**Multi-table archive with `group`:**
+
+```hocon
+sources {
+  seed { type = archive, group = true, store = local
+         store_config { path = "/var/lib/laredo/archive" }, format = jsonl, follow = true }
+}
+tables = [
+  { source = seed, schema = public, table = events, targets = [ { type = indexed-memory } ] }
+  { source = seed, schema = public, table = users,  targets = [ { type = indexed-memory } ] }
+]
+```
+
+This registers two sources — `seed/public.events` (prefix `public.events/`) and
+`seed/public.users` (prefix `public.users/`) — reading from the shared archive
+root. The synthesized per-table ids are the handles for `pause`/`resume`/`reload`.
 
 ## Tables & Pipelines
 
