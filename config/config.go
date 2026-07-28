@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -51,11 +52,17 @@ type SourceConfig struct {
 	// PollInterval is how often the archive is re-read while following (default 5s).
 	PollInterval time.Duration
 	// StatePath persists the last ACKed position so a restart resumes instead of
-	// re-baselining. Empty disables resume. Archive sources only.
+	// re-baselining. Empty disables resume. Archive sources only. For a Group, it
+	// is treated as a directory: each table gets "<StatePath>/<schema>.<table>.pos".
 	StatePath string
 	// KeyFields are the primary-key columns the archive was written with (default
 	// ["id"]). Archive sources only.
 	KeyFields []string
+	// Group expands one archive source block into one single-table archive source
+	// per table that references it, deriving each table's key_prefix from
+	// "<schema>.<table>/". The block sets the shared store/format/follow settings
+	// and omits key_prefix. Archive sources only (EDR-0006).
+	Group bool
 }
 
 // TableConfig is the configuration for a table pipeline.
@@ -325,6 +332,7 @@ func Parse(input string) (*Config, error) {
 				sc.PollInterval = objDuration(srcObj, "poll_interval")
 				sc.StatePath = objStr(srcObj, "state_path")
 				sc.KeyFields = objStrOrStrSlice(srcObj, "key_fields")
+				sc.Group = objBool(srcObj, "group")
 			}
 		}
 		cfg.Sources[key] = sc
@@ -626,22 +634,52 @@ func maskValue(s string) string {
 func (c *Config) ToEngineOptions() ([]laredo.Option, error) {
 	var opts []laredo.Option
 
+	// Register sources. An archive "group" block expands to one single-table
+	// archive source per table that references it (deriving each table's
+	// key_prefix); other sources register 1:1. groupBinding maps a group id and
+	// table to the synthesized per-table source id used by the pipelines below.
+	groupBinding := make(map[string]map[laredo.TableIdentifier]string)
 	for id, src := range c.Sources {
-		source, err := createSource(src)
-		if err != nil {
-			return nil, fmt.Errorf("source %s: %w", id, err)
+		if !isArchiveGroup(src) {
+			source, err := createSource(src)
+			if err != nil {
+				return nil, fmt.Errorf("source %s: %w", id, err)
+			}
+			opts = append(opts, laredo.WithSource(id, source))
+			continue
 		}
-		opts = append(opts, laredo.WithSource(id, source))
+		binding := make(map[laredo.TableIdentifier]string)
+		for _, tc := range c.Tables {
+			if tc.Source != id {
+				continue
+			}
+			table := laredo.Table(tc.Schema, tc.Table)
+			if _, seen := binding[table]; seen {
+				continue
+			}
+			source, err := createSource(archiveSourceForTable(src, tc.Schema, tc.Table))
+			if err != nil {
+				return nil, fmt.Errorf("source %s (%s): %w", id, table, err)
+			}
+			synthID := id + "/" + table.String()
+			opts = append(opts, laredo.WithSource(synthID, source))
+			binding[table] = synthID
+		}
+		groupBinding[id] = binding
 	}
 
 	for _, tc := range c.Tables {
 		table := laredo.Table(tc.Schema, tc.Table)
+		sourceID := tc.Source
+		if synth, ok := groupBinding[tc.Source][table]; ok {
+			sourceID = synth
+		}
 		for _, tgt := range tc.Targets {
 			target, err := createTarget(tgt)
 			if err != nil {
 				return nil, fmt.Errorf("table %s.%s target %s: %w", tc.Schema, tc.Table, tgt.Type, err)
 			}
-			opts = append(opts, laredo.WithPipeline(tc.Source, table, target, buildPipelineOpts(tgt, tc.TTL)...))
+			opts = append(opts, laredo.WithPipeline(sourceID, table, target, buildPipelineOpts(tgt, tc.TTL)...))
 		}
 	}
 
@@ -658,6 +696,29 @@ func (c *Config) ToEngineOptions() ([]laredo.Option, error) {
 	}
 
 	return opts, nil
+}
+
+// isArchiveGroup reports whether a source config is an archive "group" that
+// expands to one single-table source per referencing table.
+func isArchiveGroup(src SourceConfig) bool {
+	return src.Group && (src.Type == sourceTypeArchive || src.Type == sourceTypeFile)
+}
+
+// archiveSourceForTable clones a group source config for one table, deriving the
+// per-table key_prefix ("<schema>.<table>/") and, when a group state path is set,
+// a per-table state file under it.
+func archiveSourceForTable(src SourceConfig, schema, table string) SourceConfig {
+	clone := src
+	ac := ArchiveConfig{}
+	if src.Archive != nil {
+		ac = *src.Archive
+	}
+	ac.KeyPrefix = schema + "." + table + "/"
+	clone.Archive = &ac
+	if src.StatePath != "" {
+		clone.StatePath = filepath.Join(src.StatePath, schema+"."+table+".pos")
+	}
+	return clone
 }
 
 func buildPipelineOpts(tgt TargetConfig, ttl *TTLConfig) []laredo.PipelineOption {

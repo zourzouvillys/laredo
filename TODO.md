@@ -187,9 +187,13 @@ with no database (offline backup/restore, immediate startup, dev seeding).
       --follow` archives PostgreSQL directly. Added the optional
       `snapshotter.SchemaProvider` so the Writer records the schema too.
 
-Deferred:
-
-- [ ] Multi-table "source group" convenience (one config block expanding to one
-      archive source per table); today one source serves one table.
-- [ ] Lag/observability polish: richer `GetLag` and a metric for re-baselines
-      triggered by archive replacement while following.
+- [x] Multi-table "source group": `group = true` on an archive block expands (in
+      `ToEngineOptions`) to one single-table source per referencing table, with a
+      derived `key_prefix` (`<schema>.<table>/`) and per-table state file. No
+      engine change; the synthesized ids (`seed/public.events`) are the OAM handles.
+- [x] Re-baseline observability: `EngineObserver.OnReBaselineTriggered(sourceID)`
+      fired at the engine's `ErrReBaselineRequired` handling, surfaced as
+      `laredo_source_rebaseline_total` (Prometheus) / `laredo.source.rebaseline`
+      (OTel). General across sources (archive replacement, PostgreSQL reconnect).
+      `GetLag` on the archive source reports head-age `LagTime` (adequate; wiring
+      the dead `OnLagUpdated` hook engine-wide is a separate, broader change).

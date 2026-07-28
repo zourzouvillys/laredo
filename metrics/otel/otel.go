@@ -30,6 +30,7 @@ type Observer struct {
 	deadLetters     metric.Int64Counter
 	rowsExpired     metric.Int64Counter
 	snapshotsTotal  metric.Int64Counter
+	reBaselineTotal metric.Int64Counter
 	validationRuns  metric.Int64Counter
 	baselineRows    metric.Int64Counter
 
@@ -107,6 +108,10 @@ func New(provider metric.MeterProvider) (*Observer, error) {
 	if o.snapshotsTotal, err = meter.Int64Counter("laredo.snapshots",
 		metric.WithDescription("Snapshots by outcome")); err != nil {
 		return nil, fmt.Errorf("create snapshots: %w", err)
+	}
+	if o.reBaselineTotal, err = meter.Int64Counter("laredo.source.rebaseline",
+		metric.WithDescription("Mid-stream re-baselines triggered per source")); err != nil {
+		return nil, fmt.Errorf("create source_rebaseline: %w", err)
 	}
 	if o.validationRuns, err = meter.Int64Counter("laredo.validation.runs",
 		metric.WithDescription("Validation runs")); err != nil {
@@ -186,6 +191,13 @@ func (o *Observer) OnChangeApplied(pipelineID string, _ laredo.TableIdentifier, 
 //nolint:revive // EngineObserver implementation.
 func (o *Observer) OnChangeError(pipelineID string, _ laredo.TableIdentifier, _ laredo.ChangeAction, _ laredo.ErrorInfo) {
 	o.changeErrors.Add(ctx, 1, metric.WithAttributes(pipelineAttr(pipelineID)))
+}
+
+// --- Re-baseline ---
+
+//nolint:revive // EngineObserver implementation.
+func (o *Observer) OnReBaselineTriggered(sourceID string) {
+	o.reBaselineTotal.Add(ctx, 1, metric.WithAttributes(sourceAttr(sourceID)))
 }
 
 // --- ACK ---

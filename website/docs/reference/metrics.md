@@ -30,6 +30,7 @@ All metrics are exported via Prometheus at `/metrics` on the configured port (de
 | `laredo_source_lag_bytes` | Gauge | `source_id` | Replication lag in bytes |
 | `laredo_source_lag_seconds` | Gauge | `source_id` | Replication lag in seconds |
 | `laredo_source_connected` | Gauge | `source_id` | 1 if connected, 0 if not |
+| `laredo_source_rebaseline_total` | Counter | `source` | Mid-stream re-baselines triggered (reconnect, archive replacement) |
 
 ## Timing metrics
 
