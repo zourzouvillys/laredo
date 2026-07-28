@@ -99,7 +99,7 @@ above), so you do not repeat them in the source block.
 
 ## Producing an archive
 
-Export a table's current state from PostgreSQL into a one-shot archive:
+Export a table's current state from PostgreSQL into a **one-shot** archive:
 
 ```bash
 laredo archive export --connection "postgresql://localhost/app" \
@@ -109,10 +109,25 @@ laredo archive export --connection "postgresql://localhost/app" \
 
 This writes a base snapshot and a manifest (recording the schema) under
 `<schema>.<table>/` by default. See [`laredo archive export`](../reference/cli.md#laredo-archive-export)
-for all flags. For a **continuously updated** archive (base plus ongoing diffs),
-run the [snapshotter](./snapshot-writer.md) against a fan-out target instead.
+for all flags.
 
-The export carries column definitions in the manifest, so schema survives the
+For a **continuously updated** archive — a base snapshot plus periodic diffs,
+re-basing on the snapshotter's policy — add `--follow`:
+
+```bash
+laredo archive export --connection "postgresql://localhost/app" \
+  --schema public --table events \
+  --store local --path /var/lib/laredo/archive/events \
+  --follow --diff-interval 30s
+```
+
+`--follow` runs until interrupted (Ctrl-C), driving the [snapshotter Writer](./snapshot-writer.md)
+straight from PostgreSQL (via the `snapshotter/sourcesub` adapter) rather than
+from a fan-out target — so you get the snapshotter's live archive without running
+a fan-out. A `follow` archive source pointed at the same location picks up the
+diffs, and re-baselines whenever `--follow` re-bases.
+
+Both export forms carry column definitions in the manifest, so schema survives the
 round-trip. Archives written by older tooling (without a recorded schema) still
 work — the source infers column names from a snapshot row, with types left unset.
 

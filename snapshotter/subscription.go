@@ -35,3 +35,13 @@ type Subscription interface {
 	// Stop disconnects.
 	Stop()
 }
+
+// SchemaProvider is an optional interface a Subscription may implement to record
+// the table's column definitions in the manifest. A subscription that knows the
+// schema (e.g. one adapting a laredo.SyncSource) implements it; one that does not
+// (e.g. the fan-out adapter) simply omits it and the manifest carries no columns.
+// The Writer type-asserts for it at commit time, so adding it is backwards
+// compatible with every existing Subscription.
+type SchemaProvider interface {
+	Columns() []laredo.ColumnDefinition
+}

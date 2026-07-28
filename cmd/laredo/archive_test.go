@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/zourzouvillys/laredo"
 	"github.com/zourzouvillys/laredo/snapshotter"
@@ -135,6 +137,71 @@ func TestExportArchive_RoundTrip(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("replayed %d rows, want 2", len(rows))
 	}
+}
+
+// TestExportFollow_ContinuousArchive drives the CLI's --follow path with an
+// in-memory source: it should write a base snapshot, then a diff when a change
+// arrives, recording the schema throughout.
+func TestExportFollow_ContinuousArchive(t *testing.T) {
+	tbl := laredo.Table("public", "events")
+	ts := testsource.New()
+	ts.SetSchema(tbl, []laredo.ColumnDefinition{
+		{Name: "id", Type: "int8", PrimaryKey: true, PrimaryKeyOrdinal: 1, OrdinalPosition: 1},
+		{Name: "name", Type: "text", Nullable: true, OrdinalPosition: 2},
+	})
+	ts.AddRow(tbl, laredo.Row{"id": 1, "name": "alice"})
+
+	dir := t.TempDir()
+	const prefix = "public.events/"
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- exportFollow(ctx, ts, tbl,
+			exportOpts{store: "local", path: dir, keyPrefix: prefix, format: "jsonl"},
+			20*time.Millisecond)
+	}()
+
+	reader, err := snapshotter.NewReader(local.New(dir), prefix, jsonl.New())
+	if err != nil {
+		t.Fatalf("reader: %v", err)
+	}
+	arts := func() int {
+		m, e := reader.LoadManifest(context.Background())
+		if e != nil {
+			return 0
+		}
+		return len(m.Artifacts)
+	}
+	waitCond(t, func() bool { return arts() >= 1 }, 2*time.Second) // base snapshot
+	ts.EmitInsert(tbl, laredo.Row{"id": 2, "name": "bob"})
+	waitCond(t, func() bool { return arts() >= 2 }, 2*time.Second) // diff flushed
+
+	m, err := reader.LoadManifest(context.Background())
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	if len(m.Columns) != 2 || m.Columns[0].Name != "id" {
+		t.Errorf("continuous archive should record schema, got %+v", m.Columns)
+	}
+
+	cancel()
+	if err := <-errCh; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("exportFollow returned: %v", err)
+	}
+}
+
+func waitCond(t *testing.T, cond func() bool, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("condition not met within timeout")
 }
 
 func TestReconstructArchive_BadStore(t *testing.T) {

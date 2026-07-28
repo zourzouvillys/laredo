@@ -172,9 +172,16 @@ source](../guides/archive-source.md) or `laredo archive reconstruct` can replay
 with no database. See the [Archive source guide](../guides/archive-source.md).
 
 ```bash
+# One-shot: a base snapshot of the table's current state.
 laredo archive export --connection "postgresql://localhost/app" \
   --schema public --table events \
   --store local --path /var/lib/laredo/archive/events --format jsonl
+
+# Continuous: base snapshot + periodic diffs until interrupted (Ctrl-C).
+laredo archive export --connection "postgresql://localhost/app" \
+  --schema public --table events \
+  --store local --path /var/lib/laredo/archive/events \
+  --follow --diff-interval 30s
 ```
 
 | Flag | Description |
@@ -186,10 +193,16 @@ laredo archive export --connection "postgresql://localhost/app" \
 | `--bucket` / `--prefix` / `--region` | S3 destination (`store=s3`, ambient AWS credentials) |
 | `--key-prefix` | Archive key prefix (default: `<schema>.<table>/`) |
 | `--format` | Artifact format: `jsonl` or `protobuf` (default: `jsonl`) |
+| `--follow` | Keep the archive live (base + periodic diffs) until interrupted |
+| `--diff-interval` | Diff flush interval in `--follow` mode (default: `30s`) |
 
-Prints `{table, position, row_count, key_prefix}` as JSON. Re-running overwrites
-the archive; a `follow` archive source reads that as a wholesale replacement and
-re-baselines.
+The one-shot form prints `{table, position, row_count, key_prefix}` as JSON and
+overwrites any existing archive; a `follow` archive source reads that as a
+wholesale replacement and re-baselines. The `--follow` form runs until Ctrl-C,
+writing a base snapshot then diffs (re-basing on the snapshotter's policy) — the
+same continuously-updated archive the [snapshotter](../guides/snapshot-writer.md)
+produces, but sourced straight from PostgreSQL rather than a fan-out. Both forms
+record the table schema in the manifest.
 
 ### `laredo archive reconstruct`
 
