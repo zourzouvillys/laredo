@@ -181,11 +181,14 @@ with no database (offline backup/restore, immediate startup, dev seeding).
       EDR-0005 `BuildArchiveReader` / `destwire` machinery; served table derived
       from the binding pipeline. Docs: archive-source guide + reference updates.
 
+- [x] Continuous export via `snapshotter/sourcesub`: adapts any `SyncSource` to a
+      `snapshotter.Subscription` (in-memory state + re-baseline handling), driving
+      the `Writer` for a live base-plus-diffs archive. `laredo archive export
+      --follow` archives PostgreSQL directly. Added the optional
+      `snapshotter.SchemaProvider` so the Writer records the schema too.
+
 Deferred:
 
-- [ ] Continuous export (base + ongoing diffs) via a `SyncSource → snapshotter.
-      Subscription` adapter driving the `Writer`, so any source can be archived
-      continuously (today that is the snapshotter against a fan-out target).
 - [ ] Multi-table "source group" convenience (one config block expanding to one
       archive source per table); today one source serves one table.
 - [ ] Lag/observability polish: richer `GetLag` and a metric for re-baselines

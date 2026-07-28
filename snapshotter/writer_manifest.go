@@ -73,6 +73,11 @@ func (w *Writer) commit(ctx context.Context, art Artifact) error {
 	}
 	m.UpdatedAt = w.now().UTC()
 	m.HeadPosition = art.ToPosition
+	// Record the schema when the subscription can supply it, so an offline
+	// consumer (e.g. the archive source) reads columns without a live catalog.
+	if sp, ok := w.sub.(SchemaProvider); ok {
+		m.Columns = sp.Columns()
+	}
 	m.Artifacts = append(m.Artifacts, art)
 	m.prune(w.cfg.KeepEpochs)
 	data, err := json.MarshalIndent(m, "", "  ")

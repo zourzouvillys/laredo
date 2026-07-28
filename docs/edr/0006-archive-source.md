@@ -74,16 +74,25 @@ head as change events.
   `LastAckedPosition` reads it back, so a restart continues from the last ACK.
   Without it, the source re-baselines every start (safe for non-durable targets).
 
-### 2. `laredo archive export` — a one-shot producer
+### 2. `laredo archive export` — one-shot and continuous producers
 
-`snapshotter.WriteBaseSnapshot` writes a single base-snapshot archive (one
-snapshot artifact plus a fresh manifest **recording the schema**). It is
-deliberately not the `Writer`: the Writer maintains a live archive with
-incremental diffs, re-basing, and CAS commits, whereas export is a point-in-time
-dump with no prior manifest to reconcile. `laredo archive export` drives a
-PostgreSQL source (Init + Baseline) into it, connecting directly — in keeping with
-the offline-first archive command family (EDR-0003). Re-export overwrites the
+**One-shot.** `snapshotter.WriteBaseSnapshot` writes a single base-snapshot
+archive (one snapshot artifact plus a fresh manifest **recording the schema**), a
+point-in-time dump with no prior manifest to reconcile. Re-export overwrites the
 manifest, which a `follow` source reads as a replacement.
+
+**Continuous** (`--follow`). The `snapshotter/sourcesub` adapter presents any
+`laredo.SyncSource` as a `snapshotter.Subscription` — maintaining the source's
+current state in memory (baseline plus applied changes) so the Writer can
+re-snapshot on demand, and re-baselining when the source asks (e.g. a PostgreSQL
+reconnect). The existing `Writer` then materializes the source into a live
+base-plus-diffs archive, so PostgreSQL can be archived directly without running a
+fan-out. A new optional `snapshotter.SchemaProvider` interface (which the adapter
+implements) lets the Writer record the schema at commit time — non-breaking for
+`fanoutsub`, which simply omits it.
+
+Both forms connect directly, in keeping with the offline-first archive command
+family (EDR-0003).
 
 ### 3. Schema fidelity — an additive manifest field
 
@@ -117,9 +126,6 @@ pipeline that binds the source, so it is not repeated in the source block.
 
 ## Scope — out
 
-- **Continuous export with diffs and re-basing.** That is the snapshotter Writer's
-  job; export is one-shot. A future `SyncSource → Subscription` adapter could let
-  the Writer materialize any source continuously.
 - **Multi-table in one source.** One source serves one table; a multi-table
   "source group" convenience is deferred.
 - **A server-side export RPC.** Export stays a CLI/offline operation, consistent
@@ -169,3 +175,8 @@ pipeline that binds the source, so it is not repeated in the source block.
   `snapshotter.WriteBaseSnapshot` produce one-shot archives; the manifest carries
   an optional schema; config wires `type = archive | file` through the EDR-0005
   reader machinery; `internal/lsn` consolidates the WAL-LSN comparator.
+- **2026-07-28**: Continuous export shipped. `snapshotter/sourcesub` adapts any
+  `SyncSource` to a `snapshotter.Subscription`, and `laredo archive export
+  --follow` drives the Writer with it — a live base-plus-diffs archive sourced
+  straight from PostgreSQL. An optional `snapshotter.SchemaProvider` lets the
+  Writer record the schema (non-breaking for the fan-out subscription).

@@ -2,16 +2,20 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/zourzouvillys/laredo"
 	"github.com/zourzouvillys/laredo/internal/lsn"
 	"github.com/zourzouvillys/laredo/snapshotter"
 	"github.com/zourzouvillys/laredo/snapshotter/destwire"
+	"github.com/zourzouvillys/laredo/snapshotter/sourcesub"
 	"github.com/zourzouvillys/laredo/source/pg"
 )
 
@@ -34,11 +38,12 @@ func archiveCmd(args []string) {
 	}
 }
 
-// archiveExportCmd exports a table's current state from a PostgreSQL source into
-// a one-shot snapshotter archive on disk (EDR-0006) — an offline backup, or a
-// seed a laredo-server `file` source (or `laredo archive reconstruct`) can later
-// replay with no database. It connects directly to PostgreSQL, in keeping with
-// the offline-first archive command family.
+// archiveExportCmd exports a table from a PostgreSQL source into a snapshotter
+// archive on disk (EDR-0006) — an offline backup, or a seed a laredo-server
+// `file` source (or `laredo archive reconstruct`) can later replay with no
+// database. It connects directly to PostgreSQL, in keeping with the offline-first
+// archive command family. With --follow it keeps the archive live (base snapshot
+// plus periodic diffs) until interrupted; otherwise it writes a one-shot snapshot.
 func archiveExportCmd(args []string) {
 	fs := flag.NewFlagSet("archive export", flag.ExitOnError)
 	connection := fs.String("connection", "", "PostgreSQL connection string (required)")
@@ -51,10 +56,12 @@ func archiveExportCmd(args []string) {
 	region := fs.String("region", "", "s3 region (store=s3)")
 	keyPrefix := fs.String("key-prefix", "", "archive key prefix a reader must match (default: <schema>.<table>/)")
 	format := fs.String("format", "jsonl", "artifact format: jsonl or protobuf")
+	follow := fs.Bool("follow", false, "keep the archive live (base + periodic diffs) until interrupted")
+	diffInterval := fs.Duration("diff-interval", 30*time.Second, "diff flush interval (--follow)")
 	parseGlobalFlags(fs, args)
 
 	if *connection == "" || *table == "" {
-		fmt.Fprintln(os.Stderr, "usage: laredo archive export --connection <dsn> --schema <s> --table <t> --store <local|s3> [store flags] [--key-prefix <p>]")
+		fmt.Fprintln(os.Stderr, "usage: laredo archive export --connection <dsn> --schema <s> --table <t> --store <local|s3> [store flags] [--key-prefix <p>] [--follow]")
 		os.Exit(1)
 	}
 	tbl := laredo.Table(*schema, *table)
@@ -62,15 +69,25 @@ func archiveExportCmd(args []string) {
 	if kp == "" {
 		kp = tbl.String() + "/"
 	}
+	o := exportOpts{store: *store, path: *path, bucket: *bucket, prefix: *prefix, region: *region, keyPrefix: kp, format: *format}
+	src := pg.New(pg.Connection(*connection))
+
+	if *follow {
+		// The adapter/Writer own the source lifecycle (Writer.Run defers sub.Stop,
+		// which closes the source), so do not also close it here.
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		fmt.Fprintf(os.Stderr, "archiving %s to %s every %s; press Ctrl-C to stop\n", tbl, kp, *diffInterval) //nolint:gosec // CLI output
+		if err := exportFollow(ctx, src, tbl, o, *diffInterval); err != nil && !errors.Is(err, context.Canceled) {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	ctx := context.Background()
-	src := pg.New(pg.Connection(*connection))
 	defer func() { _ = src.Close(ctx) }()
-
-	n, pos, err := exportArchive(ctx, src, tbl, exportOpts{
-		store: *store, path: *path, bucket: *bucket, prefix: *prefix, region: *region,
-		keyPrefix: kp, format: *format,
-	})
+	n, pos, err := exportArchive(ctx, src, tbl, o)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -81,6 +98,35 @@ func archiveExportCmd(args []string) {
 		"row_count":  n,
 		"key_prefix": kp,
 	})
+}
+
+// exportFollow continuously archives a source: it drives the snapshotter Writer
+// through the sourcesub adapter, writing a base snapshot then periodic diffs (and
+// recording the schema in the manifest) until ctx is cancelled. Any source works;
+// the CLI wires PostgreSQL.
+func exportFollow(ctx context.Context, src laredo.SyncSource, table laredo.TableIdentifier, o exportOpts, diffInterval time.Duration) error {
+	dest, err := destwire.BuildDestination(ctx, destwire.DestinationSpec{
+		Type: o.store, Path: o.path, Bucket: o.bucket, Prefix: o.prefix, Region: o.region,
+	}, destwire.AmbientAWSConfig)
+	if err != nil {
+		return err
+	}
+	formats, err := destwire.BuildFormats([]string{o.format})
+	if err != nil {
+		return err
+	}
+	w, err := snapshotter.New(sourcesub.New(src, table, nil), snapshotter.Config{
+		Table:           table.String(),
+		KeyPrefix:       o.keyPrefix,
+		Policy:          snapshotter.Policy{DiffInterval: diffInterval},
+		SnapshotFormats: formats,
+		DiffFormats:     formats,
+		Destinations:    []snapshotter.Destination{dest},
+	})
+	if err != nil {
+		return err
+	}
+	return w.Run(ctx)
 }
 
 type exportOpts struct {
