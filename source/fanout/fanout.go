@@ -13,6 +13,7 @@ import (
 
 	"github.com/zourzouvillys/laredo"
 	clientfanout "github.com/zourzouvillys/laredo/client/fanout"
+	"github.com/zourzouvillys/laredo/internal/lsn"
 )
 
 // Comparator orders two opaque source positions: negative if a<b, zero if a==b,
@@ -79,7 +80,7 @@ var _ laredo.SyncSource = (*Source)(nil)
 
 // New creates a fan-out Source.
 func New(opts ...Option) *Source {
-	cfg := config{cmp: compareLSN, ordering: laredo.TotalOrder, readyTimeout: 30 * time.Second}
+	cfg := config{cmp: lsn.Compare, ordering: laredo.TotalOrder, readyTimeout: 30 * time.Second}
 	for _, opt := range opts {
 		opt(&cfg)
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/zourzouvillys/laredo/filter"
 	"github.com/zourzouvillys/laredo/snapshotter"
 	"github.com/zourzouvillys/laredo/snapshotter/destwire"
+	"github.com/zourzouvillys/laredo/source/archive"
 	"github.com/zourzouvillys/laredo/source/pg"
 	"github.com/zourzouvillys/laredo/target/fanout"
 	"github.com/zourzouvillys/laredo/target/httpsync"
@@ -39,6 +40,22 @@ type SourceConfig struct {
 	SlotMode       string
 	SlotName       string
 	AlwaysBaseline bool
+	// Archive configures a "file"/"archive" source that replays a snapshotter
+	// archive from disk instead of connecting to a database (EDR-0006). It reuses
+	// the ArchiveConfig store/store_config/format/key_prefix shape (the same one a
+	// replication-fanout target's archive uses); the fields below tune replay.
+	Archive *ArchiveConfig
+	// Follow keeps the source watching the archive for newly appended diffs and
+	// wholesale replacement, instead of ending at the head. Archive sources only.
+	Follow bool
+	// PollInterval is how often the archive is re-read while following (default 5s).
+	PollInterval time.Duration
+	// StatePath persists the last ACKed position so a restart resumes instead of
+	// re-baselining. Empty disables resume. Archive sources only.
+	StatePath string
+	// KeyFields are the primary-key columns the archive was written with (default
+	// ["id"]). Archive sources only.
+	KeyFields []string
 }
 
 // TableConfig is the configuration for a table pipeline.
@@ -292,13 +309,25 @@ func Parse(input string) (*Config, error) {
 	sourcesObj := safeGetObject(hc, "sources")
 	for key := range sourcesObj {
 		prefix := "sources." + key
-		cfg.Sources[key] = SourceConfig{
+		sc := SourceConfig{
 			Type:           safeStr(hc, prefix+".type"),
 			Connection:     safeStr(hc, prefix+".connection"),
 			SlotMode:       safeStr(hc, prefix+".slot_mode"),
 			SlotName:       safeStr(hc, prefix+".slot_name"),
 			AlwaysBaseline: safeBool(hc, prefix+".always_baseline"),
 		}
+		// An archive/file source carries the snapshotter store shape inline
+		// (store/store_config/format/key_prefix), plus replay tuning (EDR-0006).
+		if sc.Type == sourceTypeArchive || sc.Type == sourceTypeFile {
+			if srcObj, ok := sourcesObj[key].(hocon.Object); ok {
+				sc.Archive = parseArchiveConfig(srcObj)
+				sc.Follow = objBool(srcObj, "follow")
+				sc.PollInterval = objDuration(srcObj, "poll_interval")
+				sc.StatePath = objStr(srcObj, "state_path")
+				sc.KeyFields = objStrOrStrSlice(srcObj, "key_fields")
+			}
+		}
+		cfg.Sources[key] = sc
 	}
 
 	// Parse tables — need to work with array elements as hocon.Object maps.
@@ -382,6 +411,13 @@ const DefaultFanoutPort = 4002
 
 // targetTypeReplicationFanout is the config `type` value for a fan-out target.
 const targetTypeReplicationFanout = "replication-fanout"
+
+// Source `type` values for the archive/file source (EDR-0006). Both name the
+// same source; "file" is the friendlier alias.
+const (
+	sourceTypeArchive = "archive"
+	sourceTypeFile    = "file"
+)
 
 // configHasFanoutTarget reports whether any table declares a replication-fanout
 // target.
@@ -527,6 +563,21 @@ func (c *Config) Validate() []error {
 		}
 	}
 
+	// An archive/file source must name a store and build its reader; surface
+	// s3/unknown-store/format/credential errors here rather than at server start.
+	for id, src := range c.Sources {
+		if src.Type != sourceTypeArchive && src.Type != sourceTypeFile {
+			continue
+		}
+		if src.Archive == nil || src.Archive.Store == "" {
+			errs = append(errs, fmt.Errorf("sources.%s: archive source requires a store (store, store_config, key_prefix)", id))
+			continue
+		}
+		if _, err := BuildArchiveReader(src.Archive); err != nil {
+			errs = append(errs, fmt.Errorf("sources.%s: %w", id, err))
+		}
+	}
+
 	// The fan-out replication listener must not collide with the OAM/Query port;
 	// they are separate servers and would race to bind the same address.
 	if c.Fanout != nil && c.GRPC != nil && c.Fanout.GRPCPort == c.GRPC.Port {
@@ -661,6 +712,26 @@ func createSource(cfg SourceConfig) (laredo.SyncSource, error) {
 			opts = append(opts, pg.AlwaysBaseline(true))
 		}
 		return pg.New(opts...), nil
+	case sourceTypeArchive, sourceTypeFile:
+		reader, err := BuildArchiveReader(cfg.Archive)
+		if err != nil {
+			return nil, err
+		}
+		if reader == nil {
+			return nil, fmt.Errorf("archive source requires a store configuration (store, store_config, key_prefix)")
+		}
+		opts := []archive.Option{archive.WithReader(reader), archive.Follow(cfg.Follow)}
+		if cfg.PollInterval > 0 {
+			opts = append(opts, archive.PollInterval(cfg.PollInterval))
+		}
+		if cfg.StatePath != "" {
+			opts = append(opts, archive.StatePath(cfg.StatePath))
+		}
+		if len(cfg.KeyFields) > 0 {
+			opts = append(opts, archive.KeyFields(cfg.KeyFields...))
+		}
+		// The served table is derived from the pipeline that binds this source.
+		return archive.New(opts...), nil
 	default:
 		return nil, fmt.Errorf("unknown source type %q", cfg.Type)
 	}
@@ -965,6 +1036,16 @@ func objInt(obj hocon.Object, key string) int {
 	}
 	n, _ := strconv.Atoi(fmt.Sprintf("%v", v))
 	return n
+}
+
+// objBool extracts a boolean value from a hocon.Object.
+func objBool(obj hocon.Object, key string) bool {
+	v, ok := obj[key]
+	if !ok {
+		return false
+	}
+	b, _ := strconv.ParseBool(fmt.Sprintf("%v", v))
+	return b
 }
 
 // objDuration extracts a duration value from a hocon.Object, accepting either a

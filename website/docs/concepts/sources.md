@@ -36,6 +36,7 @@ The `Position` type is opaque to the engine. Each source defines what it means:
 
 - **PostgreSQL**: LSN (Log Sequence Number)
 - **Kinesis**: composite of S3 version + per-shard sequence numbers
+- **Archive**: the source position recorded in the snapshotter manifest (a WAL LSN when the archive was written from PostgreSQL)
 
 The engine uses `ComparePositions` for ACK coordination — it ACKs the minimum confirmed position across all pipelines sharing a source.
 
@@ -45,7 +46,13 @@ The engine uses `ComparePositions` for ACK coordination — it ACKs the minimum 
 |---|---|---|---|
 | PostgreSQL | `source/pg` | Total order | Stateful mode only |
 | S3 + Kinesis | `source/kinesis` | Per-partition | With checkpointing |
+| Archive (file) | `source/archive` | Total order | With a state file |
 | Test (in-memory) | `source/testsource` | Total order | No |
+
+The **archive source** replays a [snapshotter archive](../guides/snapshot-writer.md)
+(base snapshot + diffs) from disk instead of connecting to a database — so an
+engine can start with no PostgreSQL, for offline backup/restore, immediate
+startup, or seeding local development. See the [Archive source guide](../guides/archive-source.md).
 
 ## Source states
 

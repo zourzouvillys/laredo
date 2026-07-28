@@ -162,6 +162,35 @@ laredo fanout snapshots public.config_document
 laredo fanout journal public.config_document --tail 5
 ```
 
+### `laredo archive export`
+
+Export a table's current state from PostgreSQL into a **one-shot archive** on disk
+(a base snapshot plus a manifest recording the schema). Connects to PostgreSQL
+**directly** — no `laredo-server` — in keeping with the offline archive family.
+The result is an offline backup, or a seed that a `laredo-server` [archive
+source](../guides/archive-source.md) or `laredo archive reconstruct` can replay
+with no database. See the [Archive source guide](../guides/archive-source.md).
+
+```bash
+laredo archive export --connection "postgresql://localhost/app" \
+  --schema public --table events \
+  --store local --path /var/lib/laredo/archive/events --format jsonl
+```
+
+| Flag | Description |
+|---|---|
+| `--connection` | PostgreSQL connection string (**required**) |
+| `--schema` / `--table` | Table to export (`--table` **required**; schema default `public`) |
+| `--store` | Archive store: `local` or `s3` (default: `local`) |
+| `--path` | Local filesystem root (`store=local`) |
+| `--bucket` / `--prefix` / `--region` | S3 destination (`store=s3`, ambient AWS credentials) |
+| `--key-prefix` | Archive key prefix (default: `<schema>.<table>/`) |
+| `--format` | Artifact format: `jsonl` or `protobuf` (default: `jsonl`) |
+
+Prints `{table, position, row_count, key_prefix}` as JSON. Re-running overwrites
+the archive; a `follow` archive source reads that as a wholesale replacement and
+re-baselines.
+
 ### `laredo archive reconstruct`
 
 Materialize a table's state as of a source position from the snapshotter's cold

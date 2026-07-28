@@ -14,6 +14,7 @@ Laredo is organized in three layers:
 
 - **PostgreSQL** — logical replication (ephemeral or stateful mode)
 - **S3 + Kinesis** — S3 baseline snapshots with Kinesis change streams
+- **Archive (file)** — replay a snapshotter archive from disk (offline backup/restore, immediate startup with no database, dev seeding)
 
 ### Targets
 
@@ -47,7 +48,7 @@ make docker
 ```
 laredo.go, types.go, source.go, ...   Core interfaces (root package)
 internal/engine/                       Engine implementation
-source/{pg,kinesis,testsource}/        Source implementations
+source/{pg,kinesis,archive,fanout,testsource}/  Source implementations
 target/{httpsync,memory,fanout}/       Target implementations
 snapshot/{local,s3,jsonl}/             Snapshot store/serializer implementations
 filter/, transform/                    Built-in pipeline filters and transforms

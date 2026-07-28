@@ -131,9 +131,9 @@ Deferred:
 
 - [ ] A read RPC over the archive (the other surface named in EDR-0003), if a
       networked point-in-time read is wanted in addition to the offline CLI.
-- [ ] Share the WAL-LSN string comparator (currently a small copy in the CLI and
-      in `source/fanout`) — e.g. a `source/pg` string helper — if a third
-      consumer appears.
+- [x] Share the WAL-LSN string comparator — extracted to `internal/lsn`
+      (`Compare`/`Parse`) once the archive source (EDR-0006) became the third
+      consumer; `source/fanout` and `cmd/laredo` now use it, copies removed.
 - [ ] Sub-diff (intra-range) precision would need per-change positions in the
       diff format; out of scope until a use case requires landing between
       artifact boundaries.
@@ -159,3 +159,34 @@ Deferred:
 - [ ] Resume-after-downstream-restart test (the client re-snapshots; the source
       re-baselines) and lag reporting via `GetLag`.
 - [ ] Topology helpers: loop detection / depth limits for multi-hop cascades.
+
+## Archive Source (EDR-0006)
+
+Shipped: [EDR-0006](docs/edr/0006-archive-source.md) — `source/archive`, a
+`SyncSource` that replays a snapshotter archive from disk so an engine can start
+with no database (offline backup/restore, immediate startup, dev seeding).
+
+- [x] `source/archive` implementing `SyncSource` over `snapshotter.Reader`
+      (Baseline reconstructs the head; Stream replays later diffs), string
+      positions with a pluggable comparator (default WAL-LSN via `internal/lsn`).
+- [x] Follow mode (poll for appended diffs) and wholesale-replacement detection
+      returning `ErrReBaselineRequired` so the engine re-baselines.
+- [x] Resume across restarts via a state file (`Ack` persists, `LastAckedPosition`
+      restores); no state file ⇒ re-baseline each start.
+- [x] `laredo archive export` + `snapshotter.WriteBaseSnapshot`: one-shot archive
+      producer from a PostgreSQL source, recording the schema.
+- [x] Optional `Manifest.Columns` (additive, no version bump) for lossless schema;
+      the source infers column names from a snapshot row when absent.
+- [x] Config `type = archive | file` parsed/validated and wired through the
+      EDR-0005 `BuildArchiveReader` / `destwire` machinery; served table derived
+      from the binding pipeline. Docs: archive-source guide + reference updates.
+
+Deferred:
+
+- [ ] Continuous export (base + ongoing diffs) via a `SyncSource → snapshotter.
+      Subscription` adapter driving the `Writer`, so any source can be archived
+      continuously (today that is the snapshotter against a fan-out target).
+- [ ] Multi-table "source group" convenience (one config block expanding to one
+      archive source per table); today one source serves one table.
+- [ ] Lag/observability polish: richer `GetLag` and a metric for re-baselines
+      triggered by archive replacement while following.
