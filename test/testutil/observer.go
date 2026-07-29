@@ -85,6 +85,11 @@ func (o *TestObserver) OnChangeError(pipelineID string, table laredo.TableIdenti
 }
 
 //nolint:revive // implements EngineObserver.
+func (o *TestObserver) OnReBaselineTriggered(sourceID string) {
+	o.record("ReBaselineTriggered", map[string]any{"sourceID": sourceID})
+}
+
+//nolint:revive // implements EngineObserver.
 func (o *TestObserver) OnAckAdvanced(sourceID string, position laredo.Position) {
 	o.record("AckAdvanced", map[string]any{"sourceID": sourceID, "position": position})
 }

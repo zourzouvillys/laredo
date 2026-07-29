@@ -85,6 +85,36 @@ tables = [
 The schema/table come from the pipeline that binds the source (the `tables` entry
 above), so you do not repeat them in the source block.
 
+### Multiple tables (`group`)
+
+Because one archive source serves one table, replaying several tables would mean
+several near-identical source blocks. Set `group = true` to expand **one** block
+into one source per table that references it, deriving each table's `key_prefix`
+from `<schema>.<table>/`:
+
+```hocon
+sources {
+  seed {
+    type = archive
+    group = true
+    store = local
+    store_config { path = "/var/lib/laredo/archive" }   # the archive ROOT
+    format = jsonl
+    follow = true
+  }
+}
+tables = [
+  { source = seed, schema = public, table = events, targets = [{ type = indexed-memory }] }
+  { source = seed, schema = public, table = users,  targets = [{ type = indexed-memory }] }
+]
+```
+
+This registers two sources, `seed/public.events` and `seed/public.users`, each
+reading its table's prefix under the shared root. Omit `key_prefix` on a group
+block (it is derived); if `state_path` is set it is treated as a **directory**
+holding one `<schema>.<table>.pos` file per table. The synthesized per-table ids
+(`seed/public.events`) are the handles you use with `laredo pause`/`resume`/`reload`.
+
 ### Resume vs. re-baseline
 
 `state_path` controls whether the source resumes across restarts:
@@ -167,6 +197,10 @@ eng, _ := laredo.NewEngine(
 - **Position and lag.** The source reports `GetLag` as the age of the archive
   head's timestamp — a static archive's lag grows with wall-clock time, which is
   expected. `State()` moves through connected → streaming as usual.
+- **Re-baseline metric.** Each wholesale replacement (or any source re-baseline)
+  increments `laredo_source_rebaseline_total{source}` (Prometheus) /
+  `laredo.source.rebaseline` (OTel). A rising counter on a `follow` source means
+  the archive is being replaced repeatedly — watch it if you expect a static seed.
 - **Refreshing a seed.** Re-run `laredo archive export` to overwrite the archive.
   A `follow` source picks up the replacement and re-baselines; a one-shot source
   (or a restarted engine) reads the new archive on next start.

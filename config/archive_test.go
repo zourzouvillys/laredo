@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,11 @@ import (
 	"github.com/zourzouvillys/laredo/snapshotter"
 	"github.com/zourzouvillys/laredo/snapshotter/dest/local"
 	"github.com/zourzouvillys/laredo/snapshotter/format/jsonl"
+)
+
+const (
+	storeLocal   = "local"
+	eventsPrefix = "public.events/"
 )
 
 const archiveConfig = `
@@ -47,13 +53,13 @@ func TestParse_FanoutArchive(t *testing.T) {
 	if ac == nil {
 		t.Fatalf("expected archive config to be populated")
 	}
-	if ac.Store != "local" {
+	if ac.Store != storeLocal {
 		t.Errorf("store: got %q, want local", ac.Store)
 	}
 	if ac.Path != "/var/lib/laredo/archive/events" {
 		t.Errorf("path: got %q", ac.Path)
 	}
-	if ac.KeyPrefix != "public.events/" {
+	if ac.KeyPrefix != eventsPrefix {
 		t.Errorf("key_prefix: got %q", ac.KeyPrefix)
 	}
 	if len(ac.Formats) != 1 || ac.Formats[0] != "jsonl" {
@@ -67,7 +73,7 @@ func TestParse_FanoutArchive(t *testing.T) {
 // and format are all wired correctly.
 func TestBuildArchiveReader_LocalEndToEnd(t *testing.T) {
 	dir := t.TempDir()
-	const prefix = "public.events/"
+	const prefix = eventsPrefix
 	ctx := context.Background()
 
 	dest := local.New(dir)
@@ -97,7 +103,7 @@ func TestBuildArchiveReader_LocalEndToEnd(t *testing.T) {
 
 	// Build the reader the way laredo-server would, from config.
 	reader, err := BuildArchiveReader(&ArchiveConfig{
-		Store:     "local",
+		Store:     storeLocal,
 		Path:      dir,
 		KeyPrefix: prefix,
 		// Formats omitted on purpose: must default to jsonl.
@@ -129,10 +135,10 @@ func TestBuildArchiveReader_Errors(t *testing.T) {
 	}{
 		{"unknown store", &ArchiveConfig{Store: "gcs"}, "unknown destination type"},
 		{"empty store", &ArchiveConfig{Store: ""}, "type is required"},
-		{"local without path", &ArchiveConfig{Store: "local"}, "requires a path"},
+		{"local without path", &ArchiveConfig{Store: storeLocal}, "requires a path"},
 		{"s3 without bucket", &ArchiveConfig{Store: "s3", Region: "us-east-1"}, "requires a bucket"},
 		{"credentials unsupported", &ArchiveConfig{Store: "s3", Bucket: "b", Credentials: "prod"}, "credentials is not supported"},
-		{"unknown format", &ArchiveConfig{Store: "local", Path: "/tmp/x", Formats: []string{"xml"}}, "unknown format"},
+		{"unknown format", &ArchiveConfig{Store: storeLocal, Path: "/tmp/x", Formats: []string{"xml"}}, "unknown format"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -155,7 +161,7 @@ func TestBuildArchiveReader_S3(t *testing.T) {
 		Bucket:    "laredo-archive",
 		Prefix:    "laredo/",
 		Region:    "us-east-1",
-		KeyPrefix: "public.events/",
+		KeyPrefix: eventsPrefix,
 	})
 	if err != nil {
 		t.Fatalf("BuildArchiveReader(s3): %v", err)
@@ -232,10 +238,10 @@ func TestParse_ArchiveSource(t *testing.T) {
 	if sc.Type != "archive" {
 		t.Errorf("type: got %q", sc.Type)
 	}
-	if sc.Archive == nil || sc.Archive.Store != "local" || sc.Archive.Path != "/var/lib/laredo/archive/events" {
+	if sc.Archive == nil || sc.Archive.Store != storeLocal || sc.Archive.Path != "/var/lib/laredo/archive/events" {
 		t.Fatalf("archive store config: %+v", sc.Archive)
 	}
-	if sc.Archive.KeyPrefix != "public.events/" {
+	if sc.Archive.KeyPrefix != eventsPrefix {
 		t.Errorf("key_prefix: got %q", sc.Archive.KeyPrefix)
 	}
 	if !sc.Follow {
@@ -257,12 +263,12 @@ func TestParse_ArchiveSource(t *testing.T) {
 // database involved.
 func TestCreateSource_ArchiveEndToEnd(t *testing.T) {
 	dir := t.TempDir()
-	const prefix = "public.events/"
+	const prefix = eventsPrefix
 	writeSeedArchive(t, dir, prefix)
 
 	src, err := createSource(SourceConfig{
 		Type:      "archive",
-		Archive:   &ArchiveConfig{Store: "local", Path: dir, KeyPrefix: prefix},
+		Archive:   &ArchiveConfig{Store: storeLocal, Path: dir, KeyPrefix: prefix},
 		KeyFields: []string{"id"},
 	})
 	if err != nil {
@@ -314,6 +320,81 @@ tables = [ { source = seed, schema = public, table = events, targets = [ { type 
 	}
 	if !found {
 		t.Fatalf("expected validation to reject store-less archive source, got %v", cfg.Validate())
+	}
+}
+
+// TestArchiveSourceForTable verifies the group clone derives a per-table
+// key_prefix and state file without mutating the original config.
+func TestArchiveSourceForTable(t *testing.T) {
+	src := SourceConfig{
+		Type: "archive", Group: true, StatePath: "/var/state",
+		Archive:   &ArchiveConfig{Store: storeLocal, Path: "/arch"},
+		KeyFields: []string{"id"},
+	}
+	got := archiveSourceForTable(src, "public", "events")
+	if got.Archive.KeyPrefix != eventsPrefix {
+		t.Errorf("derived key_prefix: got %q, want public.events/", got.Archive.KeyPrefix)
+	}
+	if want := filepath.Join("/var/state", "public.events.pos"); got.StatePath != want {
+		t.Errorf("derived state_path: got %q, want %q", got.StatePath, want)
+	}
+	if got.Archive.Store != storeLocal || got.Archive.Path != "/arch" {
+		t.Errorf("store config not carried: %+v", got.Archive)
+	}
+	// The original must be untouched (clone copies ArchiveConfig by value).
+	if src.Archive.KeyPrefix != "" {
+		t.Errorf("original ArchiveConfig mutated: %q", src.Archive.KeyPrefix)
+	}
+	if src.StatePath != "/var/state" {
+		t.Errorf("original StatePath mutated: %q", src.StatePath)
+	}
+}
+
+// TestToEngineOptions_ArchiveGroup verifies a group block expands to one archive
+// source per referencing table, keyed by a synthesized per-table id.
+func TestToEngineOptions_ArchiveGroup(t *testing.T) {
+	input := `
+sources {
+  seed {
+    type = archive
+    group = true
+    store = local
+    store_config { path = "/tmp/laredo-archive" }
+    format = jsonl
+    follow = true
+  }
+}
+tables = [
+  { source = seed, schema = public, table = events, targets = [ { type = indexed-memory } ] },
+  { source = seed, schema = public, table = users,  targets = [ { type = indexed-memory } ] }
+]
+`
+	cfg, err := Parse(input)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if errs := cfg.Validate(); len(errs) != 0 {
+		t.Fatalf("validate: %v", errs)
+	}
+	opts, err := cfg.ToEngineOptions()
+	if err != nil {
+		t.Fatalf("to engine options: %v", err)
+	}
+	eng, errs := laredo.NewEngine(opts...)
+	if len(errs) != 0 {
+		t.Fatalf("new engine: %v", errs)
+	}
+	ids := map[string]bool{}
+	for _, id := range eng.SourceIDs() {
+		ids[id] = true
+	}
+	for _, want := range []string{"seed/public.events", "seed/public.users"} {
+		if !ids[want] {
+			t.Errorf("missing synthesized source %q; got %v", want, eng.SourceIDs())
+		}
+	}
+	if ids["seed"] {
+		t.Errorf("group id should not be registered directly; got %v", eng.SourceIDs())
 	}
 }
 

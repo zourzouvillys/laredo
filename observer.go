@@ -37,6 +37,10 @@ type EngineObserver interface {
 	OnBaselineStarted(pipelineID string, table TableIdentifier)
 	OnBaselineRowLoaded(pipelineID string, table TableIdentifier, rowCount int64)
 	OnBaselineCompleted(pipelineID string, table TableIdentifier, totalRows int64, duration time.Duration)
+	// OnReBaselineTriggered fires when a source requests a re-baseline mid-stream
+	// (Stream returns ErrReBaselineRequired) — e.g. a PostgreSQL reconnect or an
+	// archive source whose archive was wholesale replaced. A fresh Baseline follows.
+	OnReBaselineTriggered(sourceID string)
 
 	// Streaming
 	OnChangeReceived(pipelineID string, table TableIdentifier, action ChangeAction, position Position)
@@ -115,6 +119,9 @@ func (NullObserver) OnChangeApplied(string, TableIdentifier, ChangeAction, time.
 
 //nolint:revive // EngineObserver no-op implementation.
 func (NullObserver) OnChangeError(string, TableIdentifier, ChangeAction, ErrorInfo) {}
+
+//nolint:revive // EngineObserver no-op implementation.
+func (NullObserver) OnReBaselineTriggered(string) {}
 
 //nolint:revive // EngineObserver no-op implementation.
 func (NullObserver) OnAckAdvanced(string, Position) {}
@@ -254,6 +261,13 @@ func (c *CompositeObserver) OnChangeApplied(pipelineID string, table TableIdenti
 func (c *CompositeObserver) OnChangeError(pipelineID string, table TableIdentifier, action ChangeAction, err ErrorInfo) {
 	for _, o := range c.observers {
 		o.OnChangeError(pipelineID, table, action, err)
+	}
+}
+
+//nolint:revive // EngineObserver fan-out implementation.
+func (c *CompositeObserver) OnReBaselineTriggered(sourceID string) {
+	for _, o := range c.observers {
+		o.OnReBaselineTriggered(sourceID)
 	}
 }
 
