@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Archive source** (`source/archive`, EDR-0006): replay a snapshotter archive
+  (base snapshot + diffs + manifest) from disk as a `SyncSource`, so an engine can
+  start with no database — for offline backup/restore, immediate startup, and
+  seeding local development. Configured with `type = archive` (alias `file`),
+  reusing the EDR-0005 `store` / `store_config` / `format` / `key_prefix` wiring.
+  It follows a growing archive and re-baselines on wholesale replacement, and
+  resumes across restarts via a `state_path`. `group = true` expands one block into
+  one single-table source per referencing table, deriving each table's `key_prefix`
+  from `<schema>.<table>/`. See the Archive Source guide.
+- **laredo CLI**: `laredo archive export` produces an archive from a PostgreSQL
+  source — one-shot (a base snapshot recording the schema), or `--follow` for a
+  live base-plus-diffs archive. The latter uses the new `snapshotter/sourcesub`
+  adapter, which presents any `SyncSource` as a `snapshotter.Subscription` so the
+  snapshotter `Writer` can materialize any source, not just a fan-out.
+- **snapshotter**: the manifest gained an optional `Columns` field (additive, no
+  version bump) so an archive carries its schema and round-trips losslessly; the
+  `Writer` records it via the new optional `snapshotter.SchemaProvider` interface,
+  and `snapshotter.WriteBaseSnapshot` writes a one-shot base-snapshot archive.
+- **Observability**: `EngineObserver.OnReBaselineTriggered(sourceID)`, surfaced as
+  `laredo_source_rebaseline_total` (Prometheus) / `laredo.source.rebaseline`
+  (OTel) — counts mid-stream re-baselines for any source (archive replacement,
+  PostgreSQL reconnect), which were previously invisible in metrics.
+- **Tests**: an end-to-end tier (`test/e2e`, build tag `e2e`, `make test-e2e`, run
+  in CI) — a full server assembled from HOCON config exercised over the real Query
+  gRPC, with no external services.
+
+### Fixed
+- **Engine**: a `Reload` (or any streaming-dependent operation) issued immediately
+  after `AwaitReady` could permanently drop a pipeline's streamed changes.
+  Readiness was signaled before the per-pipeline change buffers were created, and
+  buffer setup only covered pipelines *currently* `STREAMING`; a reload that
+  flipped a pipeline to `BASELINING` during that window left it with no buffer, so
+  every later change was dropped (`buf == nil`). Buffers are now created for every
+  pipeline on a source — delivery is gated on `STREAMING` downstream regardless.
+- **laredo CLI**: every server-talking command failed with "context canceled". The
+  request-context helper deferred its cancel and returned an already-canceled
+  context; it now releases the timer on process exit instead.
+
 ### Changed
 - **Cascading fan-out source** (`source/fanout`): `Pause` is now a true pause —
   `Stream` buffers incoming changes and forwards nothing while paused, and
