@@ -1,4 +1,4 @@
-.PHONY: build test test-integration lint proto docker release-snapshot clean help
+.PHONY: build test test-integration test-e2e lint proto docker release-snapshot clean help
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -12,6 +12,9 @@ test: ## Run unit tests
 
 test-integration: ## Run integration tests (requires PostgreSQL)
 	go test -tags=integration ./test/integration/...
+
+test-e2e: ## Run end-to-end tests (full server from config; no external services)
+	go test -tags=e2e ./test/e2e/...
 
 lint: ## Run golangci-lint
 	golangci-lint run ./...

@@ -34,6 +34,14 @@ var (
 )
 
 func main() {
+	// Release the most recent request context's timer on a clean exit. (Command
+	// handlers that os.Exit skip this, but the OS reclaims the timer then anyway.)
+	defer func() {
+		if pendingCancel != nil {
+			pendingCancel()
+		}
+	}()
+
 	// Global flags parsed from env before subcommand.
 	if v := os.Getenv("LAREDO_ADDRESS"); v != "" {
 		address = v
@@ -160,9 +168,17 @@ func replClient() replicationv1connect.LaredoReplicationServiceClient {
 	)
 }
 
+// pendingCancel holds the cancel func of the most recent ctx(). The CLI issues
+// one request per process then exits, so the timer is reclaimed on exit; keeping
+// the reference here (rather than discarding it) is what makes ctx() correct — a
+// deferred cancel inside ctx() would cancel the context before the request runs,
+// and a discarded one leaks per `go vet`. Callers never need to cancel.
+var pendingCancel context.CancelFunc
+
+// ctx returns a request context bounded by the global --timeout.
 func ctx() context.Context {
-	c, cancel := context.WithTimeout(context.Background(), timeout) //nolint:gosec // cancel deferred; short-lived CLI process
-	defer cancel()
+	c, cancel := context.WithTimeout(context.Background(), timeout)
+	pendingCancel = cancel
 	return c
 }
 

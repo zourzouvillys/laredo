@@ -197,3 +197,18 @@ with no database (offline backup/restore, immediate startup, dev seeding).
       (OTel). General across sources (archive replacement, PostgreSQL reconnect).
       `GetLag` on the archive source reports head-age `LagTime` (adequate; wiring
       the dead `OnLagUpdated` hook engine-wide is a separate, broader change).
+- [x] Smoke + e2e tests (`test/e2e/`, build tag `e2e`, `make test-e2e`, wired into
+      CI): full server-from-config over real Query gRPC, no external services —
+      smoke (archive serves rows), follow+wholesale-replacement, and group. Booting
+      the real `laredo-server` against a `file` source with no PostgreSQL was
+      confirmed manually too.
+- [x] Fixed a pre-existing CLI bug found during that verification: `ctx()` deferred
+      its cancel, handing back an already-canceled context — every server-talking
+      `laredo` command failed with "context canceled". Regression test added.
+
+Deferred / observed:
+
+- [ ] Re-baseline is upsert-not-reset: after a wholesale archive replacement, rows
+      only in the old archive linger in a memory target. Engine-wide behavior (all
+      sources), documented in the guide's troubleshooting; a reset-on-re-baseline
+      option would be a separate engine change.

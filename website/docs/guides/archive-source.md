@@ -216,6 +216,7 @@ eng, _ := laredo.NewEngine(
 | Baseline comes up empty | The archive has no reachable base snapshot, or (with `follow`) data has not been written yet | Confirm the archive was exported; with `follow = true` the source re-baselines once a snapshot appears |
 | Columns have empty types | The archive was written without a recorded schema (older tooling) | Re-export with `laredo archive export`, which records the schema in the manifest |
 | Engine re-baselines repeatedly while following | The archive is being re-based/replaced faster than the consumer catches up, or `key_fields` do not match how the archive was written | Match `key_fields` to the writer; widen `poll_interval`; for a static seed, set `follow = false` |
+| Rows from a previous archive linger after a replacement | Re-baseline **upserts** into the target; it does not reset it, so rows present only in the old archive persist in a memory target until a delete/truncate removes them (engine-wide behavior, not archive-specific) | Restart the engine for a clean load, or ensure the new archive supersedes prior keys; durable targets that key by primary key overwrite in place |
 | `archive source requires a store configuration` | The source block omits `store` | Add `store = local` (with `store_config.path`) or `store = s3` |
 
 ## See also
