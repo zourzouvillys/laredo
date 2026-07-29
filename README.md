@@ -33,8 +33,14 @@ Each pipeline binds a source table to a target, with optional filters and transf
 # Build all packages
 make build
 
-# Run tests
+# Run unit tests
 make test
+
+# Integration tests (real PostgreSQL via testcontainers)
+make test-integration
+
+# End-to-end tests (full server from config; no external services)
+make test-e2e
 
 # Lint
 make lint
