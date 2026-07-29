@@ -1016,11 +1016,16 @@ func (e *coreEngine) streamFromPosition(ctx context.Context, sourceID string, so
 	var consumerWg sync.WaitGroup
 	buffers := make(map[int]*engine.ChangeBuffer[pipelineItem], len(pipelineIdxs))
 
+	// Create a buffer + consumer for every pipeline on this source, regardless of
+	// its current state. Delivery is gated on PipelineStreaming downstream (both
+	// dispatchToBuffers and runPipelineConsumer check it), so a buffer for a
+	// non-streaming pipeline simply stays idle until it streams. Gating buffer
+	// *creation* on the transient state instead would race a concurrent Reload
+	// (which flips the pipeline STREAMING→BASELINING→STREAMING): if the loop
+	// observed the BASELINING moment it would skip the buffer, and every change
+	// after the reload would be dropped for the pipeline's lifetime.
 	for _, idx := range pipelineIdxs {
 		p := &e.pipelines[idx]
-		if p.loadState() != PipelineStreaming {
-			continue
-		}
 		buf := engine.NewChangeBuffer[pipelineItem](p.bufferSize)
 		buffers[idx] = buf
 		consumerWg.Add(1)
