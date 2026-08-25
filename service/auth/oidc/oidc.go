@@ -20,6 +20,7 @@ import (
 	"math"
 	"math/big"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +50,11 @@ type Config struct {
 	// Leeway allows for clock skew when checking exp and nbf.
 	// Defaults to 60 seconds.
 	Leeway time.Duration
+
+	// AllowInsecureIssuer permits an http:// issuer. Off by default; it exists
+	// for tests and local development, and turning it on in production means
+	// the key set can be replaced in transit.
+	AllowInsecureIssuer bool
 
 	// Authorize decides what a verified caller may do. It receives the
 	// request and the token's claims.
@@ -83,12 +89,13 @@ func (c Claims) HasScope(s string) bool {
 
 // Authorizer verifies bearer tokens and delegates the decision.
 type Authorizer struct {
-	cfg Config
+	cfg    Config
+	issuer *url.URL
 
 	mu        sync.RWMutex
 	keys      map[string]*rsa.PublicKey
 	fetchedAt time.Time
-	jwksURI   string
+	jwksURL   *url.URL
 }
 
 // New builds an Authorizer. Discovery happens lazily on the first request, so
@@ -109,7 +116,15 @@ func New(cfg Config) (*Authorizer, error) {
 	if cfg.Leeway <= 0 {
 		cfg.Leeway = 60 * time.Second
 	}
-	return &Authorizer{cfg: cfg, keys: map[string]*rsa.PublicKey{}}, nil
+	issuer, err := url.Parse(cfg.Issuer)
+	if err != nil {
+		return nil, fmt.Errorf("oidc: parse Issuer: %w", err)
+	}
+	schemeOK := issuer.Scheme == "https" || (issuer.Scheme == "http" && cfg.AllowInsecureIssuer)
+	if issuer.Host == "" || !schemeOK {
+		return nil, fmt.Errorf("oidc: Issuer must be an absolute https URL, got %q", cfg.Issuer)
+	}
+	return &Authorizer{cfg: cfg, issuer: issuer, keys: map[string]*rsa.PublicKey{}}, nil
 }
 
 // Authorize implements service.Authorizer.
@@ -286,49 +301,80 @@ func (a *Authorizer) keyFor(ctx context.Context, kid string) (*rsa.PublicKey, er
 
 func (a *Authorizer) refresh(ctx context.Context) error {
 	a.mu.RLock()
-	uri := a.jwksURI
+	endpoint := a.jwksURL
 	a.mu.RUnlock()
 
-	if uri == "" {
+	if endpoint == nil {
 		discovered, err := a.discover(ctx)
 		if err != nil {
 			return err
 		}
-		uri = discovered
+		endpoint = discovered
 	}
 
-	keys, err := a.fetchKeys(ctx, uri)
+	keys, err := a.fetchKeys(ctx, endpoint)
 	if err != nil {
 		return err
 	}
 
 	a.mu.Lock()
 	a.keys = keys
-	a.jwksURI = uri
+	a.jwksURL = endpoint
 	a.fetchedAt = time.Now()
 	a.mu.Unlock()
 	return nil
 }
 
-func (a *Authorizer) discover(ctx context.Context) (string, error) {
-	url := strings.TrimSuffix(a.cfg.Issuer, "/") + "/.well-known/openid-configuration"
+// endpointOnIssuer builds a URL on the issuer's own scheme, host and port,
+// taking only the path and query from ref.
+//
+// Every address this package fetches is built this way, so no string that came
+// back over the network is ever handed to the HTTP client — only a path
+// grafted onto an origin that came from configuration. A jwks_uri naming
+// another host is rejected outright rather than trimmed to its path, because
+// an issuer pointing elsewhere for its keys is a misconfiguration worth
+// failing on, not something to quietly reinterpret.
+func (a *Authorizer) endpointOnIssuer(ref string) (*url.URL, error) {
+	u, err := url.Parse(ref)
+	if err != nil {
+		return nil, fmt.Errorf("parse %q: %w", ref, err)
+	}
+	if u.IsAbs() && (u.Scheme != a.issuer.Scheme || u.Host != a.issuer.Host) {
+		return nil, fmt.Errorf("%q is not on the issuer's origin %s://%s", ref, a.issuer.Scheme, a.issuer.Host)
+	}
+	out := *a.issuer
+	out.Path = u.Path
+	out.RawQuery = u.RawQuery
+	out.Fragment = ""
+	out.User = nil
+	return &out, nil
+}
+
+func (a *Authorizer) discover(ctx context.Context) (*url.URL, error) {
+	wellKnown, err := a.endpointOnIssuer(strings.TrimSuffix(a.issuer.Path, "/") + "/.well-known/openid-configuration")
+	if err != nil {
+		return nil, err
+	}
 	var doc struct {
 		Issuer  string `json:"issuer"`
 		JWKSURI string `json:"jwks_uri"`
 	}
-	if err := a.getJSON(ctx, url, &doc); err != nil {
-		return "", fmt.Errorf("oidc discovery: %w", err)
+	if err := a.getJSON(ctx, wellKnown, &doc); err != nil {
+		return nil, fmt.Errorf("oidc discovery: %w", err)
 	}
 	if doc.Issuer != a.cfg.Issuer {
-		return "", fmt.Errorf("discovery document issuer %q does not match %q", doc.Issuer, a.cfg.Issuer)
+		return nil, fmt.Errorf("discovery document issuer %q does not match %q", doc.Issuer, a.cfg.Issuer)
 	}
 	if doc.JWKSURI == "" {
-		return "", errors.New("discovery document has no jwks_uri")
+		return nil, errors.New("discovery document has no jwks_uri")
 	}
-	return doc.JWKSURI, nil
+	// The jwks_uri arrives inside a document fetched over the network and is
+	// then fetched in turn, so without a constraint it points this process at
+	// any address reachable from it.
+	return a.endpointOnIssuer(doc.JWKSURI)
 }
 
-func (a *Authorizer) fetchKeys(ctx context.Context, uri string) (map[string]*rsa.PublicKey, error) {
+func (a *Authorizer) fetchKeys(ctx context.Context, endpoint *url.URL) (map[string]*rsa.PublicKey, error) {
 	var jwks struct {
 		Keys []struct {
 			Kty string `json:"kty"`
@@ -339,7 +385,7 @@ func (a *Authorizer) fetchKeys(ctx context.Context, uri string) (map[string]*rsa
 			E   string `json:"e"`
 		} `json:"keys"`
 	}
-	if err := a.getJSON(ctx, uri, &jwks); err != nil {
+	if err := a.getJSON(ctx, endpoint, &jwks); err != nil {
 		return nil, fmt.Errorf("fetch jwks: %w", err)
 	}
 
@@ -383,18 +429,28 @@ func exponent(b []byte) int {
 	return int(v)
 }
 
-func (a *Authorizer) getJSON(ctx context.Context, url string, into any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// getJSON fetches an endpoint built by endpointOnIssuer. It takes a *url.URL
+// rather than a string so that a caller cannot pass one that came off the
+// network without going through that constructor first.
+func (a *Authorizer) getJSON(ctx context.Context, endpoint *url.URL, into any) error {
+	// gosec flags this as SSRF because the endpoint's path can originate in the
+	// discovery document. The scheme, host and port cannot: endpointOnIssuer
+	// rebuilds every URL on the configured issuer's origin and rejects a
+	// jwks_uri naming any other host, so the most a hostile discovery response
+	// can choose is a path on a server the operator already named. That is the
+	// mitigation the analysis cannot see, and
+	// TestDiscovery_RejectsAnOffOriginJWKSURI pins it.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return err
 	}
-	resp, err := a.cfg.HTTPClient.Do(req)
+	resp, err := a.cfg.HTTPClient.Do(req) //nolint:gosec // origin rebuilt from configuration; see above
 	if err != nil {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: %s", url, resp.Status)
+		return fmt.Errorf("GET %s: %s", endpoint.Redacted(), resp.Status)
 	}
 	// Bound the response: an issuer is trusted to be honest, not to be small.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
