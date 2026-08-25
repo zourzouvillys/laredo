@@ -466,3 +466,66 @@ optionally caps how long the server keeps serving drained streams.
 - **Portable resume**: clients resume across instances by source position (WAL LSN), not per-instance sequence
 - **At-least-once on reconnect/failover**: clients must be idempotent (they apply by primary key)
 - **At-least-once on reconnect**: clients must be idempotent for the entry at their declared sequence
+
+## Authorization
+
+By default a fan-out server authorizes nothing: every RPC is reachable by anything that can open a
+socket. For a shared network, install an `Authorizer`.
+
+```go
+srv := service.New(
+    service.WithAddress(":4002"),
+    service.EnableReplication(replication.New(engine)),
+    service.WithAuthorizer(service.AuthorizerFunc(
+        func(ctx context.Context, req service.AuthRequest) (service.AuthDecision, error) {
+            tenant, err := tenantFromHeader(req.Header)
+            if err != nil {
+                return service.AuthDecision{}, connect.NewError(connect.CodeUnauthenticated, err)
+            }
+            return service.AuthDecision{
+                Subject: tenant,
+                Require: []*replicationv1.FieldPredicate{{
+                    Field: "tenant_id",
+                    Match: &replicationv1.FieldPredicate_Equals{
+                        Equals: structpb.NewStringValue(tenant),
+                    },
+                }},
+            }, nil
+        })),
+)
+```
+
+Two things are worth understanding about that `Require` list.
+
+It is **imposed**, not checked. A client's own filters only ever subtract, so a subscriber that
+sends no filters is asking for the whole table — validating the request cannot constrain it, but
+adding a predicate can. This is what scopes a subscriber to its own partition regardless of what it
+asks for.
+
+And `Subject`, when set, becomes the client id. That field is otherwise a free-form string the
+caller chooses, and `GetReplicationStatus` is keyed on it, so without this a caller can report
+itself as another subscriber.
+
+`Sync` calls the authorizer twice: once when the stream opens, with the request headers, and again
+once the client's opening message has revealed the schema, table and requested filters. The second
+call is the one that can return predicates. `FetchSnapshot` resolves its snapshot to the owning
+table before authorizing, because the request names only a snapshot id.
+
+For an OIDC issuer, `service/auth/oidc` handles discovery, key fetching and token verification, and
+leaves the decision to a callback you supply:
+
+```go
+authz, err := oidc.New(oidc.Config{
+    Issuer:   "https://issuer.example",
+    Audience: "laredo-fanout",
+    Authorize: func(ctx context.Context, req service.AuthRequest, claims oidc.Claims) (service.AuthDecision, error) {
+        if !claims.HasScope("fanout.read") {
+            return service.AuthDecision{}, connect.NewError(connect.CodePermissionDenied, errors.New("scope"))
+        }
+        return service.AuthDecision{Subject: claims.Subject}, nil
+    },
+})
+```
+
+The callback is required rather than optional: a verified token establishes who is calling, not
+what they may reach.
