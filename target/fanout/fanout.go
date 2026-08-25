@@ -345,6 +345,15 @@ func (t *Target) IsReady() bool {
 	return t.ready
 }
 
+// Table returns the table this target replicates. FetchSnapshot needs it in
+// order to authorize a snapshot against the table it belongs to, since the
+// request itself names only a snapshot id.
+func (t *Target) Table() laredo.TableIdentifier {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.table
+}
+
 // JournalSequence returns the current journal sequence number.
 func (t *Target) JournalSequence() int64 {
 	return t.j.currentSequence()

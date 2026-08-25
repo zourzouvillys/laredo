@@ -3,6 +3,7 @@ package replication
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -14,6 +15,7 @@ import (
 	v1 "github.com/zourzouvillys/laredo/gen/laredo/replication/v1"
 	"github.com/zourzouvillys/laredo/gen/laredo/replication/v1/replicationv1connect"
 	"github.com/zourzouvillys/laredo/internal/rowpb"
+	"github.com/zourzouvillys/laredo/service"
 	"github.com/zourzouvillys/laredo/snapshotter"
 	"github.com/zourzouvillys/laredo/target/fanout"
 )
@@ -163,13 +165,35 @@ func (s *Service) ListSnapshots(_ context.Context, req *connect.Request[v1.ListS
 }
 
 // FetchSnapshot streams a specific snapshot's data to the client.
-func (s *Service) FetchSnapshot(_ context.Context, req *connect.Request[v1.FetchSnapshotRequest], stream *connect.ServerStream[v1.FetchSnapshotResponse]) error {
+func (s *Service) FetchSnapshot(ctx context.Context, req *connect.Request[v1.FetchSnapshotRequest], stream *connect.ServerStream[v1.FetchSnapshotResponse]) error {
 	snapshotID := req.Msg.GetSnapshotId()
 	if snapshotID == "" {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("snapshot_id is required"))
 	}
 
 	// Find the snapshot across all fan-out targets.
+	//
+	// This call takes only a snapshot id — no schema, no table — and streams
+	// the rows verbatim with no subscription filter, while the equivalent Sync
+	// path filters. Ids are formatted fanout-<journalSeq>-<unixMillis>, both
+	// components of which the status and handshake messages disclose, so they
+	// are guessable. Each candidate is therefore authorized against the table
+	// it actually belongs to before a single row is sent.
+	authorizeSnapshot := func(tid laredo.TableIdentifier) error {
+		a, ok := service.AuthorizerFromContext(ctx)
+		if !ok {
+			return nil
+		}
+		if _, aerr := a.Authorize(ctx, service.AuthRequest{
+			Procedure: "/laredo.replication.v1.LaredoReplicationService/FetchSnapshot",
+			Schema:    tid.Schema,
+			Table:     tid.Table,
+		}); aerr != nil {
+			return asAuthError(aerr)
+		}
+		return nil
+	}
+
 	for _, sid := range s.engine.SourceIDs() {
 		for _, t := range s.engine.Targets(sid, laredo.TableIdentifier{}) {
 			ft, ok := t.(*fanout.Target)
@@ -179,6 +203,10 @@ func (s *Service) FetchSnapshot(_ context.Context, req *connect.Request[v1.Fetch
 			for _, snap := range ft.ListSnapshots() {
 				if snap.ID != snapshotID {
 					continue
+				}
+
+				if aerr := authorizeSnapshot(ft.Table()); aerr != nil {
+					return aerr
 				}
 
 				// Found — stream it.
@@ -253,10 +281,38 @@ func (s *Service) Sync(ctx context.Context, stream *syncStream) error {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("schema and table are required"))
 	}
 
-	// Compile the optional per-subscription filter once; it is applied uniformly
-	// to the snapshot, journal catch-up, and live phases below. A nil filter
-	// matches everything.
-	filter, err := compileSubscriptionFilter(start.GetFilters())
+	// Authorize now that the target is known. The stream-level check has
+	// already run; this is the call that can constrain what the subscription
+	// may see, because the schema, table and requested filters only exist once
+	// the client's opening message has been read.
+	predicates := start.GetFilters()
+	if a, ok := service.AuthorizerFromContext(ctx); ok {
+		decision, aerr := a.Authorize(ctx, service.AuthRequest{
+			Procedure: "/laredo.replication.v1.LaredoReplicationService/Sync",
+			Schema:    schema,
+			Table:     table,
+			ClientID:  clientID,
+			Filters:   start.GetFilters(),
+		})
+		if aerr != nil {
+			return asAuthError(aerr)
+		}
+		// Imposed predicates are ANDed in, not merely checked. A client's own
+		// filters only ever subtract, so a caller that sends none is asking
+		// for the whole table; constraining it requires adding to the list.
+		predicates = append(append([]*v1.FieldPredicate{}, predicates...), decision.Require...)
+		// Bind the client id to the authenticated subject. It is otherwise a
+		// free-form string, and the status view is keyed on it, so a caller
+		// could otherwise report itself as another subscriber.
+		if decision.Subject != "" {
+			clientID = decision.Subject
+		}
+	}
+
+	// Compile the per-subscription filter once; it is applied uniformly to the
+	// snapshot, journal catch-up, and live phases below. A nil filter matches
+	// everything.
+	filter, err := compileSubscriptionFilter(predicates)
 	if err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -620,4 +676,14 @@ func columnsToProto(cols []laredo.ColumnDefinition) []*v1.ColumnDefinition {
 		}
 	}
 	return out
+}
+
+// asAuthError normalises an Authorizer refusal, preserving a connect error's
+// own code when it chose one.
+func asAuthError(err error) error {
+	var ce *connect.Error
+	if errors.As(err, &ce) {
+		return ce
+	}
+	return connect.NewError(connect.CodePermissionDenied, err)
 }

@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	"github.com/zourzouvillys/laredo"
 	v1 "github.com/zourzouvillys/laredo/gen/laredo/replication/v1"
@@ -111,7 +109,7 @@ func startColdService(t *testing.T, dir string, journalMax int) (replicationv1co
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	srv := &http.Server{Handler: h2c.NewHandler(mux, &http2.Server{}), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: mux, Protocols: testProtocols(), ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = srv.Serve(listener) }()
 	t.Cleanup(func() { _ = srv.Close() })
 

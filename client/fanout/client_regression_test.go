@@ -330,8 +330,9 @@ func TestRowKey_UsesDeclaredPrimaryKey(t *testing.T) {
 }
 
 func keysOf(c *Client) []string {
-	var out []string
-	for k := range c.All() {
+	all := c.All()
+	out := make([]string, 0, len(all))
+	for k := range all {
 		out = append(out, fmt.Sprint(k))
 	}
 	return out

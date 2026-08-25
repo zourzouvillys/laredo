@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -80,7 +78,8 @@ func startTestServer(t *testing.T, svc *testServer) string {
 	}
 	// h2c: Sync is bidirectional and Connect carries bidi over HTTP/2 only.
 	srv := &http.Server{
-		Handler:           h2c.NewHandler(mux, &http2.Server{}),
+		Handler:           mux,
+		Protocols:         testProtocols(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() { _ = srv.Serve(listener) }()

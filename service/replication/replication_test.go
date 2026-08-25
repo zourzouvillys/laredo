@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	"github.com/zourzouvillys/laredo"
 	v1 "github.com/zourzouvillys/laredo/gen/laredo/replication/v1"
@@ -57,13 +55,16 @@ func startReplService(t *testing.T) (replicationv1connect.LaredoReplicationServi
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	srv := &http.Server{Handler: h2c.NewHandler(mux, &http2.Server{}), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: mux, Protocols: testProtocols(), ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = srv.Serve(listener) }()
 	t.Cleanup(func() { _ = srv.Close() })
 
 	client := replicationv1connect.NewLaredoReplicationServiceClient(testH2CClient(), "http://"+listener.Addr().String(), connect.WithGRPC())
 	return client, ft, src
 }
+
+// wantAlice is the baseline row name asserted by several tests.
+const wantAlice = "alice"
 
 // waitJournalSeq blocks until the fan-out journal reaches at least seq.
 func waitJournalSeq(t *testing.T, ft *fanout.Target, seq int64) {
@@ -295,7 +296,7 @@ func TestSync_SubscriptionFilter(t *testing.T) {
 	if snapshotRowCount != 1 {
 		t.Fatalf("SnapshotBegin.RowCount = %d, want 1 (only the filtered row)", snapshotRowCount)
 	}
-	if len(snapshotNames) != 1 || snapshotNames[0] != "alice" {
+	if len(snapshotNames) != 1 || snapshotNames[0] != wantAlice {
 		t.Fatalf("snapshot rows = %v, want [alice]", snapshotNames)
 	}
 	if firstChangeName != "anna" {

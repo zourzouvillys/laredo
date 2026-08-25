@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	"github.com/zourzouvillys/laredo/gen/laredo/replication/v1/replicationv1connect"
 	"github.com/zourzouvillys/laredo/gen/laredo/v1/laredov1connect"
@@ -44,6 +42,7 @@ type serverConfig struct {
 	oamHandler         laredov1connect.LaredoOAMServiceHandler
 	queryHandler       laredov1connect.LaredoQueryServiceHandler
 	replicationHandler replicationv1connect.LaredoReplicationServiceHandler
+	authorizer         Authorizer
 	tlsCertFile        string
 	tlsKeyFile         string
 }
@@ -78,6 +77,13 @@ func EnableReplication(handler replicationv1connect.LaredoReplicationServiceHand
 	}
 }
 
+// WithAuthorizer installs an Authorizer, consulted for every inbound request
+// on every service this server hosts. Without one the server authorizes
+// nothing, which is what it did before this existed.
+func WithAuthorizer(a Authorizer) Option {
+	return func(c *serverConfig) { c.authorizer = a }
+}
+
 // WithTLS enables TLS with the given certificate and key files.
 func WithTLS(certFile, keyFile string) Option {
 	return func(c *serverConfig) {
@@ -103,6 +109,9 @@ func New(opts ...Option) *Server {
 	handlerOpts := []connect.HandlerOption{
 		connect.WithReadMaxBytes(maxRequestBytes),
 	}
+	if cfg.authorizer != nil {
+		handlerOpts = append(handlerOpts, connect.WithInterceptors(authInterceptor(cfg.authorizer)))
+	}
 
 	if cfg.oamHandler != nil {
 		path, handler := laredov1connect.NewLaredoOAMServiceHandler(cfg.oamHandler, handlerOpts...)
@@ -123,11 +132,12 @@ func New(opts ...Option) *Server {
 		mux:  mux,
 		addr: cfg.addr,
 		httpServer: &http.Server{
-			// h2c so plaintext deployments speak HTTP/2. Connect's
-			// bidirectional streaming — which the replication Sync call needs
-			// in order to carry client acknowledgements — is HTTP/2 only, and
-			// a plain mux over a plaintext listener negotiates HTTP/1.1.
-			Handler:           h2c.NewHandler(mux, &http2.Server{}),
+			Handler: mux,
+			// Unencrypted HTTP/2 as well as HTTP/1.1. Connect's bidirectional
+			// streaming — which the replication Sync call needs in order to
+			// carry client acknowledgements — is HTTP/2 only, and a plaintext
+			// listener otherwise negotiates HTTP/1.1.
+			Protocols:         unencryptedHTTP2(),
 			ReadHeaderTimeout: 10 * time.Second,
 			// No write or idle timeout: the replication and Query streams are
 			// long-lived by design and either would cut them. ReadTimeout is
@@ -205,4 +215,14 @@ func (s *Server) IsTLS() bool {
 // waits for in-flight requests to complete (up to the context deadline).
 func (s *Server) Stop(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
+}
+
+// unencryptedHTTP2 permits HTTP/1.1, HTTP/2 over TLS, and HTTP/2 over a
+// plaintext connection.
+func unencryptedHTTP2() *http.Protocols {
+	p := new(http.Protocols)
+	p.SetHTTP1(true)
+	p.SetHTTP2(true)
+	p.SetUnencryptedHTTP2(true)
+	return p
 }

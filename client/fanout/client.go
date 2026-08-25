@@ -6,13 +6,11 @@ package fanout
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
-	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -20,7 +18,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"golang.org/x/net/http2"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/zourzouvillys/laredo"
@@ -101,14 +98,19 @@ type config struct {
 // server-streaming call, but Connect carries bidirectional streams over
 // HTTP/2 only, and Sync is now bidirectional so the client can acknowledge
 // what it has applied.
-var defaultH2CClient = &http.Client{
-	Transport: &http2.Transport{
-		AllowHTTP: true,
-		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, network, addr)
-		},
-	},
+var defaultH2CClient = &http.Client{Transport: unencryptedHTTP2Transport()}
+
+// unencryptedHTTP2Transport speaks HTTP/2 over a plaintext connection.
+//
+// HTTP/1.1 is deliberately NOT enabled: with both available the transport
+// prefers HTTP/1.1 for an http:// URL, since there is nothing to negotiate
+// with, and a bidirectional Sync then cannot be opened at all.
+func unencryptedHTTP2Transport() *http.Transport {
+	tr := &http.Transport{}
+	p := new(http.Protocols)
+	p.SetUnencryptedHTTP2(true)
+	tr.Protocols = p
+	return tr
 }
 
 // defaultAckInterval is how often the applied position is reported when the

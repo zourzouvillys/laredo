@@ -1,25 +1,23 @@
 package replication
 
-import (
-	"context"
-	"crypto/tls"
-	"net"
-	"net/http"
+import "net/http"
 
-	"golang.org/x/net/http2"
-)
+// testProtocols permits unencrypted HTTP/2. Sync is bidirectional and Connect
+// carries bidirectional streams over HTTP/2 only, so an HTTP/1.1-only
+// listener cannot serve one.
+func testProtocols() *http.Protocols {
+	p := new(http.Protocols)
+	p.SetHTTP1(true)
+	p.SetHTTP2(true)
+	p.SetUnencryptedHTTP2(true)
+	return p
+}
 
-// testH2CClient speaks HTTP/2 over plaintext. Sync is bidirectional and
-// Connect carries bidirectional streams over HTTP/2 only, so the default
-// HTTP/1.1 client cannot open one.
+// testH2CClient speaks HTTP/2 over a plaintext connection.
 func testH2CClient() *http.Client {
-	return &http.Client{
-		Transport: &http2.Transport{
-			AllowHTTP: true,
-			DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, network, addr)
-			},
-		},
-	}
+	tr := &http.Transport{}
+	p := new(http.Protocols)
+	p.SetUnencryptedHTTP2(true) // HTTP/1.1 off: see client/fanout.
+	tr.Protocols = p
+	return &http.Client{Transport: tr}
 }
