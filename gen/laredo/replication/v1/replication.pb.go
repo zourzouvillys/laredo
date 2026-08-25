@@ -1021,8 +1021,17 @@ type Heartbeat struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	CurrentSequence int64                  `protobuf:"varint,1,opt,name=current_sequence,json=currentSequence,proto3" json:"current_sequence,omitempty"`
 	ServerTime      *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=server_time,json=serverTime,proto3" json:"server_time,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// The source position (e.g. PostgreSQL WAL LSN) the server has reached.
+	//
+	// Without this a subscriber's position only advanced when a journal entry
+	// it was subscribed to arrived, so a filtered or simply idle subscriber
+	// fell arbitrarily far behind the true tail while appearing healthy. On
+	// failover it then resumed from that stale position and forced needless
+	// catch-up, or a full re-snapshot once the position aged out of the
+	// journal. Heartbeats carry it so an idle subscriber stays current.
+	SourcePosition string `protobuf:"bytes,3,opt,name=source_position,json=sourcePosition,proto3" json:"source_position,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *Heartbeat) Reset() {
@@ -1067,6 +1076,13 @@ func (x *Heartbeat) GetServerTime() *timestamppb.Timestamp {
 		return x.ServerTime
 	}
 	return nil
+}
+
+func (x *Heartbeat) GetSourcePosition() string {
+	if x != nil {
+		return x.SourcePosition
+	}
+	return ""
 }
 
 type ListSnapshotsRequest struct {
@@ -1699,11 +1715,12 @@ const file_laredo_replication_v1_replication_proto_rawDesc = "" +
 	"\tdata_type\x18\x03 \x01(\tR\bdataType\x12\x19\n" +
 	"\bnot_null\x18\x04 \x01(\bR\anotNull\x12$\n" +
 	"\x0eis_primary_key\x18\x05 \x01(\bR\fisPrimaryKey\x12.\n" +
-	"\x13primary_key_ordinal\x18\x06 \x01(\x05R\x11primaryKeyOrdinal\"s\n" +
+	"\x13primary_key_ordinal\x18\x06 \x01(\x05R\x11primaryKeyOrdinal\"\x9c\x01\n" +
 	"\tHeartbeat\x12)\n" +
 	"\x10current_sequence\x18\x01 \x01(\x03R\x0fcurrentSequence\x12;\n" +
 	"\vserver_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"serverTime\"Z\n" +
+	"serverTime\x12'\n" +
+	"\x0fsource_position\x18\x03 \x01(\tR\x0esourcePosition\"Z\n" +
 	"\x14ListSnapshotsRequest\x12\x16\n" +
 	"\x06schema\x18\x01 \x01(\tR\x06schema\x12\x14\n" +
 	"\x05table\x18\x02 \x01(\tR\x05table\x12\x14\n" +

@@ -463,6 +463,7 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 					Heartbeat: &v1.Heartbeat{
 						CurrentSequence: ft.JournalSequence(),
 						ServerTime:      timestamppb.Now(),
+						SourcePosition:  posToStr(ft.LatestPosition()),
 					},
 				},
 			}); err != nil {

@@ -107,7 +107,10 @@ func ClientBufferPolicy(policy string) Option {
 }
 
 // HeartbeatInterval sets the interval for periodic heartbeat messages on idle
-// connections (default 5s). Clients treat a 30s gap as connection failure.
+// connections (default 5s). A heartbeat also carries the server's current
+// source position, which is what keeps an idle subscriber's resume point
+// current. The Go client reports a 30s gap with no message as stale
+// (client/fanout.Client.IsStale); it does not itself drop the connection.
 func HeartbeatInterval(d time.Duration) Option {
 	return func(c *config) { c.heartbeatInterval = d }
 }
@@ -336,6 +339,16 @@ func (t *Target) IsReady() bool {
 // JournalSequence returns the current journal sequence number.
 func (t *Target) JournalSequence() int64 {
 	return t.j.currentSequence()
+}
+
+// LatestPosition returns the most recent source position the engine has
+// reported, or nil before the first change. Heartbeats carry it so that an
+// idle or filtered subscriber's resume point keeps up with the source rather
+// than freezing at the last entry it happened to match.
+func (t *Target) LatestPosition() laredo.Position {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.curPos
 }
 
 // JournalOldestSequence returns the oldest retained journal sequence.

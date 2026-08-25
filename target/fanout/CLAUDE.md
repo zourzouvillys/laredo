@@ -9,7 +9,7 @@ Replication fan-out target. Multiplexes one source to N gRPC clients via snapsho
 - **Client protocol has three phases**: handshake → catch-up (snapshot or delta) → live streaming. All over a single server-streaming gRPC call.
 - **Atomic handoff**: pin the journal during snapshot send. After all rows are sent, send journal entries accumulated during transfer, then transition to live. No gaps.
 - **Backpressure per client**: configurable buffer size. `drop_disconnect` disconnects slow clients (they'll reconnect and re-snapshot). `slow_down` applies backpressure (risks backing up the journal).
-- **Heartbeats**: periodic heartbeat messages on idle connections (default 5s). Clients treat a 30s gap as connection failure.
+- **Heartbeats**: periodic heartbeat messages on idle connections (default 5s), carrying the server's current source position so an idle or filtered subscriber's resume point stays current. The Go client surfaces a 30s gap with no message via `IsStale()`; it does not drop the connection on its own.
 - **`IsDurable()` always returns `true`**: the in-memory state is authoritative. Journal/snapshot persistence is best-effort for client distribution.
 
 ## Testing

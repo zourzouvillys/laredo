@@ -168,6 +168,16 @@ message ColumnDefinition {
 message Heartbeat {
   int64 current_sequence = 1;
   google.protobuf.Timestamp server_time = 2;
+
+  // The source position (e.g. PostgreSQL WAL LSN) the server has reached.
+  //
+  // Without this a subscriber's position only advanced when a journal entry
+  // it was subscribed to arrived, so a filtered or simply idle subscriber
+  // fell arbitrarily far behind the true tail while appearing healthy. On
+  // failover it then resumed from that stale position and forced needless
+  // catch-up, or a full re-snapshot once the position aged out of the
+  // journal. Heartbeats carry it so an idle subscriber stays current.
+  string source_position = 3;
 }
 
 // ============================================================

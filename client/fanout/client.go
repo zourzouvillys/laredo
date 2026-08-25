@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"sort"
@@ -38,6 +39,8 @@ type Client struct {
 	// is what the client resumes from when failing over to another instance.
 	lastSourcePosition string
 	lastReceived       time.Time
+	lastError          error
+	connected          bool
 	columns            []laredo.ColumnDefinition
 
 	// Listeners are keyed by id so that several may coexist and each
@@ -311,6 +314,70 @@ func (c *Client) Columns() []laredo.ColumnDefinition {
 	return append([]laredo.ColumnDefinition(nil), c.columns...)
 }
 
+// goAwayRedialDelay bounds how long a client waits before answering a drain.
+const goAwayRedialDelay = 2 * time.Second
+
+// staleAfter is how long without any message — including heartbeats, which the
+// server sends on an idle connection — before the replica is considered stale.
+// The server's default heartbeat interval is 5s, so this allows several to go
+// missing before saying so.
+const staleAfter = 30 * time.Second
+
+// LastError returns the most recent stream failure, or nil if the client has
+// not failed since it last connected successfully. Reconnection is automatic,
+// so this is diagnostic rather than actionable — but without it a consumer had
+// no way to tell a healthy quiet table from a client that had been failing to
+// connect since startup.
+func (c *Client) LastError() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastError
+}
+
+// Connected reports whether a Sync stream is currently established.
+func (c *Client) Connected() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.connected
+}
+
+// LastReceived returns when the client last received any message from the
+// server, heartbeats included. Zero before the first message.
+func (c *Client) LastReceived() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastReceived
+}
+
+// IsStale reports whether the replica may be behind: nothing has arrived for
+// longer than staleAfter, or the client has never received anything at all.
+//
+// This is the question a consumer actually needs answered before trusting the
+// data — the client tracked the timestamp it needs to answer it but exposed no
+// way to ask, and read the timestamp nowhere itself.
+func (c *Client) IsStale() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.lastReceived.IsZero() {
+		return true
+	}
+	return time.Since(c.lastReceived) > staleAfter
+}
+
+func (c *Client) setLastError(err error) {
+	c.mu.Lock()
+	c.lastError = err
+	c.connected = false
+	c.mu.Unlock()
+}
+
+func (c *Client) setConnected() {
+	c.mu.Lock()
+	c.connected = true
+	c.lastError = nil
+	c.mu.Unlock()
+}
+
 // columnsFromProto converts replication column definitions to laredo's.
 // primaryKeyColumns returns the declared primary-key column names in
 // primary-key ordinal order, which is the order the server joins them in when
@@ -429,10 +496,14 @@ func (c *Client) Stop() {
 }
 
 func (c *Client) runWithReconnect(ctx context.Context) {
-	backoff := 1 * time.Second
-	const maxBackoff = 30 * time.Second
+	const (
+		baseBackoff = 1 * time.Second
+		maxBackoff  = 30 * time.Second
+	)
+	backoff := baseBackoff
 
 	for {
+		started := time.Now()
 		err := c.run(ctx)
 		if ctx.Err() != nil {
 			return // Clean shutdown.
@@ -440,12 +511,21 @@ func (c *Client) runWithReconnect(ctx context.Context) {
 		if err == nil {
 			return
 		}
+		c.setLastError(err)
 
-		// Exponential backoff before reconnect.
+		// Reset the backoff after a connection that actually did some work.
+		// It used to be declared outside this loop and never reset, so a
+		// client that saw a few transient failures early on waited the full
+		// 30s before every subsequent reconnect for the rest of its life,
+		// however long it had been healthy in between.
+		if time.Since(started) >= healthyRunDuration {
+			backoff = baseBackoff
+		}
+
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(backoff):
+		case <-time.After(jitter(backoff)):
 		}
 
 		backoff *= 2
@@ -453,6 +533,21 @@ func (c *Client) runWithReconnect(ctx context.Context) {
 			backoff = maxBackoff
 		}
 	}
+}
+
+// healthyRunDuration is how long a stream must last before its failure is
+// treated as a fresh problem rather than a continuation of the last one.
+const healthyRunDuration = 30 * time.Second
+
+// jitter spreads reconnects so that a fleet of clients dropped at the same
+// moment — every subscriber of a draining server, for instance — does not
+// return in lockstep. Full jitter: uniform over [d/2, d].
+func jitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	half := d / 2
+	return half + time.Duration(rand.Int64N(int64(half)+1)) //nolint:gosec // spreading reconnects, not a secret
 }
 
 type syncStream = connect.ServerStreamForClient[v1.SyncResponse]
@@ -482,6 +577,17 @@ func (c *Client) run(ctx context.Context) error {
 		// Handoff: keep draining the old stream while a new one catches up.
 		oldStream := stream
 		stopOld, oldDone := c.drainInBackground(oldStream)
+
+		// A drain broadcasts GoAway to every subscriber at once, and this path
+		// re-dialled with no delay at all — so the whole fleet came back
+		// simultaneously, and if the load balancer routed any of them to
+		// another draining task they looped again immediately. Spread them.
+		select {
+		case <-ctx.Done():
+			c.stopDrain(stopOld, oldDone, oldStream)
+			return ctx.Err()
+		case <-time.After(jitter(goAwayRedialDelay)):
+		}
 
 		newStream, derr := c.dial(ctx, true)
 		if derr != nil {
@@ -626,6 +732,7 @@ func (c *Client) stopDrain(stop, done chan struct{}, stream *syncStream) {
 func (c *Client) applyMessage(msg *v1.SyncResponse) (goAway bool) {
 	switch m := msg.GetMessage().(type) {
 	case *v1.SyncResponse_Handshake:
+		c.setConnected()
 		if cols := m.Handshake.GetColumns(); len(cols) > 0 {
 			c.mu.Lock()
 			c.columns = columnsFromProto(cols)
@@ -686,8 +793,15 @@ func (c *Client) applyMessage(msg *v1.SyncResponse) (goAway bool) {
 		c.applyJournalEntry(m.JournalEntry)
 
 	case *v1.SyncResponse_Heartbeat:
-		// Heartbeat — connection is alive.
-		_ = m
+		// A heartbeat is not just a liveness ping: it carries the position the
+		// server has reached, which is how an idle or heavily filtered
+		// subscriber stays current instead of drifting arbitrarily far behind
+		// the tail and forcing a re-snapshot on its next resume.
+		if pos := m.Heartbeat.GetSourcePosition(); pos != "" {
+			c.mu.Lock()
+			c.lastSourcePosition = pos
+			c.mu.Unlock()
+		}
 
 	case *v1.SyncResponse_SchemaChange:
 		// Schema change — could trigger re-baseline.
