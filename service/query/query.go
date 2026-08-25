@@ -17,6 +17,12 @@ import (
 	"github.com/zourzouvillys/laredo/target/memory"
 )
 
+// Page bounds for ListRows.
+const (
+	defaultListRowsPageSize = 100
+	maxListRowsPageSize     = 10000
+)
+
 // Service implements the LaredoQueryService.
 type Service struct {
 	laredov1connect.UnimplementedLaredoQueryServiceHandler
@@ -115,9 +121,14 @@ func (s *Service) ListRows(_ context.Context, req *connect.Request[v1.ListRowsRe
 		return nil, err
 	}
 
+	// Cap the page. There is no page token, so an unbounded page_size was a
+	// way to materialize the whole table into one response.
 	pageSize := int(req.Msg.GetPageSize())
 	if pageSize <= 0 {
-		pageSize = 100
+		pageSize = defaultListRowsPageSize
+	}
+	if pageSize > maxListRowsPageSize {
+		pageSize = maxListRowsPageSize
 	}
 
 	var rows []*structpb.Struct

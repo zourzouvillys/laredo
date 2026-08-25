@@ -2,6 +2,7 @@ package fanout
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -14,11 +15,31 @@ type ClientInfo struct {
 	BufferDepth     int
 }
 
-// clientRegistry tracks connected fan-out clients.
+// ClientSession identifies one registration. It exists because a client id is
+// not unique in time: the client's own GoAway handoff deliberately runs two
+// streams under the same id while the new one catches up.
+//
+// Keying the registry by id alone meant the second registration overwrote the
+// first's entry — leaking its channel, hiding it from the client count so
+// maxClients could be bypassed by reusing an id, and, worst, making the first
+// stream's deferred unregister tear down the second's entry and release the
+// second's journal pin while it was still streaming a snapshot, so the journal
+// could prune entries that stream still needed.
+type ClientSession struct {
+	id    string
+	token uint64
+}
+
+// ID returns the client id this session was registered under.
+func (s ClientSession) ID() string { return s.id }
+
+// clientRegistry tracks connected fan-out clients. Registrations are keyed by
+// token, not id, so concurrent sessions under one id stay independent.
 type clientRegistry struct {
 	mu         sync.RWMutex
-	clients    map[string]*clientState
+	clients    map[uint64]*clientState
 	maxClients int
+	nextToken  atomic.Uint64
 }
 
 type clientState struct {
@@ -32,62 +53,66 @@ type clientState struct {
 
 func newClientRegistry(maxClients int) *clientRegistry {
 	return &clientRegistry{
-		clients:    make(map[string]*clientState),
+		clients:    make(map[uint64]*clientState),
 		maxClients: maxClients,
 	}
 }
 
-// register adds a client. Returns false if the max clients limit is reached.
-func (r *clientRegistry) register(clientID string) bool {
+// register adds a client session. Returns false if the max clients limit is
+// reached; the limit now counts sessions, so it cannot be evaded by reusing an
+// id.
+func (r *clientRegistry) register(clientID string) (ClientSession, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if r.maxClients > 0 && len(r.clients) >= r.maxClients {
-		return false
+		return ClientSession{}, false
 	}
 
-	r.clients[clientID] = &clientState{
+	token := r.nextToken.Add(1)
+	r.clients[token] = &clientState{
 		id:          clientID,
 		connectedAt: time.Now(),
 		state:       "catching_up",
 		sendCh:      make(chan struct{}),
 	}
-	return true
+	return ClientSession{id: clientID, token: token}, true
 }
 
-// unregister removes a client.
-func (r *clientRegistry) unregister(clientID string) {
+// unregister removes one session, leaving any other session under the same id
+// untouched.
+func (r *clientRegistry) unregister(s ClientSession) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if cs, ok := r.clients[clientID]; ok {
+	if cs, ok := r.clients[s.token]; ok {
 		close(cs.sendCh)
-		delete(r.clients, clientID)
+		delete(r.clients, s.token)
 	}
 }
 
 // updateSequence updates a client's current position.
-func (r *clientRegistry) updateSequence(clientID string, seq int64) {
+func (r *clientRegistry) updateSequence(s ClientSession, seq int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if cs, ok := r.clients[clientID]; ok {
+	if cs, ok := r.clients[s.token]; ok {
 		cs.currentSequence = seq
 	}
 }
 
 // setState updates a client's state.
-func (r *clientRegistry) setState(clientID string, state string) {
+func (r *clientRegistry) setState(s ClientSession, state string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if cs, ok := r.clients[clientID]; ok {
+	if cs, ok := r.clients[s.token]; ok {
 		cs.state = state
 	}
 }
 
 // setBufferDepth updates a client's buffer depth.
-func (r *clientRegistry) setBufferDepth(clientID string, depth int) {
+func (r *clientRegistry) setBufferDepth(s ClientSession, depth int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if cs, ok := r.clients[clientID]; ok {
+	if cs, ok := r.clients[s.token]; ok {
 		cs.bufferDepth = depth
 	}
 }
@@ -116,11 +141,11 @@ func (r *clientRegistry) list() []ClientInfo {
 	return result
 }
 
-// get returns info about a specific client.
-func (r *clientRegistry) get(clientID string) (ClientInfo, bool) {
+// get returns info about a specific session.
+func (r *clientRegistry) get(s ClientSession) (ClientInfo, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	cs, ok := r.clients[clientID]
+	cs, ok := r.clients[s.token]
 	if !ok {
 		return ClientInfo{}, false
 	}

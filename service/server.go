@@ -11,12 +11,17 @@ import (
 	"sync"
 	"time"
 
+	"connectrpc.com/connect"
+
 	"github.com/zourzouvillys/laredo/gen/laredo/replication/v1/replicationv1connect"
 	"github.com/zourzouvillys/laredo/gen/laredo/v1/laredov1connect"
 )
 
 // Server hosts OAM and Query services over Connect-RPC (HTTP/2 + HTTP/1.1).
 type Server struct {
+	// tlsErr records a certificate that failed to load, surfaced by Start.
+	tlsErr error
+
 	httpServer *http.Server
 	mux        *http.ServeMux
 	addr       string
@@ -25,6 +30,9 @@ type Server struct {
 	mu       sync.Mutex
 	listener net.Listener
 }
+
+// maxRequestBytes bounds a single request body.
+const maxRequestBytes = 4 << 20
 
 // Option configures the server.
 type Option func(*serverConfig)
@@ -87,18 +95,25 @@ func New(opts ...Option) *Server {
 
 	mux := http.NewServeMux()
 
+	// Connect imposes no read limit of its own, and the replication service
+	// accepts a client-supplied filter list, so an unbounded request body was
+	// reachable before any handler ran.
+	handlerOpts := []connect.HandlerOption{
+		connect.WithReadMaxBytes(maxRequestBytes),
+	}
+
 	if cfg.oamHandler != nil {
-		path, handler := laredov1connect.NewLaredoOAMServiceHandler(cfg.oamHandler)
+		path, handler := laredov1connect.NewLaredoOAMServiceHandler(cfg.oamHandler, handlerOpts...)
 		mux.Handle(path, handler)
 	}
 
 	if cfg.queryHandler != nil {
-		path, handler := laredov1connect.NewLaredoQueryServiceHandler(cfg.queryHandler)
+		path, handler := laredov1connect.NewLaredoQueryServiceHandler(cfg.queryHandler, handlerOpts...)
 		mux.Handle(path, handler)
 	}
 
 	if cfg.replicationHandler != nil {
-		path, handler := replicationv1connect.NewLaredoReplicationServiceHandler(cfg.replicationHandler)
+		path, handler := replicationv1connect.NewLaredoReplicationServiceHandler(cfg.replicationHandler, handlerOpts...)
 		mux.Handle(path, handler)
 	}
 
@@ -108,13 +123,23 @@ func New(opts ...Option) *Server {
 		httpServer: &http.Server{
 			Handler:           mux,
 			ReadHeaderTimeout: 10 * time.Second,
+			// No write or idle timeout: the replication and Query streams are
+			// long-lived by design and either would cut them. ReadTimeout is
+			// likewise unset because a bidirectional stream reads for as long
+			// as it runs; the body size cap above is what bounds a request.
+			MaxHeaderBytes: 1 << 20,
 		},
 	}
 
-	// Configure TLS if cert and key are provided.
+	// Configure TLS if cert and key are provided. A load failure is recorded
+	// and surfaced by Start: swallowing it meant a typo in a certificate path
+	// silently started the server in plaintext, which is the one failure mode
+	// a TLS option must never have.
 	if cfg.tlsCertFile != "" && cfg.tlsKeyFile != "" {
 		cert, err := tls.LoadX509KeyPair(cfg.tlsCertFile, cfg.tlsKeyFile)
-		if err == nil {
+		if err != nil {
+			srv.tlsErr = fmt.Errorf("load TLS key pair (%s, %s): %w", cfg.tlsCertFile, cfg.tlsKeyFile, err)
+		} else {
 			srv.tlsConfig = &tls.Config{
 				Certificates: []tls.Certificate{cert},
 				MinVersion:   tls.VersionTLS12,
@@ -129,6 +154,9 @@ func New(opts ...Option) *Server {
 // Start begins listening and serving. It blocks until the server is stopped
 // or an error occurs during listen.
 func (s *Server) Start() error {
+	if s.tlsErr != nil {
+		return s.tlsErr
+	}
 	var lc net.ListenConfig
 	ln, err := lc.Listen(context.Background(), "tcp", s.addr)
 	if err != nil {

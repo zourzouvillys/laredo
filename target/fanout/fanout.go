@@ -121,6 +121,15 @@ func New(opts ...Option) *Target {
 		maxJournalEntries: 100000,
 		maxJournalAge:     24 * time.Hour,
 		heartbeatInterval: 5 * time.Second,
+		// Snapshot retention and the client cap default to bounded values.
+		// They used to default to zero, which pruneSnapshots and the registry
+		// both read as "no limit" — and since every full sync takes a fresh
+		// snapshot, and a snapshot holds a complete copy of the table, an
+		// unauthenticated caller could pin one table copy in memory per
+		// connection, indefinitely, just by reconnecting.
+		snapshotKeepCount: 3,
+		snapshotMaxAge:    1 * time.Hour,
+		maxClients:        256,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -464,45 +473,48 @@ func (t *Target) HeartbeatInterval() time.Duration {
 	return t.cfg.heartbeatInterval
 }
 
-// RegisterClient registers a new connected client. Returns false if at max capacity.
-func (t *Target) RegisterClient(clientID string) bool {
+// RegisterClient registers a new connected client session. Returns false if
+// at max capacity. The returned session must be passed to the other client
+// methods — a client id alone does not identify a registration, because the
+// GoAway handoff deliberately runs two streams under one id.
+func (t *Target) RegisterClient(clientID string) (ClientSession, bool) {
 	return t.clients.register(clientID)
 }
 
-// UnregisterClient removes a connected client.
-func (t *Target) UnregisterClient(clientID string) {
-	t.clients.unregister(clientID)
+// UnregisterClient removes one client session.
+func (t *Target) UnregisterClient(s ClientSession) {
+	t.clients.unregister(s)
 }
 
-// UpdateClientSequence updates a client's current position.
-func (t *Target) UpdateClientSequence(clientID string, seq int64) {
-	t.clients.updateSequence(clientID, seq)
+// UpdateClientSequence updates a session's current position.
+func (t *Target) UpdateClientSequence(s ClientSession, seq int64) {
+	t.clients.updateSequence(s, seq)
 }
 
-// SetClientState updates a client's state ("catching_up", "live", "backpressured").
-func (t *Target) SetClientState(clientID string, state string) {
-	t.clients.setState(clientID, state)
+// SetClientState updates a session's state ("catching_up", "live", "backpressured").
+func (t *Target) SetClientState(s ClientSession, state string) {
+	t.clients.setState(s, state)
 }
 
-// ConnectedClients returns the number of connected clients.
+// ConnectedClients returns the number of connected client sessions.
 func (t *Target) ConnectedClients() int {
 	return t.clients.count()
 }
 
-// ClientList returns info about all connected clients.
+// ClientList returns info about all connected client sessions.
 func (t *Target) ClientList() []ClientInfo {
 	return t.clients.list()
 }
 
-// PinJournal prevents journal pruning past the given sequence for a client.
+// PinJournal prevents journal pruning past the given sequence for a session.
 // Use this before sending a snapshot to ensure the journal catch-up has no gaps.
-func (t *Target) PinJournal(clientID string, seq int64) {
-	t.j.pin(clientID, seq)
+func (t *Target) PinJournal(s ClientSession, seq int64) {
+	t.j.pin(s.token, seq)
 }
 
-// UnpinJournal releases a client's journal pin.
-func (t *Target) UnpinJournal(clientID string) {
-	t.j.unpin(clientID)
+// UnpinJournal releases a session's journal pin.
+func (t *Target) UnpinJournal(s ClientSession) {
+	t.j.unpin(s.token)
 }
 
 // buildKey creates a composite key from the row's PK columns.

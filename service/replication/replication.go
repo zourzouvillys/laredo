@@ -83,13 +83,27 @@ func (s *Service) GetReplicationStatus(_ context.Context, req *connect.Request[v
 			}
 
 			// Add per-client state.
+			journalSeq := ft.JournalSequence()
 			for _, ci := range ft.ClientList() {
-				resp.Clients = append(resp.Clients, &v1.ConnectedClient{
+				// behind_count and connected_at are in the proto and were
+				// never assigned, so both read as zero for every client —
+				// behind_count being precisely the number an operator checks
+				// to see whether a subscriber is keeping up.
+				behind := journalSeq - ci.CurrentSequence
+				if behind < 0 {
+					behind = 0
+				}
+				cc := &v1.ConnectedClient{
 					ClientId:        ci.ID,
 					CurrentSequence: ci.CurrentSequence,
 					State:           ci.State,
+					BehindCount:     behind,
 					BufferDepth:     int32(ci.BufferDepth), //nolint:gosec // won't overflow
-				})
+				}
+				if !ci.ConnectedAt.IsZero() {
+					cc.ConnectedAt = timestamppb.New(ci.ConnectedAt)
+				}
+				resp.Clients = append(resp.Clients, cc)
 			}
 
 			// Latest snapshot info.
@@ -122,6 +136,10 @@ func (s *Service) ListSnapshots(_ context.Context, req *connect.Request[v1.ListS
 	for _, t := range targets {
 		if ft, ok := t.(*fanout.Target); ok {
 			snaps := ft.ListSnapshots()
+			// The request carries a limit and it was ignored entirely.
+			if lim := int(req.Msg.GetLimit()); lim > 0 && lim < len(snaps) {
+				snaps = snaps[:lim]
+			}
 			var result []*v1.ReplicationSnapshotInfo
 			for _, snap := range snaps {
 				result = append(result, &v1.ReplicationSnapshotInfo{
@@ -226,10 +244,11 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 	if clientID == "" {
 		clientID = fmt.Sprintf("anon-%d", time.Now().UnixMilli())
 	}
-	if !ft.RegisterClient(clientID) {
+	session, ok := ft.RegisterClient(clientID)
+	if !ok {
 		return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("max clients reached"))
 	}
-	defer ft.UnregisterClient(clientID)
+	defer ft.UnregisterClient(session)
 
 	// Determine sync mode.
 	oldestSeq := ft.JournalOldestSequence()
@@ -312,7 +331,7 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 		return err
 	}
 
-	ft.SetClientState(clientID, "catching_up")
+	ft.SetClientState(session, "catching_up")
 
 	// posToStr serializes a journal entry's source position for the wire, so
 	// clients can resume from it on any instance. Nil when the source is
@@ -329,8 +348,8 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 		snap := ft.TakeSnapshot()
 		// Pin the journal at the snapshot's sequence to prevent pruning
 		// entries needed for catch-up after the snapshot is sent.
-		ft.PinJournal(clientID, snap.Sequence)
-		defer ft.UnpinJournal(clientID)
+		ft.PinJournal(session, snap.Sequence)
+		defer ft.UnpinJournal(session)
 		// Apply the subscription filter to the snapshot rows so RowCount and
 		// RowsSent reflect exactly what the subscriber receives.
 		rows := snap.Rows
@@ -378,8 +397,8 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 	// handoff. The shared catch-up + live loop below then hands off to the hot
 	// journal and live tail from resumeSeq.
 	if mode == v1.SyncMode_SYNC_MODE_REPLAY_ARCHIVE {
-		ft.PinJournal(clientID, cold.resumeSeq)
-		defer ft.UnpinJournal(clientID)
+		ft.PinJournal(session, cold.resumeSeq)
+		defer ft.UnpinJournal(session)
 		if err := streamColdReplay(stream, cold, filter); err != nil {
 			return err
 		}
@@ -396,10 +415,10 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 		if err := sendJournalEntry(stream, e, posToStr); err != nil {
 			return err
 		}
-		ft.UpdateClientSequence(clientID, e.Sequence)
+		ft.UpdateClientSequence(session, e.Sequence)
 	}
 
-	ft.SetClientState(clientID, "live")
+	ft.SetClientState(session, "live")
 	lastSeqSent := ft.JournalSequence()
 	lastSent := time.Now()
 
@@ -429,7 +448,7 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 			}); err != nil {
 				return err
 			}
-			ft.SetClientState(clientID, "draining")
+			ft.SetClientState(session, "draining")
 			goAwaySent = true
 			lastSent = time.Now()
 		}
@@ -449,7 +468,7 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 				if err := sendJournalEntry(stream, e, posToStr); err != nil {
 					return err
 				}
-				ft.UpdateClientSequence(clientID, e.Sequence)
+				ft.UpdateClientSequence(session, e.Sequence)
 				sentAny = true
 			}
 			lastSeqSent = e.Sequence

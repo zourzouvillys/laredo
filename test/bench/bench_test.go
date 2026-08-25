@@ -193,8 +193,10 @@ func BenchmarkFanOut_Insert(b *testing.B) {
 			_ = target.OnInit(context.Background(), testutil.SampleTable(), testutil.SampleColumns())
 
 			// Register clients.
+			sessions := make([]fanout.ClientSession, 0, clients)
 			for i := range clients {
-				target.RegisterClient(fmt.Sprintf("client-%d", i))
+				sess, _ := target.RegisterClient(fmt.Sprintf("client-%d", i))
+				sessions = append(sessions, sess)
 			}
 
 			// Baseline a few rows so the target has state.
@@ -211,8 +213,8 @@ func BenchmarkFanOut_Insert(b *testing.B) {
 			}
 
 			// Cleanup clients.
-			for i := range clients {
-				target.UnregisterClient(fmt.Sprintf("client-%d", i))
+			for _, sess := range sessions {
+				target.UnregisterClient(sess)
 			}
 		})
 	}
