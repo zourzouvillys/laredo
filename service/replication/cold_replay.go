@@ -4,12 +4,11 @@ import (
 	"context"
 	"fmt"
 
-	"connectrpc.com/connect"
-	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/zourzouvillys/laredo"
 	v1 "github.com/zourzouvillys/laredo/gen/laredo/replication/v1"
+	"github.com/zourzouvillys/laredo/internal/rowpb"
 	"github.com/zourzouvillys/laredo/snapshotter"
 	"github.com/zourzouvillys/laredo/target/fanout"
 )
@@ -105,7 +104,7 @@ func (s *Service) planColdReplay(ctx context.Context, tid laredo.TableIdentifier
 // client, applying the subscription filter and stamping the cold resume sequence
 // plus each diff's to_position. After it returns, the caller continues with the
 // ordinary hot-journal catch-up from resumeSeq and then the live loop.
-func streamColdReplay(stream *connect.ServerStream[v1.SyncResponse], cr *coldReplay, filter *subscriptionFilter) error {
+func streamColdReplay(stream *syncStream, cr *coldReplay, filter *subscriptionFilter) error {
 	if cr.hasSnapshot {
 		rows := cr.snapshotRows
 		if filter != nil {
@@ -117,7 +116,10 @@ func streamColdReplay(stream *connect.ServerStream[v1.SyncResponse], cr *coldRep
 			return err
 		}
 		for _, row := range rows {
-			rowStruct, _ := structpb.NewStruct(map[string]any(row))
+			rowStruct, err := rowpb.RowToStruct(row)
+			if err != nil {
+				return fmt.Errorf("encode archive snapshot row: %w", err)
+			}
 			if err := stream.Send(&v1.SyncResponse{Message: &v1.SyncResponse_SnapshotRow{
 				SnapshotRow: &v1.SnapshotRow{Row: rowStruct},
 			}}); err != nil {
@@ -174,7 +176,7 @@ func changeMatchesFilter(ch snapshotter.Change, filter *subscriptionFilter) bool
 // sendArchiveChange streams one archive change as a journal entry, stamped with
 // the diff's to_position (the watermark the client resumes from) and the cold
 // resume sequence.
-func sendArchiveChange(stream *connect.ServerStream[v1.SyncResponse], ch snapshotter.Change, position string, seq int64) error {
+func sendArchiveChange(stream *syncStream, ch snapshotter.Change, position string, seq int64) error {
 	entry := &v1.ReplicationJournalEntry{
 		Sequence:       seq,
 		SourcePosition: position,
@@ -182,10 +184,18 @@ func sendArchiveChange(stream *connect.ServerStream[v1.SyncResponse], ch snapsho
 		Timestamp:      timestamppb.Now(),
 	}
 	if ch.New != nil {
-		entry.NewValues, _ = structpb.NewStruct(map[string]any(ch.New))
+		v, err := rowpb.RowToStruct(ch.New)
+		if err != nil {
+			return fmt.Errorf("encode archive new values (seq %d): %w", seq, err)
+		}
+		entry.NewValues = v
 	}
 	if ch.Old != nil {
-		entry.OldValues, _ = structpb.NewStruct(map[string]any(ch.Old))
+		v, err := rowpb.RowToStruct(ch.Old)
+		if err != nil {
+			return fmt.Errorf("encode archive old values (seq %d): %w", seq, err)
+		}
+		entry.OldValues = v
 	}
 	return stream.Send(&v1.SyncResponse{Message: &v1.SyncResponse_JournalEntry{JournalEntry: entry}})
 }
