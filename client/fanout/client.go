@@ -6,9 +6,13 @@ package fanout
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -16,6 +20,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"golang.org/x/net/http2"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/zourzouvillys/laredo"
@@ -84,10 +89,79 @@ type config struct {
 	localSnapshotPath string
 	indexes           []indexConfig
 	filters           []*v1.FieldPredicate
+	ackInterval       time.Duration
+	generation        func() string
+	httpClient        connect.HTTPClient
+	clientOpts        []connect.ClientOption
+	scheme            string
 }
+
+// defaultH2CClient speaks HTTP/2 over a plaintext connection. The default used
+// to be http.DefaultClient, which negotiates HTTP/1.1 — fine for a
+// server-streaming call, but Connect carries bidirectional streams over
+// HTTP/2 only, and Sync is now bidirectional so the client can acknowledge
+// what it has applied.
+var defaultH2CClient = &http.Client{
+	Transport: &http2.Transport{
+		AllowHTTP: true,
+		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, addr)
+		},
+	},
+}
+
+// defaultAckInterval is how often the applied position is reported when the
+// caller does not choose. Frequent enough that an operator waiting on a
+// configuration change is not left guessing, cheap enough to ignore.
+const defaultAckInterval = 1 * time.Second
 
 // Option configures the fan-out client.
 type Option func(*config)
+
+// AckInterval sets how often the client reports its applied position to the
+// server (default 1s). The report is what lets an operator see that a change
+// has been applied rather than merely sent; a shorter interval converges
+// faster at the cost of one small message per interval per subscriber.
+func AckInterval(d time.Duration) Option {
+	return func(c *config) {
+		if d > 0 {
+			c.ackInterval = d
+		}
+	}
+}
+
+// WithHTTPClient supplies the HTTP client used for the Sync stream, which is
+// how a caller attaches credentials, TLS, or a custom transport. The client
+// previously hardcoded http.DefaultClient and an http:// scheme, so there was
+// no way to authenticate to a server that required it, and no way to reach one
+// over TLS at all.
+//
+// A client supplied here must speak HTTP/2: Sync is bidirectional, and Connect
+// carries bidirectional streams over HTTP/2 only.
+func WithHTTPClient(hc connect.HTTPClient) Option {
+	return func(c *config) { c.httpClient = hc }
+}
+
+// WithClientOptions passes Connect client options through — interceptors, in
+// particular, which is where a per-request credential belongs so that it is
+// re-read on every reconnect rather than captured once at construction.
+func WithClientOptions(opts ...connect.ClientOption) Option {
+	return func(c *config) { c.clientOpts = append(c.clientOpts, opts...) }
+}
+
+// WithTLS makes the client dial https:// rather than http://.
+func WithTLS() Option {
+	return func(c *config) { c.scheme = "https://" }
+}
+
+// AppliedGeneration supplies an opaque identifier for the state the consumer
+// currently holds — a content hash, typically. It rides on each ack, so a
+// caller can confirm that two subscribers hold the same thing rather than
+// merely that both reached the same position.
+func AppliedGeneration(fn func() string) Option {
+	return func(c *config) { c.generation = fn }
+}
 
 // ServerAddress sets the gRPC server address (e.g. "localhost:4002").
 func ServerAddress(addr string) Option {
@@ -168,7 +242,7 @@ func WithFilterIn(field string, values ...any) Option {
 
 // New creates a new fan-out client.
 func New(opts ...Option) *Client {
-	cfg := config{}
+	cfg := config{ackInterval: defaultAckInterval}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -550,7 +624,9 @@ func jitter(d time.Duration) time.Duration {
 	return half + time.Duration(rand.Int64N(int64(half)+1)) //nolint:gosec // spreading reconnects, not a secret
 }
 
-type syncStream = connect.ServerStreamForClient[v1.SyncResponse]
+// syncStream is the bidirectional Sync stream. The client sends its SyncStart
+// and its applied-position acks on it; the server sends replication messages.
+type syncStream = connect.BidiStreamForClient[v1.SyncClientMessage, v1.SyncResponse]
 
 // run opens a Sync stream and processes it as the primary. When the server
 // sends GoAway (it is draining), run performs an overlapping handoff: it brings
@@ -569,7 +645,8 @@ func (c *Client) run(ctx context.Context) error {
 		if !pendingGoAway {
 			goAway, perr := c.process(ctx, stream)
 			if perr != nil || !goAway {
-				_ = stream.Close()
+				_ = stream.CloseRequest()
+				_ = stream.CloseResponse()
 				return perr
 			}
 		}
@@ -601,7 +678,8 @@ func (c *Client) run(ctx context.Context) error {
 		c.stopDrain(stopOld, oldDone, oldStream)
 
 		if cerr != nil {
-			_ = newStream.Close()
+			_ = newStream.CloseRequest()
+			_ = newStream.CloseResponse()
 			return cerr
 		}
 
@@ -615,13 +693,27 @@ func (c *Client) run(ctx context.Context) error {
 // is not portable, so it is omitted to avoid matching an unrelated entry on the
 // new instance.
 func (c *Client) dial(ctx context.Context, resumeByPosition bool) (*syncStream, error) {
+	hc := c.cfg.httpClient
+	if hc == nil {
+		hc = defaultH2CClient
+	}
+	scheme := c.cfg.scheme
+	if scheme == "" {
+		scheme = "http://"
+	}
+	// The gRPC protocol, not Connect's own. Connect's streaming protocol is
+	// half-duplex: the server may not send until the client has finished
+	// sending, which never happens here because the client holds the request
+	// open to acknowledge what it has applied. Under Connect that deadlocks
+	// on the first message. gRPC is full-duplex and is what a bidirectional
+	// stream needs. Caller options come after, so a caller may still override.
+	opts := append([]connect.ClientOption{connect.WithGRPC()}, c.cfg.clientOpts...)
 	rpcClient := replicationv1connect.NewLaredoReplicationServiceClient(
-		http.DefaultClient,
-		"http://"+c.cfg.serverAddress,
+		hc, scheme+c.cfg.serverAddress, opts...,
 	)
 
 	c.mu.RLock()
-	req := &v1.SyncRequest{
+	start := &v1.SyncStart{
 		Schema:                  c.cfg.schema,
 		Table:                   c.cfg.table,
 		ClientId:                c.cfg.clientID,
@@ -632,14 +724,53 @@ func (c *Client) dial(ctx context.Context, resumeByPosition bool) (*syncStream, 
 	}
 	c.mu.RUnlock()
 	if resumeByPosition {
-		req.LastKnownSequence = 0
+		start.LastKnownSequence = 0
 	}
 
-	stream, err := rpcClient.Sync(ctx, connect.NewRequest(req))
-	if err != nil {
-		return nil, fmt.Errorf("sync: %w", err)
+	stream := rpcClient.Sync(ctx)
+	if err := stream.Send(&v1.SyncClientMessage{
+		Message: &v1.SyncClientMessage_Start{Start: start},
+	}); err != nil {
+		return nil, fmt.Errorf("sync: send start: %w", err)
 	}
 	return stream, nil
+}
+
+// sendAck reports the client's applied position back to the server. Errors are
+// returned but not fatal to the caller: an ack that does not land costs the
+// operator visibility, not correctness of the replica.
+func (c *Client) sendAck(stream *syncStream) error {
+	c.mu.RLock()
+	ack := &v1.ApplyAck{
+		AppliedSequence:       c.lastSeq,
+		AppliedSourcePosition: c.lastSourcePosition,
+	}
+	gen := c.cfg.generation
+	c.mu.RUnlock()
+	if gen != nil {
+		ack.AppliedGeneration = gen()
+	}
+	return stream.Send(&v1.SyncClientMessage{Message: &v1.SyncClientMessage_Ack{Ack: ack}})
+}
+
+// ackLoop periodically reports the applied position for as long as the stream
+// lives. It is the only sender after the initial SyncStart, so no two
+// goroutines ever call Send on the same stream.
+func (c *Client) ackLoop(ctx context.Context, stream *syncStream, stop <-chan struct{}) {
+	t := time.NewTicker(c.cfg.ackInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-stop:
+			return
+		case <-t.C:
+			if err := c.sendAck(stream); err != nil {
+				return
+			}
+		}
+	}
 }
 
 // process reads and applies messages from the primary stream until it ends, the
@@ -647,16 +778,39 @@ func (c *Client) dial(ctx context.Context, resumeByPosition bool) (*syncStream, 
 // (true, nil) with the stream still open so the caller can keep draining it
 // during handoff.
 func (c *Client) process(ctx context.Context, stream *syncStream) (goAway bool, err error) {
-	for stream.Receive() {
+	stop := make(chan struct{})
+	go c.ackLoop(ctx, stream, stop)
+	defer close(stop)
+
+	// Receive on a bidirectional stream does not observe context
+	// cancellation, so closing the stream is what unblocks it. Without this,
+	// Stop() waits forever on a client whose server is holding the stream
+	// open — which is the normal, healthy case.
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = stream.CloseRequest()
+			_ = stream.CloseResponse()
+		case <-stop:
+		}
+	}()
+
+	for {
+		msg, rerr := stream.Receive()
+		if rerr != nil {
+			if ctx.Err() != nil {
+				return false, ctx.Err()
+			}
+			if errors.Is(rerr, io.EOF) {
+				return false, nil
+			}
+			return false, fmt.Errorf("stream error: %w", rerr)
+		}
 		c.touch()
-		if c.applyMessage(stream.Msg()) {
+		if c.applyMessage(msg) {
 			return true, nil
 		}
 	}
-	if e := stream.Err(); e != nil && ctx.Err() == nil {
-		return false, fmt.Errorf("stream error: %w", e)
-	}
-	return false, ctx.Err()
 }
 
 // catchUp reads and applies messages from a freshly dialed stream until it has
@@ -667,9 +821,18 @@ func (c *Client) process(ctx context.Context, stream *syncStream) (goAway bool, 
 func (c *Client) catchUp(ctx context.Context, stream *syncStream) (sawGoAway bool, err error) {
 	var target int64
 	var haveTarget bool
-	for stream.Receive() {
+	for {
+		msg, rerr := stream.Receive()
+		if rerr != nil {
+			if ctx.Err() != nil {
+				return false, ctx.Err()
+			}
+			if errors.Is(rerr, io.EOF) {
+				return false, nil
+			}
+			return false, fmt.Errorf("stream error: %w", rerr)
+		}
 		c.touch()
-		msg := stream.Msg()
 		if hs := msg.GetHandshake(); hs != nil {
 			target = hs.GetServerCurrentSequence()
 			haveTarget = true
@@ -686,10 +849,6 @@ func (c *Client) catchUp(ctx context.Context, stream *syncStream) (sawGoAway boo
 			}
 		}
 	}
-	if e := stream.Err(); e != nil && ctx.Err() == nil {
-		return false, fmt.Errorf("stream error: %w", e)
-	}
-	return false, ctx.Err()
 }
 
 // drainInBackground keeps applying messages from a stream (the old instance,
@@ -707,12 +866,13 @@ func (c *Client) drainInBackground(stream *syncStream) (stop chan struct{}, done
 				return
 			default:
 			}
-			if !stream.Receive() {
+			msg, err := stream.Receive()
+			if err != nil {
 				return
 			}
 			c.touch()
 			// Ignore GoAway on the old stream: we are already leaving it.
-			_ = c.applyMessage(stream.Msg())
+			_ = c.applyMessage(msg)
 		}
 	}()
 	return stop, done
@@ -723,7 +883,8 @@ func (c *Client) drainInBackground(stream *syncStream) (stop chan struct{}, done
 // channel only guards against applying further messages between iterations.
 func (c *Client) stopDrain(stop, done chan struct{}, stream *syncStream) {
 	close(stop)
-	_ = stream.Close()
+	_ = stream.CloseRequest()
+	_ = stream.CloseResponse()
 	<-done
 }
 

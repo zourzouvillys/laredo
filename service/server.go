@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 
 	"github.com/zourzouvillys/laredo/gen/laredo/replication/v1/replicationv1connect"
 	"github.com/zourzouvillys/laredo/gen/laredo/v1/laredov1connect"
@@ -121,7 +123,11 @@ func New(opts ...Option) *Server {
 		mux:  mux,
 		addr: cfg.addr,
 		httpServer: &http.Server{
-			Handler:           mux,
+			// h2c so plaintext deployments speak HTTP/2. Connect's
+			// bidirectional streaming — which the replication Sync call needs
+			// in order to carry client acknowledgements — is HTTP/2 only, and
+			// a plain mux over a plaintext listener negotiates HTTP/1.1.
+			Handler:           h2c.NewHandler(mux, &http2.Server{}),
 			ReadHeaderTimeout: 10 * time.Second,
 			// No write or idle timeout: the replication and Query streams are
 			// long-lived by design and either would cut them. ReadTimeout is

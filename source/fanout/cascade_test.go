@@ -4,6 +4,9 @@ import (
 	"context"
 	"net"
 	"net/http"
+
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 	"strconv"
 	"testing"
 	"time"
@@ -73,7 +76,7 @@ func startUpstream(t *testing.T) (string, *testsource.Source, laredo.TableIdenti
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: h2c.NewHandler(mux, &http2.Server{}), ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(func() { _ = srv.Close() })
 

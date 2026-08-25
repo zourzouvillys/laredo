@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/zourzouvillys/laredo"
@@ -105,7 +104,7 @@ func (s *Service) planColdReplay(ctx context.Context, tid laredo.TableIdentifier
 // client, applying the subscription filter and stamping the cold resume sequence
 // plus each diff's to_position. After it returns, the caller continues with the
 // ordinary hot-journal catch-up from resumeSeq and then the live loop.
-func streamColdReplay(stream *connect.ServerStream[v1.SyncResponse], cr *coldReplay, filter *subscriptionFilter) error {
+func streamColdReplay(stream *syncStream, cr *coldReplay, filter *subscriptionFilter) error {
 	if cr.hasSnapshot {
 		rows := cr.snapshotRows
 		if filter != nil {
@@ -177,7 +176,7 @@ func changeMatchesFilter(ch snapshotter.Change, filter *subscriptionFilter) bool
 // sendArchiveChange streams one archive change as a journal entry, stamped with
 // the diff's to_position (the watermark the client resumes from) and the cold
 // resume sequence.
-func sendArchiveChange(stream *connect.ServerStream[v1.SyncResponse], ch snapshotter.Change, position string, seq int64) error {
+func sendArchiveChange(stream *syncStream, ch snapshotter.Change, position string, seq int64) error {
 	entry := &v1.ReplicationJournalEntry{
 		Sequence:       seq,
 		SourcePosition: position,

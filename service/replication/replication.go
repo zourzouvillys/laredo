@@ -103,6 +103,13 @@ func (s *Service) GetReplicationStatus(_ context.Context, req *connect.Request[v
 				if !ci.ConnectedAt.IsZero() {
 					cc.ConnectedAt = timestamppb.New(ci.ConnectedAt)
 				}
+				cc.AppliedSequence = ci.Applied.Sequence
+				cc.AppliedSourcePosition = ci.Applied.SourcePosition
+				cc.AppliedGeneration = ci.Applied.Generation
+				cc.ApplyError = ci.Applied.Error
+				if !ci.Applied.At.IsZero() {
+					cc.LastAckAt = timestamppb.New(ci.Applied.At)
+				}
 				resp.Clients = append(resp.Clients, cc)
 			}
 
@@ -216,13 +223,31 @@ func (s *Service) FetchSnapshot(_ context.Context, req *connect.Request[v1.Fetch
 	return connect.NewError(connect.CodeNotFound, fmt.Errorf("snapshot %s not found", snapshotID))
 }
 
-// Sync implements the primary server-streaming replication call.
-// Protocol: handshake → snapshot (if needed) → journal catch-up → live streaming.
-func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
-	schema := req.Msg.GetSchema()
-	table := req.Msg.GetTable()
-	clientID := req.Msg.GetClientId()
-	lastSeq := req.Msg.GetLastKnownSequence()
+// syncStream is the bidirectional Sync stream: the server sends replication
+// messages, the client sends its applied-position acknowledgements.
+type syncStream = connect.BidiStream[v1.SyncClientMessage, v1.SyncResponse]
+
+// Sync implements the primary replication call.
+// Protocol: the client opens with SyncStart, then handshake → snapshot (if
+// needed) → journal catch-up → live streaming, with the client acking what it
+// has applied on the same stream throughout.
+func (s *Service) Sync(ctx context.Context, stream *syncStream) error {
+	// The first message declares the subscription. Anything else is a protocol
+	// error — there is nothing to serve without it.
+	first, err := stream.Receive()
+	if err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("receive SyncStart: %w", err))
+	}
+	start := first.GetStart()
+	if start == nil {
+		return connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("first message on a Sync stream must be a SyncStart"))
+	}
+
+	schema := start.GetSchema()
+	table := start.GetTable()
+	clientID := start.GetClientId()
+	lastSeq := start.GetLastKnownSequence()
 
 	if schema == "" || table == "" {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("schema and table are required"))
@@ -231,7 +256,7 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 	// Compile the optional per-subscription filter once; it is applied uniformly
 	// to the snapshot, journal catch-up, and live phases below. A nil filter
 	// matches everything.
-	filter, err := compileSubscriptionFilter(req.Msg.GetFilters())
+	filter, err := compileSubscriptionFilter(start.GetFilters())
 	if err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -250,11 +275,36 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 	}
 	defer ft.UnregisterClient(session)
 
+	// Read the client's acknowledgements for as long as the stream lives. This
+	// is the half that makes GetReplicationStatus able to say what a client has
+	// APPLIED rather than only what was sent to it. A client that never acks is
+	// reported as such; it is not an error, since an older client will not.
+	ackDone := make(chan struct{})
+	go func() {
+		defer close(ackDone)
+		for {
+			msg, err := stream.Receive()
+			if err != nil {
+				return // Stream closed or client gone; the send side reports it.
+			}
+			if ack := msg.GetAck(); ack != nil {
+				ft.RecordApplyAck(session, fanout.ApplyAck{
+					Sequence:       ack.GetAppliedSequence(),
+					SourcePosition: ack.GetAppliedSourcePosition(),
+					Generation:     ack.GetAppliedGeneration(),
+					Error:          ack.GetApplyError(),
+					At:             time.Now(),
+				})
+			}
+		}
+	}()
+	defer func() { <-ackDone }()
+
 	// Determine sync mode.
 	oldestSeq := ft.JournalOldestSequence()
 	currentSeq := ft.JournalSequence()
-	snapshotID := req.Msg.GetLastSnapshotId()
-	clientPosStr := req.Msg.GetLastKnownSourcePosition()
+	snapshotID := start.GetLastSnapshotId()
+	clientPosStr := start.GetLastKnownSourcePosition()
 
 	var mode v1.SyncMode
 	var resumeSeq int64
@@ -529,7 +579,7 @@ func (s *Service) findFanoutTargetAndSource(schema, table string) (*fanout.Targe
 	return s.findFanoutTarget(schema, table), nil
 }
 
-func sendJournalEntry(stream *connect.ServerStream[v1.SyncResponse], e fanout.JournalEntry, posToStr func(laredo.Position) string) error {
+func sendJournalEntry(stream *syncStream, e fanout.JournalEntry, posToStr func(laredo.Position) string) error {
 	entry := &v1.ReplicationJournalEntry{
 		Sequence:       e.Sequence,
 		Timestamp:      timestamppb.New(e.Timestamp),

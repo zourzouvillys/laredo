@@ -496,6 +496,12 @@ func (t *Target) SetClientState(s ClientSession, state string) {
 	t.clients.setState(s, state)
 }
 
+// RecordApplyAck stores a session's report of what it has applied, which is
+// what lets GetReplicationStatus distinguish delivered from applied.
+func (t *Target) RecordApplyAck(s ClientSession, ack ApplyAck) {
+	t.clients.recordApplyAck(s, ack)
+}
+
 // ConnectedClients returns the number of connected client sessions.
 func (t *Target) ConnectedClients() int {
 	return t.clients.count()

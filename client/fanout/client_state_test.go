@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
-
 	v1 "github.com/zourzouvillys/laredo/gen/laredo/replication/v1"
 )
 
@@ -77,7 +75,7 @@ func TestClientState_ReportsStalenessAndErrors(t *testing.T) {
 // entries kept resuming from an ever-staler position.
 func TestHeartbeat_AdvancesSourcePosition(t *testing.T) {
 	ts := &testServer{}
-	ts.setSyncFn(snapshotThen(t, nil, func(stream *connect.ServerStream[v1.SyncResponse]) error {
+	ts.setSyncFn(snapshotThen(t, nil, func(stream *testStream) error {
 		return stream.Send(&v1.SyncResponse{Message: &v1.SyncResponse_Heartbeat{
 			Heartbeat: &v1.Heartbeat{CurrentSequence: 9, SourcePosition: "0/DEADBEEF"},
 		}})

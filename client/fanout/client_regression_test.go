@@ -7,14 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
-
 	"github.com/zourzouvillys/laredo"
 	v1 "github.com/zourzouvillys/laredo/gen/laredo/replication/v1"
 )
 
 // sendJournal is a small helper for driving the client from a test server.
-func sendJournal(stream *connect.ServerStream[v1.SyncResponse], seq int64, action string, row map[string]any, t *testing.T) error {
+func sendJournal(stream *testStream, seq int64, action string, row map[string]any, t *testing.T) error {
 	t.Helper()
 	entry := &v1.ReplicationJournalEntry{
 		Sequence:       seq,
@@ -33,9 +31,9 @@ func sendJournal(stream *connect.ServerStream[v1.SyncResponse], seq int64, actio
 }
 
 // snapshotThen sends a one-row snapshot, then hands control to more.
-func snapshotThen(t *testing.T, cols []*v1.ColumnDefinition, more func(*connect.ServerStream[v1.SyncResponse]) error) func(context.Context, *connect.Request[v1.SyncRequest], *connect.ServerStream[v1.SyncResponse]) error {
+func snapshotThen(t *testing.T, cols []*v1.ColumnDefinition, more func(*testStream) error) func(context.Context, *v1.SyncStart, *testStream) error {
 	t.Helper()
-	return func(ctx context.Context, _ *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
+	return func(ctx context.Context, _ *v1.SyncStart, stream *testStream) error {
 		if err := stream.Send(&v1.SyncResponse{Message: &v1.SyncResponse_Handshake{
 			Handshake: &v1.SyncHandshake{Mode: v1.SyncMode_SYNC_MODE_FULL_SNAPSHOT, Columns: cols},
 		}}); err != nil {
@@ -73,7 +71,7 @@ func snapshotThen(t *testing.T, cols []*v1.ColumnDefinition, more func(*connect.
 // panic or a race report but a client that simply stopped applying changes.
 func TestListener_MayReadTheClient(t *testing.T) {
 	ts := &testServer{}
-	ts.setSyncFn(snapshotThen(t, nil, func(stream *connect.ServerStream[v1.SyncResponse]) error {
+	ts.setSyncFn(snapshotThen(t, nil, func(stream *testStream) error {
 		return sendJournal(stream, 2, "INSERT", map[string]any{"id": "2", "name": "two"}, t)
 	}))
 	addr := startTestServer(t, ts)
@@ -109,7 +107,7 @@ func TestListener_MayReadTheClient(t *testing.T) {
 func TestListen_SupportsMultipleSubscribers(t *testing.T) {
 	ts := &testServer{}
 	release := make(chan struct{})
-	ts.setSyncFn(snapshotThen(t, nil, func(stream *connect.ServerStream[v1.SyncResponse]) error {
+	ts.setSyncFn(snapshotThen(t, nil, func(stream *testStream) error {
 		if err := sendJournal(stream, 2, "INSERT", map[string]any{"id": "2"}, t); err != nil {
 			return err
 		}
@@ -195,7 +193,7 @@ func TestListen_SupportsMultipleSubscribers(t *testing.T) {
 func TestResnapshot_NeverExposesPartialState(t *testing.T) {
 	const rows = 40
 	ts := &testServer{}
-	ts.setSyncFn(func(ctx context.Context, _ *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
+	ts.setSyncFn(func(ctx context.Context, _ *v1.SyncStart, stream *testStream) error {
 		send := func(id int) error {
 			return stream.Send(&v1.SyncResponse{Message: &v1.SyncResponse_SnapshotRow{
 				SnapshotRow: &v1.SnapshotRow{Row: makeRow(t, map[string]any{"id": fmt.Sprint(id)})},
@@ -268,7 +266,7 @@ func TestRowKey_UsesDeclaredPrimaryKey(t *testing.T) {
 		{ColumnName: "value", DataType: "text"},
 	}
 	ts := &testServer{}
-	ts.setSyncFn(func(ctx context.Context, _ *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
+	ts.setSyncFn(func(ctx context.Context, _ *v1.SyncStart, stream *testStream) error {
 		if err := stream.Send(&v1.SyncResponse{Message: &v1.SyncResponse_Handshake{
 			Handshake: &v1.SyncHandshake{Mode: v1.SyncMode_SYNC_MODE_FULL_SNAPSHOT, Columns: cols},
 		}}); err != nil {

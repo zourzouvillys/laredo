@@ -13,6 +13,19 @@ type ClientInfo struct {
 	ConnectedAt     time.Time
 	State           string // "catching_up", "live", "backpressured"
 	BufferDepth     int
+
+	// Applied is what the client last reported it had installed. Distinct
+	// from CurrentSequence, which is only what the server sent.
+	Applied ApplyAck
+}
+
+// ApplyAck is a client's report of what it has durably applied.
+type ApplyAck struct {
+	Sequence       int64
+	SourcePosition string
+	Generation     string
+	Error          string
+	At             time.Time
 }
 
 // ClientSession identifies one registration. It exists because a client id is
@@ -48,6 +61,7 @@ type clientState struct {
 	connectedAt     time.Time
 	state           string
 	bufferDepth     int
+	applied         ApplyAck
 	sendCh          chan struct{} // closed when client should disconnect
 }
 
@@ -117,6 +131,15 @@ func (r *clientRegistry) setBufferDepth(s ClientSession, depth int) {
 	}
 }
 
+// recordApplyAck stores what a session reports it has applied.
+func (r *clientRegistry) recordApplyAck(s ClientSession, ack ApplyAck) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if cs, ok := r.clients[s.token]; ok {
+		cs.applied = ack
+	}
+}
+
 // count returns the number of connected clients.
 func (r *clientRegistry) count() int {
 	r.mu.RLock()
@@ -136,6 +159,7 @@ func (r *clientRegistry) list() []ClientInfo {
 			ConnectedAt:     cs.connectedAt,
 			State:           cs.state,
 			BufferDepth:     cs.bufferDepth,
+			Applied:         cs.applied,
 		})
 	}
 	return result
@@ -155,6 +179,7 @@ func (r *clientRegistry) get(s ClientSession) (ClientInfo, bool) {
 		ConnectedAt:     cs.connectedAt,
 		State:           cs.state,
 		BufferDepth:     cs.bufferDepth,
+		Applied:         cs.applied,
 	}, true
 }
 
