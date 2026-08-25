@@ -5,11 +5,11 @@ import (
 	"fmt"
 
 	"connectrpc.com/connect"
-	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/zourzouvillys/laredo"
 	v1 "github.com/zourzouvillys/laredo/gen/laredo/replication/v1"
+	"github.com/zourzouvillys/laredo/internal/rowpb"
 	"github.com/zourzouvillys/laredo/snapshotter"
 	"github.com/zourzouvillys/laredo/target/fanout"
 )
@@ -117,7 +117,10 @@ func streamColdReplay(stream *connect.ServerStream[v1.SyncResponse], cr *coldRep
 			return err
 		}
 		for _, row := range rows {
-			rowStruct, _ := structpb.NewStruct(map[string]any(row))
+			rowStruct, err := rowpb.RowToStruct(row)
+			if err != nil {
+				return fmt.Errorf("encode archive snapshot row: %w", err)
+			}
 			if err := stream.Send(&v1.SyncResponse{Message: &v1.SyncResponse_SnapshotRow{
 				SnapshotRow: &v1.SnapshotRow{Row: rowStruct},
 			}}); err != nil {
@@ -182,10 +185,18 @@ func sendArchiveChange(stream *connect.ServerStream[v1.SyncResponse], ch snapsho
 		Timestamp:      timestamppb.Now(),
 	}
 	if ch.New != nil {
-		entry.NewValues, _ = structpb.NewStruct(map[string]any(ch.New))
+		v, err := rowpb.RowToStruct(ch.New)
+		if err != nil {
+			return fmt.Errorf("encode archive new values (seq %d): %w", seq, err)
+		}
+		entry.NewValues = v
 	}
 	if ch.Old != nil {
-		entry.OldValues, _ = structpb.NewStruct(map[string]any(ch.Old))
+		v, err := rowpb.RowToStruct(ch.Old)
+		if err != nil {
+			return fmt.Errorf("encode archive old values (seq %d): %w", seq, err)
+		}
+		entry.OldValues = v
 	}
 	return stream.Send(&v1.SyncResponse{Message: &v1.SyncResponse_JournalEntry{JournalEntry: entry}})
 }

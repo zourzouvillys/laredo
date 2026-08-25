@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/zourzouvillys/laredo"
 )
@@ -20,6 +21,11 @@ type replicationManager struct {
 
 	// relation cache — pgoutput sends RELATION messages before data.
 	relations map[uint32]*pglogrepl.RelationMessage
+
+	// typeMap resolves a column's type OID to its codec, so streaming values
+	// decode into the same Go types the baseline path yields. Holds no
+	// connection state and is safe to reuse for the life of the manager.
+	typeMap *pgtype.Map
 }
 
 // connect establishes the replication connection.
@@ -43,6 +49,9 @@ func (rm *replicationManager) connect(ctx context.Context) error {
 
 	rm.conn = conn
 	rm.relations = make(map[uint32]*pglogrepl.RelationMessage)
+	if rm.typeMap == nil {
+		rm.typeMap = pgtype.NewMap()
+	}
 	return nil
 }
 
@@ -223,7 +232,10 @@ func (rm *replicationManager) handleWALData(ctx context.Context, data []byte, ta
 		if !tableSet[tableName] {
 			return nil
 		}
-		row := tupleToRow(rel, msg.Tuple)
+		row, err := tupleToRow(rm.typeMap, rel, msg.Tuple)
+		if err != nil {
+			return fmt.Errorf("insert on %s: %w", tableName, err)
+		}
 		return handler.OnChange(laredo.ChangeEvent{
 			Table:     laredo.Table(rel.Namespace, rel.RelationName),
 			Action:    laredo.ActionInsert,
@@ -240,10 +252,16 @@ func (rm *replicationManager) handleWALData(ctx context.Context, data []byte, ta
 		if !tableSet[tableName] {
 			return nil
 		}
-		newRow := tupleToRow(rel, msg.NewTuple)
+		newRow, err := tupleToRow(rm.typeMap, rel, msg.NewTuple)
+		if err != nil {
+			return fmt.Errorf("update on %s: %w", tableName, err)
+		}
 		var oldRow laredo.Row
 		if msg.OldTuple != nil {
-			oldRow = tupleToRow(rel, msg.OldTuple)
+			oldRow, err = tupleToRow(rm.typeMap, rel, msg.OldTuple)
+			if err != nil {
+				return fmt.Errorf("update (old tuple) on %s: %w", tableName, err)
+			}
 		}
 		return handler.OnChange(laredo.ChangeEvent{
 			Table:     laredo.Table(rel.Namespace, rel.RelationName),
@@ -264,7 +282,11 @@ func (rm *replicationManager) handleWALData(ctx context.Context, data []byte, ta
 		}
 		var oldRow laredo.Row
 		if msg.OldTuple != nil {
-			oldRow = tupleToRow(rel, msg.OldTuple)
+			var err error
+			oldRow, err = tupleToRow(rm.typeMap, rel, msg.OldTuple)
+			if err != nil {
+				return fmt.Errorf("delete on %s: %w", tableName, err)
+			}
 		}
 		return handler.OnChange(laredo.ChangeEvent{
 			Table:     laredo.Table(rel.Namespace, rel.RelationName),
@@ -300,10 +322,15 @@ func (rm *replicationManager) handleWALData(ctx context.Context, data []byte, ta
 }
 
 // tupleToRow converts a pgoutput tuple into a laredo.Row using the relation's
-// column definitions.
-func tupleToRow(rel *pglogrepl.RelationMessage, tuple *pglogrepl.TupleData) laredo.Row {
+// column definitions, decoding each value into the same Go type the baseline
+// path produces. See decodeTextValue for why that matters.
+//
+// A value that cannot be decoded is an error rather than a silently-degraded
+// row: the caller aborts the stream, which is recoverable, whereas a row that
+// quietly differs in type from its baseline form is not.
+func tupleToRow(m *pgtype.Map, rel *pglogrepl.RelationMessage, tuple *pglogrepl.TupleData) (laredo.Row, error) {
 	if tuple == nil {
-		return nil
+		return nil, nil
 	}
 	row := make(laredo.Row, len(tuple.Columns))
 	for i, col := range tuple.Columns {
@@ -315,10 +342,14 @@ func tupleToRow(rel *pglogrepl.RelationMessage, tuple *pglogrepl.TupleData) lare
 		case 'n': // null
 			row[colName] = nil
 		case 't': // text
-			row[colName] = string(col.Data)
+			v, err := decodeTextValue(m, rel.Columns[i].DataType, col.Data)
+			if err != nil {
+				return nil, fmt.Errorf("column %q: %w", colName, err)
+			}
+			row[colName] = v
 		case 'u': // unchanged TOAST — skip
 			continue
 		}
 	}
-	return row
+	return row, nil
 }

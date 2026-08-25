@@ -8,12 +8,12 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/zourzouvillys/laredo"
 	v1 "github.com/zourzouvillys/laredo/gen/laredo/replication/v1"
 	"github.com/zourzouvillys/laredo/gen/laredo/replication/v1/replicationv1connect"
+	"github.com/zourzouvillys/laredo/internal/rowpb"
 	"github.com/zourzouvillys/laredo/snapshotter"
 	"github.com/zourzouvillys/laredo/target/fanout"
 )
@@ -170,7 +170,10 @@ func (s *Service) FetchSnapshot(_ context.Context, req *connect.Request[v1.Fetch
 				}
 
 				for _, row := range snap.Rows {
-					rowStruct, _ := structpb.NewStruct(map[string]any(row))
+					rowStruct, err := rowpb.RowToStruct(row)
+					if err != nil {
+						return connect.NewError(connect.CodeInternal, fmt.Errorf("encode snapshot row: %w", err))
+					}
 					if err := stream.Send(&v1.FetchSnapshotResponse{
 						Chunk: &v1.FetchSnapshotResponse_Row{
 							Row: &v1.SnapshotRow{Row: rowStruct},
@@ -350,7 +353,10 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 			return err
 		}
 		for _, row := range rows {
-			rowStruct, _ := structpb.NewStruct(map[string]any(row))
+			rowStruct, err := rowpb.RowToStruct(row)
+			if err != nil {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("encode snapshot row: %w", err))
+			}
 			if err := stream.Send(&v1.SyncResponse{
 				Message: &v1.SyncResponse_SnapshotRow{SnapshotRow: &v1.SnapshotRow{Row: rowStruct}},
 			}); err != nil {
@@ -511,10 +517,18 @@ func sendJournalEntry(stream *connect.ServerStream[v1.SyncResponse], e fanout.Jo
 		SourcePosition: posToStr(e.Position),
 	}
 	if e.NewValues != nil {
-		entry.NewValues, _ = structpb.NewStruct(map[string]any(e.NewValues))
+		v, err := rowpb.RowToStruct(e.NewValues)
+		if err != nil {
+			return fmt.Errorf("encode journal new values (seq %d): %w", e.Sequence, err)
+		}
+		entry.NewValues = v
 	}
 	if e.OldValues != nil {
-		entry.OldValues, _ = structpb.NewStruct(map[string]any(e.OldValues))
+		v, err := rowpb.RowToStruct(e.OldValues)
+		if err != nil {
+			return fmt.Errorf("encode journal old values (seq %d): %w", e.Sequence, err)
+		}
+		entry.OldValues = v
 	}
 	return stream.Send(&v1.SyncResponse{
 		Message: &v1.SyncResponse_JournalEntry{JournalEntry: entry},
