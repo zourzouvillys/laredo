@@ -1008,9 +1008,10 @@ func TestRowKey(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := rowKey(tt.row)
+			c := &Client{}
+			got := c.rowKeyLocked(tt.row)
 			if got != tt.want {
-				t.Errorf("rowKey(%v) = %q, want %q", tt.row, got, tt.want)
+				t.Errorf("rowKeyLocked(%v) = %q, want %q", tt.row, got, tt.want)
 			}
 		})
 	}

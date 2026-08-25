@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -37,9 +38,25 @@ type Client struct {
 	// is what the client resumes from when failing over to another instance.
 	lastSourcePosition string
 	lastReceived       time.Time
-	listener           func(old, new laredo.Row)
-	posListener        func(old, new laredo.Row, position string)
 	columns            []laredo.ColumnDefinition
+
+	// Listeners are keyed by id so that several may coexist and each
+	// unsubscribe removes only its own. A single field meant a second
+	// subscriber silently replaced the first, and the first's unsubscribe
+	// then removed the second's.
+	listeners      map[uint64]func(old, new laredo.Row)
+	posListeners   map[uint64]func(old, new laredo.Row, position string)
+	snapListeners  map[uint64]func(rows map[string]laredo.Row, position string)
+	nextListenerID uint64
+
+	// pkColumns is the primary key as declared in the handshake, in ordinal
+	// order. It is how a row's identity is derived; see (*Client).rowKey.
+	pkColumns []string
+
+	// pending accumulates a snapshot in progress. Rows are applied here and
+	// swapped into store as one assignment at SnapshotEnd, so a reader never
+	// observes the replica empty or half-filled.
+	pending map[string]laredo.Row
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -218,31 +235,70 @@ func (c *Client) Count() int {
 	return len(c.store)
 }
 
-// Listen registers a change listener. For inserts, old is nil.
-// For deletes, new is nil. Returns an unsubscribe function.
+// Listen registers a change listener. For inserts, old is nil. For deletes,
+// new is nil. Returns an unsubscribe function that removes only this listener.
+//
+// The callback runs after the client has released its lock, so it may read
+// the client freely — Get, All and Count are all safe from inside it. It still
+// runs on the stream goroutine, so blocking in it stalls replication.
 func (c *Client) Listen(fn func(old, new laredo.Row)) func() {
 	c.mu.Lock()
-	c.listener = fn
+	id := c.nextListenerID
+	c.nextListenerID++
+	if c.listeners == nil {
+		c.listeners = make(map[uint64]func(old, new laredo.Row))
+	}
+	c.listeners[id] = fn
 	c.mu.Unlock()
 	return func() {
 		c.mu.Lock()
-		c.listener = nil
+		delete(c.listeners, id)
+		c.mu.Unlock()
+	}
+}
+
+// OnSnapshotComplete registers a callback fired once a full snapshot has been
+// received and installed, with the complete row set and the source position it
+// corresponds to.
+//
+// A consumer maintaining derived state needs this: a re-snapshot replaces the
+// whole replica, and reporting it as a stream of individual changes would be
+// both misleading and enormous. Between SnapshotBegin and SnapshotEnd the
+// client keeps serving the previous contents, so this callback is the point at
+// which the new state becomes visible.
+func (c *Client) OnSnapshotComplete(fn func(rows map[string]laredo.Row, position string)) func() {
+	c.mu.Lock()
+	id := c.nextListenerID
+	c.nextListenerID++
+	if c.snapListeners == nil {
+		c.snapListeners = make(map[uint64]func(rows map[string]laredo.Row, position string))
+	}
+	c.snapListeners[id] = fn
+	c.mu.Unlock()
+	return func() {
+		c.mu.Lock()
+		delete(c.snapListeners, id)
 		c.mu.Unlock()
 	}
 }
 
 // ListenWithPosition registers a change listener that also receives the source
 // position (e.g. WAL LSN) of each change. Conventions match Listen (insert →
-// old nil; delete → new nil; truncate → both nil). The callback runs while the
-// client holds its lock, so it must not block or call back into the client.
-// Returns an unsubscribe function.
+// old nil; delete → new nil; truncate → both nil), including that the callback
+// runs after the lock is released. Returns an unsubscribe function that removes
+// only this listener.
 func (c *Client) ListenWithPosition(fn func(old, new laredo.Row, position string)) func() {
 	c.mu.Lock()
-	c.posListener = fn
+	id := c.nextListenerID
+	c.nextListenerID++
+	if c.posListeners == nil {
+		c.posListeners = make(map[uint64]func(old, new laredo.Row, position string))
+	}
+	c.posListeners[id] = fn
 	c.mu.Unlock()
 	return func() {
 		c.mu.Lock()
-		c.posListener = nil
+		delete(c.posListeners, id)
 		c.mu.Unlock()
 	}
 }
@@ -256,6 +312,28 @@ func (c *Client) Columns() []laredo.ColumnDefinition {
 }
 
 // columnsFromProto converts replication column definitions to laredo's.
+// primaryKeyColumns returns the declared primary-key column names in
+// primary-key ordinal order, which is the order the server joins them in when
+// it builds a row's key. Empty when the table declares no key.
+func primaryKeyColumns(cols []*v1.ColumnDefinition) []string {
+	type pk struct {
+		name    string
+		ordinal int
+	}
+	var keys []pk
+	for _, col := range cols {
+		if col.GetIsPrimaryKey() {
+			keys = append(keys, pk{col.GetColumnName(), int(col.GetPrimaryKeyOrdinal())})
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i].ordinal < keys[j].ordinal })
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		out[i] = k.name
+	}
+	return out
+}
+
 func columnsFromProto(cols []*v1.ColumnDefinition) []laredo.ColumnDefinition {
 	out := make([]laredo.ColumnDefinition, len(cols))
 	for i, col := range cols {
@@ -551,34 +629,58 @@ func (c *Client) applyMessage(msg *v1.SyncResponse) (goAway bool) {
 		if cols := m.Handshake.GetColumns(); len(cols) > 0 {
 			c.mu.Lock()
 			c.columns = columnsFromProto(cols)
+			c.pkColumns = primaryKeyColumns(cols)
 			c.mu.Unlock()
 		}
 
 	case *v1.SyncResponse_SnapshotBegin:
-		// Clear local state for full snapshot. The source position is reset; it
-		// is repopulated from subsequent journal entries.
+		// Start accumulating into a fresh map rather than clearing the live
+		// one. A re-snapshot on reconnect used to wipe the replica in place
+		// while ready stayed true, so AwaitReady kept passing and concurrent
+		// readers saw the table empty and then refill row by row.
 		c.mu.Lock()
-		c.store = make(map[string]laredo.Row)
-		c.clearIndexes()
+		c.pending = make(map[string]laredo.Row, len(c.store))
 		c.lastSnapshotID = m.SnapshotBegin.GetSnapshotId()
-		c.lastSourcePosition = ""
 		c.mu.Unlock()
 
 	case *v1.SyncResponse_SnapshotRow:
 		if m.SnapshotRow.GetRow() != nil {
 			row := laredo.Row(m.SnapshotRow.GetRow().AsMap())
-			key := rowKey(row)
 			c.mu.Lock()
-			c.store[key] = row
-			c.addToIndexes(key, row)
+			if c.pending == nil {
+				// A row outside a Begin/End pair; tolerate it rather than
+				// panicking, treating it as the start of a snapshot.
+				c.pending = make(map[string]laredo.Row)
+			}
+			c.pending[c.rowKeyLocked(row)] = row
 			c.mu.Unlock()
 		}
 
 	case *v1.SyncResponse_SnapshotEnd:
 		c.mu.Lock()
+		if c.pending != nil {
+			c.store = c.pending
+			c.pending = nil
+			c.rebuildIndexes()
+			// The snapshot supersedes any position carried over from a
+			// previous connection; subsequent journal entries repopulate it.
+			c.lastSourcePosition = ""
+		}
 		c.ready = true
 		c.lastSeq = m.SnapshotEnd.GetSequence()
+		rows := make(map[string]laredo.Row, len(c.store))
+		for k, v := range c.store {
+			rows[k] = v
+		}
+		pos := c.lastSourcePosition
+		snapFns := make([]func(map[string]laredo.Row, string), 0, len(c.snapListeners))
+		for _, fn := range c.snapListeners {
+			snapFns = append(snapFns, fn)
+		}
 		c.mu.Unlock()
+		for _, fn := range snapFns {
+			fn(rows, pos)
+		}
 
 	case *v1.SyncResponse_JournalEntry:
 		c.applyJournalEntry(m.JournalEntry)
@@ -605,8 +707,14 @@ func (c *Client) touch() {
 }
 
 func (c *Client) applyJournalEntry(entry *v1.ReplicationJournalEntry) {
+	// notifyOld/notifyNew describe the change to hand to listeners once the
+	// lock is released. Calling them while holding c.mu deadlocked any
+	// listener that read the client back, because sync.RWMutex is not
+	// reentrant and the accessors all take RLock.
+	var notifyOld, notifyNew laredo.Row
+	var notifyDo bool
+
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	c.lastSeq = entry.GetSequence()
 	if pos := entry.GetSourcePosition(); pos != "" {
@@ -617,63 +725,106 @@ func (c *Client) applyJournalEntry(entry *v1.ReplicationJournalEntry) {
 	case "INSERT":
 		if entry.GetNewValues() != nil {
 			row := laredo.Row(entry.GetNewValues().AsMap())
-			key := rowKey(row)
+			key := c.rowKeyLocked(row)
 			c.store[key] = row
 			c.addToIndexes(key, row)
-			c.notify(nil, row)
+			notifyOld, notifyNew, notifyDo = nil, row, true
 		}
 	case "UPDATE":
 		if entry.GetNewValues() != nil {
 			row := laredo.Row(entry.GetNewValues().AsMap())
-			key := rowKey(row)
+			key := c.rowKeyLocked(row)
 			old := c.store[key]
 			if old != nil {
 				c.removeFromIndexes(key, old)
 			}
 			c.store[key] = row
 			c.addToIndexes(key, row)
-			c.notify(old, row)
+			notifyOld, notifyNew, notifyDo = old, row, true
 		}
 	case "DELETE":
 		if entry.GetOldValues() != nil {
 			row := laredo.Row(entry.GetOldValues().AsMap())
-			key := rowKey(row)
+			key := c.rowKeyLocked(row)
 			old := c.store[key]
 			if old != nil {
 				c.removeFromIndexes(key, old)
 			}
 			delete(c.store, key)
-			c.notify(old, nil)
+			notifyOld, notifyNew, notifyDo = old, nil, true
 		}
 	case "TRUNCATE":
 		c.store = make(map[string]laredo.Row)
 		c.clearIndexes()
-		c.notify(nil, nil)
+		notifyOld, notifyNew, notifyDo = nil, nil, true
 	}
 
 	// Mark ready after first journal entry if not already ready (delta mode).
 	if !c.ready {
 		c.ready = true
 	}
+
+	// Copy the listener sets and the position before unlocking, so the
+	// delivery below is not racing a concurrent Listen or unsubscribe.
+	pos := c.lastSourcePosition
+	var fns []func(laredo.Row, laredo.Row)
+	var posFns []func(laredo.Row, laredo.Row, string)
+	if notifyDo {
+		fns = make([]func(laredo.Row, laredo.Row), 0, len(c.listeners))
+		for _, fn := range c.listeners {
+			fns = append(fns, fn)
+		}
+		posFns = make([]func(laredo.Row, laredo.Row, string), 0, len(c.posListeners))
+		for _, fn := range c.posListeners {
+			posFns = append(posFns, fn)
+		}
+	}
+	c.mu.Unlock()
+
+	for _, fn := range fns {
+		fn(notifyOld, notifyNew)
+	}
+	for _, fn := range posFns {
+		fn(notifyOld, notifyNew, pos)
+	}
 }
 
-func (c *Client) notify(old, new laredo.Row) {
-	if c.listener != nil {
-		c.listener(old, new)
+// rowKeyLocked derives a row's identity. Caller must hold c.mu.
+//
+// The key must match how the server identifies the row, which is by the
+// primary-key columns it declares in the handshake. Assuming a column called
+// "id" was wrong for every table keyed on anything else: the fallback below
+// stringifies the whole row, so any column changing produced a *different*
+// key and an UPDATE inserted a duplicate instead of replacing the original.
+func (c *Client) rowKeyLocked(row laredo.Row) string {
+	if len(c.pkColumns) > 0 {
+		if len(c.pkColumns) == 1 {
+			return fmt.Sprintf("%v", row[c.pkColumns[0]])
+		}
+		key := ""
+		for i, col := range c.pkColumns {
+			if i > 0 {
+				key += "\x00"
+			}
+			key += fmt.Sprintf("%v", row[col])
+		}
+		return key
 	}
-	if c.posListener != nil {
-		// Called under c.mu from applyJournalEntry, where lastSourcePosition is
-		// already the position of this change.
-		c.posListener(old, new, c.lastSourcePosition)
-	}
-}
-
-func rowKey(row laredo.Row) string {
+	// No declared key (an older server, or a table without one): fall back to
+	// a conventional "id", then to the whole row.
 	if id, ok := row["id"]; ok {
 		return fmt.Sprintf("%v", id)
 	}
-	// Fallback: use all values concatenated.
 	return fmt.Sprintf("%v", row)
+}
+
+// rebuildIndexes recomputes every secondary index from the current store.
+// Caller must hold c.mu.
+func (c *Client) rebuildIndexes() {
+	c.clearIndexes()
+	for k, row := range c.store {
+		c.addToIndexes(k, row)
+	}
 }
 
 // addToIndexes adds a row to all secondary indexes. Caller must hold c.mu.
