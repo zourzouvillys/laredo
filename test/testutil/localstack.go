@@ -20,9 +20,9 @@ import (
 // LocalStackContainer holds a running LocalStack testcontainer with
 // pre-configured AWS SDK clients for S3 and Kinesis.
 type LocalStackContainer struct {
-	Container *localstack.LocalStackContainer
-	Endpoint  string
-	S3Client  *s3.Client
+	Container     *localstack.LocalStackContainer
+	Endpoint      string
+	S3Client      *s3.Client
 	KinesisClient *kinesis.Client
 }
 

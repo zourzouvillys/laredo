@@ -213,7 +213,7 @@ func TestS3_SnapshotStorePattern(t *testing.T) {
 	dataResp, err := ls.S3Client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String("laredo-snapshots"),
 		Key:    aws.String(prefix + "public.users.jsonl"),
-		})
+	})
 	if err != nil {
 		t.Fatalf("GetObject data: %v", err)
 	}

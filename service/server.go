@@ -11,12 +11,17 @@ import (
 	"sync"
 	"time"
 
+	"connectrpc.com/connect"
+
 	"github.com/zourzouvillys/laredo/gen/laredo/replication/v1/replicationv1connect"
 	"github.com/zourzouvillys/laredo/gen/laredo/v1/laredov1connect"
 )
 
 // Server hosts OAM and Query services over Connect-RPC (HTTP/2 + HTTP/1.1).
 type Server struct {
+	// tlsErr records a certificate that failed to load, surfaced by Start.
+	tlsErr error
+
 	httpServer *http.Server
 	mux        *http.ServeMux
 	addr       string
@@ -26,6 +31,9 @@ type Server struct {
 	listener net.Listener
 }
 
+// maxRequestBytes bounds a single request body.
+const maxRequestBytes = 4 << 20
+
 // Option configures the server.
 type Option func(*serverConfig)
 
@@ -34,6 +42,7 @@ type serverConfig struct {
 	oamHandler         laredov1connect.LaredoOAMServiceHandler
 	queryHandler       laredov1connect.LaredoQueryServiceHandler
 	replicationHandler replicationv1connect.LaredoReplicationServiceHandler
+	authorizer         Authorizer
 	tlsCertFile        string
 	tlsKeyFile         string
 }
@@ -68,6 +77,13 @@ func EnableReplication(handler replicationv1connect.LaredoReplicationServiceHand
 	}
 }
 
+// WithAuthorizer installs an Authorizer, consulted for every inbound request
+// on every service this server hosts. Without one the server authorizes
+// nothing, which is what it did before this existed.
+func WithAuthorizer(a Authorizer) Option {
+	return func(c *serverConfig) { c.authorizer = a }
+}
+
 // WithTLS enables TLS with the given certificate and key files.
 func WithTLS(certFile, keyFile string) Option {
 	return func(c *serverConfig) {
@@ -87,18 +103,28 @@ func New(opts ...Option) *Server {
 
 	mux := http.NewServeMux()
 
+	// Connect imposes no read limit of its own, and the replication service
+	// accepts a client-supplied filter list, so an unbounded request body was
+	// reachable before any handler ran.
+	handlerOpts := []connect.HandlerOption{
+		connect.WithReadMaxBytes(maxRequestBytes),
+	}
+	if cfg.authorizer != nil {
+		handlerOpts = append(handlerOpts, connect.WithInterceptors(authInterceptor(cfg.authorizer)))
+	}
+
 	if cfg.oamHandler != nil {
-		path, handler := laredov1connect.NewLaredoOAMServiceHandler(cfg.oamHandler)
+		path, handler := laredov1connect.NewLaredoOAMServiceHandler(cfg.oamHandler, handlerOpts...)
 		mux.Handle(path, handler)
 	}
 
 	if cfg.queryHandler != nil {
-		path, handler := laredov1connect.NewLaredoQueryServiceHandler(cfg.queryHandler)
+		path, handler := laredov1connect.NewLaredoQueryServiceHandler(cfg.queryHandler, handlerOpts...)
 		mux.Handle(path, handler)
 	}
 
 	if cfg.replicationHandler != nil {
-		path, handler := replicationv1connect.NewLaredoReplicationServiceHandler(cfg.replicationHandler)
+		path, handler := replicationv1connect.NewLaredoReplicationServiceHandler(cfg.replicationHandler, handlerOpts...)
 		mux.Handle(path, handler)
 	}
 
@@ -106,15 +132,30 @@ func New(opts ...Option) *Server {
 		mux:  mux,
 		addr: cfg.addr,
 		httpServer: &http.Server{
-			Handler:           mux,
+			Handler: mux,
+			// Unencrypted HTTP/2 as well as HTTP/1.1. Connect's bidirectional
+			// streaming — which the replication Sync call needs in order to
+			// carry client acknowledgements — is HTTP/2 only, and a plaintext
+			// listener otherwise negotiates HTTP/1.1.
+			Protocols:         unencryptedHTTP2(),
 			ReadHeaderTimeout: 10 * time.Second,
+			// No write or idle timeout: the replication and Query streams are
+			// long-lived by design and either would cut them. ReadTimeout is
+			// likewise unset because a bidirectional stream reads for as long
+			// as it runs; the body size cap above is what bounds a request.
+			MaxHeaderBytes: 1 << 20,
 		},
 	}
 
-	// Configure TLS if cert and key are provided.
+	// Configure TLS if cert and key are provided. A load failure is recorded
+	// and surfaced by Start: swallowing it meant a typo in a certificate path
+	// silently started the server in plaintext, which is the one failure mode
+	// a TLS option must never have.
 	if cfg.tlsCertFile != "" && cfg.tlsKeyFile != "" {
 		cert, err := tls.LoadX509KeyPair(cfg.tlsCertFile, cfg.tlsKeyFile)
-		if err == nil {
+		if err != nil {
+			srv.tlsErr = fmt.Errorf("load TLS key pair (%s, %s): %w", cfg.tlsCertFile, cfg.tlsKeyFile, err)
+		} else {
 			srv.tlsConfig = &tls.Config{
 				Certificates: []tls.Certificate{cert},
 				MinVersion:   tls.VersionTLS12,
@@ -129,6 +170,9 @@ func New(opts ...Option) *Server {
 // Start begins listening and serving. It blocks until the server is stopped
 // or an error occurs during listen.
 func (s *Server) Start() error {
+	if s.tlsErr != nil {
+		return s.tlsErr
+	}
 	var lc net.ListenConfig
 	ln, err := lc.Listen(context.Background(), "tcp", s.addr)
 	if err != nil {
@@ -171,4 +215,14 @@ func (s *Server) IsTLS() bool {
 // waits for in-flight requests to complete (up to the context deadline).
 func (s *Server) Stop(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
+}
+
+// unencryptedHTTP2 permits HTTP/1.1, HTTP/2 over TLS, and HTTP/2 over a
+// plaintext connection.
+func unencryptedHTTP2() *http.Protocols {
+	p := new(http.Protocols)
+	p.SetHTTP1(true)
+	p.SetHTTP2(true)
+	p.SetUnencryptedHTTP2(true)
+	return p
 }

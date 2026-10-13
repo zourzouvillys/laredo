@@ -109,11 +109,11 @@ func startColdService(t *testing.T, dir string, journalMax int) (replicationv1co
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: mux, Protocols: testProtocols(), ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = srv.Serve(listener) }()
 	t.Cleanup(func() { _ = srv.Close() })
 
-	client := replicationv1connect.NewLaredoReplicationServiceClient(http.DefaultClient, "http://"+listener.Addr().String())
+	client := replicationv1connect.NewLaredoReplicationServiceClient(testH2CClient(), "http://"+listener.Addr().String(), connect.WithGRPC())
 	return client, ft, src, tbl
 }
 
@@ -126,11 +126,15 @@ type coldResult struct {
 	sawSnapBegin bool
 }
 
-func drainColdSync(t *testing.T, stream *connect.ServerStreamForClient[v1.SyncResponse], wantJournal int) coldResult {
+func drainColdSync(t *testing.T, stream *connect.BidiStreamForClient[v1.SyncClientMessage, v1.SyncResponse], wantJournal int) coldResult {
 	t.Helper()
 	var r coldResult
-	for stream.Receive() {
-		switch m := stream.Msg().GetMessage().(type) {
+	for {
+		msg, rerr := stream.Receive()
+		if rerr != nil {
+			break
+		}
+		switch m := msg.GetMessage().(type) {
 		case *v1.SyncResponse_Handshake:
 			r.mode = m.Handshake.GetMode()
 		case *v1.SyncResponse_SnapshotBegin:
@@ -164,13 +168,15 @@ func TestSync_ColdTierReplay_SnapshotBase(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stream, err := client.Sync(ctx, connect.NewRequest(&v1.SyncRequest{
-		Schema:                  tbl.Schema,
-		Table:                   tbl.Table,
-		ClientId:                "stale-snapbase",
-		LastKnownSourcePosition: "0", // predates the archive's first diff boundary → snapshot-base
-	}))
-	if err != nil {
+	stream := client.Sync(ctx)
+	if err := stream.Send(&v1.SyncClientMessage{Message: &v1.SyncClientMessage_Start{
+		Start: &v1.SyncStart{
+			Schema:                  tbl.Schema,
+			Table:                   tbl.Table,
+			ClientId:                "stale-snapbase",
+			LastKnownSourcePosition: "0", // predates the archive's first diff boundary → snapshot-base
+		},
+	}}); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 
@@ -200,13 +206,15 @@ func TestSync_ColdTierReplay_DiffOnly(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stream, err := client.Sync(ctx, connect.NewRequest(&v1.SyncRequest{
-		Schema:                  tbl.Schema,
-		Table:                   tbl.Table,
-		ClientId:                "stale-diffonly",
-		LastKnownSourcePosition: "1", // exactly the diff's from-position → diff-only
-	}))
-	if err != nil {
+	stream := client.Sync(ctx)
+	if err := stream.Send(&v1.SyncClientMessage{Message: &v1.SyncClientMessage_Start{
+		Start: &v1.SyncStart{
+			Schema:                  tbl.Schema,
+			Table:                   tbl.Table,
+			ClientId:                "stale-diffonly",
+			LastKnownSourcePosition: "1", // exactly the diff's from-position → diff-only
+		},
+	}}); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 
@@ -238,20 +246,26 @@ func TestSync_ColdTierReplay_GapFallsBackToFullSnapshot(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stream, err := client.Sync(ctx, connect.NewRequest(&v1.SyncRequest{
-		Schema:                  tbl.Schema,
-		Table:                   tbl.Table,
-		ClientId:                "gap",
-		LastKnownSourcePosition: "0",
-	}))
-	if err != nil {
+	stream := client.Sync(ctx)
+	if err := stream.Send(&v1.SyncClientMessage{Message: &v1.SyncClientMessage_Start{
+		Start: &v1.SyncStart{
+			Schema:                  tbl.Schema,
+			Table:                   tbl.Table,
+			ClientId:                "gap",
+			LastKnownSourcePosition: "0",
+		},
+	}}); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 
 	var mode v1.SyncMode
 	var sawSnapshot bool
-	for stream.Receive() {
-		switch m := stream.Msg().GetMessage().(type) {
+	for {
+		msg, rerr := stream.Receive()
+		if rerr != nil {
+			break
+		}
+		switch m := msg.GetMessage().(type) {
 		case *v1.SyncResponse_Handshake:
 			mode = m.Handshake.GetMode()
 		case *v1.SyncResponse_SnapshotBegin:

@@ -73,7 +73,7 @@ func startUpstream(t *testing.T) (string, *testsource.Source, laredo.TableIdenti
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: mux, Protocols: testProtocols(), ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(func() { _ = srv.Close() })
 

@@ -55,13 +55,16 @@ func startReplService(t *testing.T) (replicationv1connect.LaredoReplicationServi
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: mux, Protocols: testProtocols(), ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = srv.Serve(listener) }()
 	t.Cleanup(func() { _ = srv.Close() })
 
-	client := replicationv1connect.NewLaredoReplicationServiceClient(http.DefaultClient, "http://"+listener.Addr().String())
+	client := replicationv1connect.NewLaredoReplicationServiceClient(testH2CClient(), "http://"+listener.Addr().String(), connect.WithGRPC())
 	return client, ft, src
 }
+
+// wantAlice is the baseline row name asserted by several tests.
+const wantAlice = "alice"
 
 // waitJournalSeq blocks until the fan-out journal reaches at least seq.
 func waitJournalSeq(t *testing.T, ft *fanout.Target, seq int64) {
@@ -89,21 +92,27 @@ func TestSync_ResumeBySourcePosition(t *testing.T) {
 	defer cancel()
 
 	// Resume as if we already applied up to source position "2" (the insert).
-	stream, err := client.Sync(ctx, connect.NewRequest(&v1.SyncRequest{
-		Schema:                  tbl.Schema,
-		Table:                   tbl.Table,
-		ClientId:                "resume-by-pos",
-		LastKnownSourcePosition: "2",
-	}))
-	if err != nil {
+	stream := client.Sync(ctx)
+	if err := stream.Send(&v1.SyncClientMessage{Message: &v1.SyncClientMessage_Start{
+		Start: &v1.SyncStart{
+			Schema:                  tbl.Schema,
+			Table:                   tbl.Table,
+			ClientId:                "resume-by-pos",
+			LastKnownSourcePosition: "2",
+		},
+	}}); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 
 	var mode v1.SyncMode
 	var sawSnapshot bool
 	var deltaPos string
-	for stream.Receive() {
-		switch m := stream.Msg().GetMessage().(type) {
+	for {
+		msg, rerr := stream.Receive()
+		if rerr != nil {
+			break
+		}
+		switch m := msg.GetMessage().(type) {
 		case *v1.SyncResponse_Handshake:
 			mode = m.Handshake.GetMode()
 		case *v1.SyncResponse_SnapshotBegin:
@@ -137,20 +146,26 @@ func TestSync_TooOldPositionFallsBackToSnapshot(t *testing.T) {
 	defer cancel()
 
 	// Position "0" predates the oldest retained entry (baseline position is 1).
-	stream, err := client.Sync(ctx, connect.NewRequest(&v1.SyncRequest{
-		Schema:                  tbl.Schema,
-		Table:                   tbl.Table,
-		ClientId:                "too-old",
-		LastKnownSourcePosition: "0",
-	}))
-	if err != nil {
+	stream := client.Sync(ctx)
+	if err := stream.Send(&v1.SyncClientMessage{Message: &v1.SyncClientMessage_Start{
+		Start: &v1.SyncStart{
+			Schema:                  tbl.Schema,
+			Table:                   tbl.Table,
+			ClientId:                "too-old",
+			LastKnownSourcePosition: "0",
+		},
+	}}); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 
 	var mode v1.SyncMode
 	var sawSnapshotBegin bool
-	for stream.Receive() {
-		switch m := stream.Msg().GetMessage().(type) {
+	for {
+		msg, rerr := stream.Receive()
+		if rerr != nil {
+			break
+		}
+		switch m := msg.GetMessage().(type) {
 		case *v1.SyncResponse_Handshake:
 			mode = m.Handshake.GetMode()
 		case *v1.SyncResponse_SnapshotBegin:
@@ -178,19 +193,25 @@ func TestSync_DrainSendsGoAway(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	stream, err := client.Sync(ctx, connect.NewRequest(&v1.SyncRequest{
-		Schema:   tbl.Schema,
-		Table:    tbl.Table,
-		ClientId: "drain-me",
-	}))
-	if err != nil {
+	stream := client.Sync(ctx)
+	if err := stream.Send(&v1.SyncClientMessage{Message: &v1.SyncClientMessage_Start{
+		Start: &v1.SyncStart{
+			Schema:   tbl.Schema,
+			Table:    tbl.Table,
+			ClientId: "drain-me",
+		},
+	}}); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 
 	goAway := make(chan string, 1)
 	go func() {
-		for stream.Receive() {
-			if ga := stream.Msg().GetGoAway(); ga != nil {
+		for {
+			msg, rerr := stream.Receive()
+			if rerr != nil {
+				break
+			}
+			if ga := msg.GetGoAway(); ga != nil {
 				goAway <- ga.GetReason()
 				return
 			}
@@ -222,13 +243,15 @@ func TestSync_SubscriptionFilter(t *testing.T) {
 	defer cancel()
 
 	// Filter on name prefix "a": baseline alice matches, bob does not.
-	stream, err := client.Sync(ctx, connect.NewRequest(&v1.SyncRequest{
-		Schema:   tbl.Schema,
-		Table:    tbl.Table,
-		ClientId: "filtered",
-		Filters:  []*v1.FieldPredicate{prefixPred("name", "a")},
-	}))
-	if err != nil {
+	stream := client.Sync(ctx)
+	if err := stream.Send(&v1.SyncClientMessage{Message: &v1.SyncClientMessage_Start{
+		Start: &v1.SyncStart{
+			Schema:   tbl.Schema,
+			Table:    tbl.Table,
+			ClientId: "filtered",
+			Filters:  []*v1.FieldPredicate{prefixPred("name", "a")},
+		},
+	}}); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 
@@ -237,8 +260,12 @@ func TestSync_SubscriptionFilter(t *testing.T) {
 	var changesEmitted bool
 	var firstChangeName string
 
-	for stream.Receive() {
-		switch m := stream.Msg().GetMessage().(type) {
+	for {
+		msg, rerr := stream.Receive()
+		if rerr != nil {
+			break
+		}
+		switch m := msg.GetMessage().(type) {
 		case *v1.SyncResponse_SnapshotBegin:
 			snapshotRowCount = m.SnapshotBegin.GetRowCount()
 		case *v1.SyncResponse_SnapshotRow:
@@ -269,7 +296,7 @@ func TestSync_SubscriptionFilter(t *testing.T) {
 	if snapshotRowCount != 1 {
 		t.Fatalf("SnapshotBegin.RowCount = %d, want 1 (only the filtered row)", snapshotRowCount)
 	}
-	if len(snapshotNames) != 1 || snapshotNames[0] != "alice" {
+	if len(snapshotNames) != 1 || snapshotNames[0] != wantAlice {
 		t.Fatalf("snapshot rows = %v, want [alice]", snapshotNames)
 	}
 	if firstChangeName != "anna" {
