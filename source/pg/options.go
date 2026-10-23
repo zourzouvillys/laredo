@@ -56,6 +56,34 @@ type ReconnectConfig struct {
 	Multiplier     float64
 }
 
+// withDefaults fills any zero field with its default, so a partial
+// Reconnect(...) option keeps the defaults for the fields it leaves out.
+func (r ReconnectConfig) withDefaults() ReconnectConfig {
+	d := defaultConfig().reconnect
+	if r.MaxAttempts == 0 {
+		r.MaxAttempts = d.MaxAttempts
+	}
+	if r.InitialBackoff == 0 {
+		r.InitialBackoff = d.InitialBackoff
+	}
+	if r.MaxBackoff == 0 {
+		r.MaxBackoff = d.MaxBackoff
+	}
+	if r.Multiplier == 0 {
+		r.Multiplier = d.Multiplier
+	}
+	return r
+}
+
+// grow returns the backoff to wait after b, capped at MaxBackoff.
+func (r ReconnectConfig) grow(b time.Duration) time.Duration {
+	b = time.Duration(float64(b) * r.Multiplier)
+	if b > r.MaxBackoff {
+		b = r.MaxBackoff
+	}
+	return b
+}
+
 // BeforeConnectHook is invoked immediately before each PostgreSQL connection
 // is established. It receives the parsed *pgconn.Config and may mutate it —
 // typically to compute a short-lived password (for example an AWS RDS IAM

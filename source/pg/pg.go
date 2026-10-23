@@ -317,10 +317,8 @@ func (s *Source) Stream(ctx context.Context, from laredo.Position, handler lared
 		pubName = s.cfg.publication.Name
 	}
 
-	backoff := s.cfg.reconnect.InitialBackoff
-	if backoff == 0 {
-		backoff = 1 * time.Second
-	}
+	rc := s.cfg.reconnect.withDefaults()
+	backoff := rc.InitialBackoff
 
 	for attempt := 0; ; attempt++ {
 		s.setState(laredo.SourceStreaming)
@@ -335,17 +333,26 @@ func (s *Source) Stream(ctx context.Context, from laredo.Position, handler lared
 			return nil
 		}
 
-		// In ephemeral mode, the temporary slot is gone — signal re-baseline.
+		// In ephemeral mode the temporary slot died with the connection that
+		// owned it, so there is no position to resume from. Replace the slot,
+		// then signal re-baseline: the engine's re-baseline copies at the new
+		// slot's exported snapshot (see Baseline) and streams on from its
+		// consistent point.
+		//
+		// Signalling re-baseline WITHOUT replacing the slot sends the engine
+		// round a loop it never leaves: the copy succeeds on the query
+		// connection, StartReplication fails at once on the dead replication
+		// connection, and the engine re-baselines again.
 		if s.cfg.slotMode == SlotEphemeral {
-			s.setState(laredo.SourceError)
-			return fmt.Errorf("pg source (ephemeral): %w", laredo.ErrReBaselineRequired)
+			if rerr := s.replaceEphemeralSlot(ctx, rc); rerr != nil {
+				s.setState(laredo.SourceError)
+				return fmt.Errorf("pg source (ephemeral): stream failed (%w) and the slot could not be replaced: %w", err, rerr)
+			}
+			return fmt.Errorf("pg source (ephemeral): %w: %w", laredo.ErrReBaselineRequired, err)
 		}
 
 		// Check if we've exhausted reconnect attempts.
-		maxAttempts := s.cfg.reconnect.MaxAttempts
-		if maxAttempts == 0 {
-			maxAttempts = 10
-		}
+		maxAttempts := rc.MaxAttempts
 		if attempt >= maxAttempts {
 			s.setState(laredo.SourceError)
 			return fmt.Errorf("pg source: exhausted %d reconnect attempts: %w", maxAttempts, err)
@@ -366,20 +373,57 @@ func (s *Source) Stream(ctx context.Context, from laredo.Position, handler lared
 			continue
 		}
 
-		// Grow backoff.
-		multiplier := s.cfg.reconnect.Multiplier
-		if multiplier == 0 {
-			multiplier = 2.0
+		backoff = rc.grow(backoff)
+	}
+}
+
+// replaceEphemeralSlot recovers an ephemeral source whose replication
+// connection was lost. It reopens the replication connection (and the query
+// connection, if whatever dropped the one dropped the other), creates a new
+// temporary slot under the same name, and records the slot's consistent point
+// and exported snapshot for the next Baseline.
+//
+// The first attempt is immediate; later ones back off on the source's
+// reconnect schedule, and it gives up after the same number of attempts a
+// stateful reconnect does.
+func (s *Source) replaceEphemeralSlot(ctx context.Context, rc ReconnectConfig) error {
+	backoff := rc.InitialBackoff
+	var lastErr error
+	for attempt := 0; attempt <= rc.MaxAttempts; attempt++ {
+		s.setState(laredo.SourceReconnecting)
+		_ = s.repl.close(ctx)
+
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+			backoff = rc.grow(backoff)
 		}
-		backoff = time.Duration(float64(backoff) * multiplier)
-		maxBackoff := s.cfg.reconnect.MaxBackoff
-		if maxBackoff == 0 {
-			maxBackoff = 30 * time.Second
-		}
-		if backoff > maxBackoff {
-			backoff = maxBackoff
+
+		if lastErr = s.openEphemeralSlot(ctx); lastErr == nil {
+			return nil
 		}
 	}
+	return fmt.Errorf("exhausted %d attempts: %w", rc.MaxAttempts, lastErr)
+}
+
+// openEphemeralSlot is one attempt of replaceEphemeralSlot.
+func (s *Source) openEphemeralSlot(ctx context.Context) error {
+	if err := s.conn.ensureOpen(ctx); err != nil {
+		return err
+	}
+	if err := s.repl.connect(ctx); err != nil {
+		return err
+	}
+	lsn, snapshot, err := s.repl.createSlot(ctx, s.cfg.slotName, true)
+	if err != nil {
+		return err
+	}
+	s.slotLSN = lsn
+	s.slotSnapshot = snapshot
+	return nil
 }
 
 // Ack confirms that changes up to this position have been durably processed.

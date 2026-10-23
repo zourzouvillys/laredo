@@ -44,6 +44,19 @@ func (cm *connManager) connect(ctx context.Context) error {
 	return nil
 }
 
+// ensureOpen reconnects the query connection if it is closed or no longer
+// answers. A re-baseline after a lost replication connection runs on this
+// connection, and whatever dropped the one may well have dropped the other.
+func (cm *connManager) ensureOpen(ctx context.Context) error {
+	if cm.queryConn != nil && !cm.queryConn.IsClosed() {
+		if err := cm.queryConn.Ping(ctx); err == nil {
+			return nil
+		}
+		_ = cm.queryConn.Close(ctx)
+	}
+	return cm.connect(ctx)
+}
+
 // close closes all open connections.
 func (cm *connManager) close(ctx context.Context) error {
 	if cm.queryConn != nil {
