@@ -22,11 +22,12 @@ type Source struct {
 	repl         replicationManager
 	schemas      map[laredo.TableIdentifier][]laredo.ColumnDefinition
 	tables       []laredo.TableIdentifier
-	slotLSN      LSN    // LSN from slot creation (consistent point) or reused slot's confirmed flush
-	slotSnapshot string // exported snapshot name from a freshly created slot ("" if none/reused)
-	slotExisted  bool   // true if we reused an existing slot (stateful resume)
-	slotLost     bool   // ephemeral: the temporary slot died with its connection; Baseline replaces it
-	lostInARow   int    // ephemeral: slots lost in a row, none streaming for stableStream before failing
+	slotLSN      LSN       // LSN from slot creation (consistent point) or reused slot's confirmed flush
+	slotSnapshot string    // exported snapshot name from a freshly created slot ("" if none/reused)
+	slotExisted  bool      // true if we reused an existing slot (stateful resume)
+	slotLost     bool      // ephemeral: the temporary slot died with its connection; Baseline replaces it
+	lostInARow   int       // ephemeral: slots lost in a row, each within lossWindow of the one before
+	lastLoss     time.Time // ephemeral: when the slot was last lost
 
 	mu    sync.Mutex
 	state laredo.SourceState
@@ -55,6 +56,10 @@ var _ laredo.SyncSource = (*Source)(nil)
 //nolint:revive // implements SyncSource.
 func (s *Source) Init(ctx context.Context, config laredo.SourceConfig) (map[laredo.TableIdentifier][]laredo.ColumnDefinition, error) {
 	s.setState(laredo.SourceConnecting)
+
+	// A reused Source starts a fresh lifecycle: a previous run's lost slot or
+	// exhausted repeat budget must not count against the slot created below.
+	s.slotLost, s.lostInARow, s.lastLoss = false, 0, time.Time{}
 
 	if s.cfg.connString == "" {
 		s.setState(laredo.SourceError)
@@ -296,6 +301,7 @@ func (s *Source) Baseline(ctx context.Context, tables []laredo.TableIdentifier, 
 	// exported snapshot.
 	if s.slotLost {
 		if err := s.replaceLostSlot(ctx); err != nil {
+			s.setState(laredo.SourceError)
 			return nil, fmt.Errorf("pg source (ephemeral): replace lost slot: %w", err)
 		}
 		s.slotLost = false
@@ -344,7 +350,6 @@ func (s *Source) Stream(ctx context.Context, from laredo.Position, handler lared
 	for attempt := 0; ; attempt++ {
 		s.setState(laredo.SourceStreaming)
 
-		started := time.Now()
 		err := s.repl.startStreaming(ctx, s.cfg.slotName, pubName, startLSN, s.tables, handler)
 
 		// Clean exit (context cancelled).
@@ -359,10 +364,7 @@ func (s *Source) Stream(ctx context.Context, from laredo.Position, handler lared
 		// owned it, so there is no position to resume from. Mark the slot lost
 		// and signal re-baseline; the next Baseline replaces the slot first.
 		if s.cfg.slotMode == SlotEphemeral {
-			if time.Since(started) >= stableStream {
-				s.lostInARow = 0
-			}
-			s.lostInARow++
+			s.noteSlotLost(time.Now())
 			s.slotLost = true
 			s.setState(laredo.SourceError)
 			return fmt.Errorf("pg source (ephemeral): %w: %w", laredo.ErrReBaselineRequired, err)
@@ -394,9 +396,26 @@ func (s *Source) Stream(ctx context.Context, from laredo.Position, handler lared
 	}
 }
 
-// stableStream is how long an ephemeral stream must run before failing for its
-// slot loss to count as a fresh one rather than a repeat (see replaceLostSlot).
-const stableStream = time.Minute
+// lossWindow decides whether a slot loss repeats the one before it. A loss more
+// than lossWindow after the previous one starts a fresh count; one sooner adds
+// to it (see replaceLostSlot).
+//
+// It is measured loss to loss, not from when the stream started, on purpose: a
+// permanent error that only surfaces when a change arrives (a dropped
+// publication on a quiet table) can leave each replacement stream idle for a
+// while before it fails, and timing from stream start would count every one of
+// those as fresh and never reach the cap. Losses of a healthy stream, minutes or
+// hours apart, still each start a fresh count.
+const lossWindow = 10 * time.Minute
+
+// noteSlotLost records a slot loss at now for replaceLostSlot's repeat count.
+func (s *Source) noteSlotLost(now time.Time) {
+	if s.lastLoss.IsZero() || now.Sub(s.lastLoss) > lossWindow {
+		s.lostInARow = 0
+	}
+	s.lostInARow++
+	s.lastLoss = now
+}
 
 // replaceLostSlot replaces the slot Stream marked lost. A slot lost again soon
 // after it was replaced means the stream keeps failing for a reason a new slot
@@ -406,7 +425,7 @@ const stableStream = time.Minute
 func (s *Source) replaceLostSlot(ctx context.Context) error {
 	rc := s.cfg.reconnect.withDefaults()
 	if s.lostInARow > rc.MaxAttempts {
-		return fmt.Errorf("slot lost %d times in a row without streaming for %s", s.lostInARow, stableStream)
+		return fmt.Errorf("slot lost %d times in a row, each within %s of the last", s.lostInARow, lossWindow)
 	}
 	if s.lostInARow > 1 {
 		select {
