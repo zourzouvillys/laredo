@@ -25,6 +25,8 @@ type Source struct {
 	slotLSN      LSN    // LSN from slot creation (consistent point) or reused slot's confirmed flush
 	slotSnapshot string // exported snapshot name from a freshly created slot ("" if none/reused)
 	slotExisted  bool   // true if we reused an existing slot (stateful resume)
+	slotLost     bool   // ephemeral: the temporary slot died with its connection; Baseline replaces it
+	lostInARow   int    // ephemeral: slots lost in a row, none streaming for stableStream before failing
 
 	mu    sync.Mutex
 	state laredo.SourceState
@@ -280,6 +282,25 @@ func (s *Source) ValidateTables(_ context.Context, _ []laredo.TableIdentifier) [
 //
 //nolint:revive // implements SyncSource.
 func (s *Source) Baseline(ctx context.Context, tables []laredo.TableIdentifier, rowCallback func(laredo.TableIdentifier, laredo.Row)) (laredo.Position, error) {
+	// An ephemeral source whose slot was lost (see Stream) replaces it before
+	// copying, so the copy runs at the new slot's exported snapshot and the
+	// next Stream resumes from its consistent point. Without this the engine
+	// re-baselines forever: the copy succeeds on the query connection, and
+	// StartReplication fails at once on the dead replication connection.
+	//
+	// It happens here rather than in Stream because the engine calls Baseline
+	// only after the previous stream's pipeline consumers have exited. Those
+	// consumers call Ack, which writes to the replication connection, so
+	// replacing the connection while they run would race them, and an Ack
+	// landing between slot creation and this copy would invalidate the
+	// exported snapshot.
+	if s.slotLost {
+		if err := s.replaceLostSlot(ctx); err != nil {
+			return nil, fmt.Errorf("pg source (ephemeral): replace lost slot: %w", err)
+		}
+		s.slotLost = false
+	}
+
 	snapshotName := s.slotSnapshot
 	s.slotSnapshot = ""
 
@@ -323,6 +344,7 @@ func (s *Source) Stream(ctx context.Context, from laredo.Position, handler lared
 	for attempt := 0; ; attempt++ {
 		s.setState(laredo.SourceStreaming)
 
+		started := time.Now()
 		err := s.repl.startStreaming(ctx, s.cfg.slotName, pubName, startLSN, s.tables, handler)
 
 		// Clean exit (context cancelled).
@@ -334,20 +356,15 @@ func (s *Source) Stream(ctx context.Context, from laredo.Position, handler lared
 		}
 
 		// In ephemeral mode the temporary slot died with the connection that
-		// owned it, so there is no position to resume from. Replace the slot,
-		// then signal re-baseline: the engine's re-baseline copies at the new
-		// slot's exported snapshot (see Baseline) and streams on from its
-		// consistent point.
-		//
-		// Signalling re-baseline WITHOUT replacing the slot sends the engine
-		// round a loop it never leaves: the copy succeeds on the query
-		// connection, StartReplication fails at once on the dead replication
-		// connection, and the engine re-baselines again.
+		// owned it, so there is no position to resume from. Mark the slot lost
+		// and signal re-baseline; the next Baseline replaces the slot first.
 		if s.cfg.slotMode == SlotEphemeral {
-			if rerr := s.replaceEphemeralSlot(ctx, rc); rerr != nil {
-				s.setState(laredo.SourceError)
-				return fmt.Errorf("pg source (ephemeral): stream failed (%w) and the slot could not be replaced: %w", err, rerr)
+			if time.Since(started) >= stableStream {
+				s.lostInARow = 0
 			}
+			s.lostInARow++
+			s.slotLost = true
+			s.setState(laredo.SourceError)
 			return fmt.Errorf("pg source (ephemeral): %w: %w", laredo.ErrReBaselineRequired, err)
 		}
 
@@ -377,19 +394,42 @@ func (s *Source) Stream(ctx context.Context, from laredo.Position, handler lared
 	}
 }
 
+// stableStream is how long an ephemeral stream must run before failing for its
+// slot loss to count as a fresh one rather than a repeat (see replaceLostSlot).
+const stableStream = time.Minute
+
+// replaceLostSlot replaces the slot Stream marked lost. A slot lost again soon
+// after it was replaced means the stream keeps failing for a reason a new slot
+// does not fix, such as a dropped publication. Those repeats back off on the
+// reconnect schedule, and after MaxAttempts in a row the source gives up rather
+// than re-baselining forever.
+func (s *Source) replaceLostSlot(ctx context.Context) error {
+	rc := s.cfg.reconnect.withDefaults()
+	if s.lostInARow > rc.MaxAttempts {
+		return fmt.Errorf("slot lost %d times in a row without streaming for %s", s.lostInARow, stableStream)
+	}
+	if s.lostInARow > 1 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(rc.backoffAfter(s.lostInARow - 1)):
+		}
+	}
+	return s.replaceEphemeralSlot(ctx, rc)
+}
+
 // replaceEphemeralSlot recovers an ephemeral source whose replication
 // connection was lost. It reopens the replication connection (and the query
 // connection, if whatever dropped the one dropped the other), creates a new
 // temporary slot under the same name, and records the slot's consistent point
-// and exported snapshot for the next Baseline.
+// and exported snapshot for the copy Baseline runs next.
 //
 // The first attempt is immediate; later ones back off on the source's
-// reconnect schedule, and it gives up after the same number of attempts a
-// stateful reconnect does.
+// reconnect schedule, and it gives up after MaxAttempts attempts in all.
 func (s *Source) replaceEphemeralSlot(ctx context.Context, rc ReconnectConfig) error {
 	backoff := rc.InitialBackoff
 	var lastErr error
-	for attempt := 0; attempt <= rc.MaxAttempts; attempt++ {
+	for attempt := 0; attempt < rc.MaxAttempts; attempt++ {
 		s.setState(laredo.SourceReconnecting)
 		_ = s.repl.close(ctx)
 
@@ -419,6 +459,7 @@ func (s *Source) openEphemeralSlot(ctx context.Context) error {
 	}
 	lsn, snapshot, err := s.repl.createSlot(ctx, s.cfg.slotName, true)
 	if err != nil {
+		_ = s.repl.close(ctx)
 		return err
 	}
 	s.slotLSN = lsn

@@ -84,6 +84,16 @@ func (r ReconnectConfig) grow(b time.Duration) time.Duration {
 	return b
 }
 
+// backoffAfter returns the wait before retry n (1-based): InitialBackoff,
+// grown n-1 times.
+func (r ReconnectConfig) backoffAfter(n int) time.Duration {
+	b := r.InitialBackoff
+	for i := 1; i < n; i++ {
+		b = r.grow(b)
+	}
+	return b
+}
+
 // BeforeConnectHook is invoked immediately before each PostgreSQL connection
 // is established. It receives the parsed *pgconn.Config and may mutate it —
 // typically to compute a short-lived password (for example an AWS RDS IAM
