@@ -107,7 +107,10 @@ func ClientBufferPolicy(policy string) Option {
 }
 
 // HeartbeatInterval sets the interval for periodic heartbeat messages on idle
-// connections (default 5s). Clients treat a 30s gap as connection failure.
+// connections (default 5s). A heartbeat also carries the server's current
+// source position, which is what keeps an idle subscriber's resume point
+// current. The Go client reports a 30s gap with no message as stale
+// (client/fanout.Client.IsStale); it does not itself drop the connection.
 func HeartbeatInterval(d time.Duration) Option {
 	return func(c *config) { c.heartbeatInterval = d }
 }
@@ -118,6 +121,15 @@ func New(opts ...Option) *Target {
 		maxJournalEntries: 100000,
 		maxJournalAge:     24 * time.Hour,
 		heartbeatInterval: 5 * time.Second,
+		// Snapshot retention and the client cap default to bounded values.
+		// They used to default to zero, which pruneSnapshots and the registry
+		// both read as "no limit" — and since every full sync takes a fresh
+		// snapshot, and a snapshot holds a complete copy of the table, an
+		// unauthenticated caller could pin one table copy in memory per
+		// connection, indefinitely, just by reconnecting.
+		snapshotKeepCount: 3,
+		snapshotMaxAge:    1 * time.Hour,
+		maxClients:        256,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -333,9 +345,28 @@ func (t *Target) IsReady() bool {
 	return t.ready
 }
 
+// Table returns the table this target replicates. FetchSnapshot needs it in
+// order to authorize a snapshot against the table it belongs to, since the
+// request itself names only a snapshot id.
+func (t *Target) Table() laredo.TableIdentifier {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.table
+}
+
 // JournalSequence returns the current journal sequence number.
 func (t *Target) JournalSequence() int64 {
 	return t.j.currentSequence()
+}
+
+// LatestPosition returns the most recent source position the engine has
+// reported, or nil before the first change. Heartbeats carry it so that an
+// idle or filtered subscriber's resume point keeps up with the source rather
+// than freezing at the last entry it happened to match.
+func (t *Target) LatestPosition() laredo.Position {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.curPos
 }
 
 // JournalOldestSequence returns the oldest retained journal sequence.
@@ -451,45 +482,54 @@ func (t *Target) HeartbeatInterval() time.Duration {
 	return t.cfg.heartbeatInterval
 }
 
-// RegisterClient registers a new connected client. Returns false if at max capacity.
-func (t *Target) RegisterClient(clientID string) bool {
+// RegisterClient registers a new connected client session. Returns false if
+// at max capacity. The returned session must be passed to the other client
+// methods — a client id alone does not identify a registration, because the
+// GoAway handoff deliberately runs two streams under one id.
+func (t *Target) RegisterClient(clientID string) (ClientSession, bool) {
 	return t.clients.register(clientID)
 }
 
-// UnregisterClient removes a connected client.
-func (t *Target) UnregisterClient(clientID string) {
-	t.clients.unregister(clientID)
+// UnregisterClient removes one client session.
+func (t *Target) UnregisterClient(s ClientSession) {
+	t.clients.unregister(s)
 }
 
-// UpdateClientSequence updates a client's current position.
-func (t *Target) UpdateClientSequence(clientID string, seq int64) {
-	t.clients.updateSequence(clientID, seq)
+// UpdateClientSequence updates a session's current position.
+func (t *Target) UpdateClientSequence(s ClientSession, seq int64) {
+	t.clients.updateSequence(s, seq)
 }
 
-// SetClientState updates a client's state ("catching_up", "live", "backpressured").
-func (t *Target) SetClientState(clientID string, state string) {
-	t.clients.setState(clientID, state)
+// SetClientState updates a session's state ("catching_up", "live", "backpressured").
+func (t *Target) SetClientState(s ClientSession, state string) {
+	t.clients.setState(s, state)
 }
 
-// ConnectedClients returns the number of connected clients.
+// RecordApplyAck stores a session's report of what it has applied, which is
+// what lets GetReplicationStatus distinguish delivered from applied.
+func (t *Target) RecordApplyAck(s ClientSession, ack ApplyAck) {
+	t.clients.recordApplyAck(s, ack)
+}
+
+// ConnectedClients returns the number of connected client sessions.
 func (t *Target) ConnectedClients() int {
 	return t.clients.count()
 }
 
-// ClientList returns info about all connected clients.
+// ClientList returns info about all connected client sessions.
 func (t *Target) ClientList() []ClientInfo {
 	return t.clients.list()
 }
 
-// PinJournal prevents journal pruning past the given sequence for a client.
+// PinJournal prevents journal pruning past the given sequence for a session.
 // Use this before sending a snapshot to ensure the journal catch-up has no gaps.
-func (t *Target) PinJournal(clientID string, seq int64) {
-	t.j.pin(clientID, seq)
+func (t *Target) PinJournal(s ClientSession, seq int64) {
+	t.j.pin(s.token, seq)
 }
 
-// UnpinJournal releases a client's journal pin.
-func (t *Target) UnpinJournal(clientID string) {
-	t.j.unpin(clientID)
+// UnpinJournal releases a session's journal pin.
+func (t *Target) UnpinJournal(s ClientSession) {
+	t.j.unpin(s.token)
 }
 
 // buildKey creates a composite key from the row's PK columns.

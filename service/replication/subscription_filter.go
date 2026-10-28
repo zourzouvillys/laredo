@@ -27,6 +27,12 @@ const (
 	predIn
 )
 
+// Bounds on a client-supplied subscription filter.
+const (
+	maxFilterPredicates = 32
+	maxFilterInValues   = 1024
+)
+
 type compiledPredicate struct {
 	field  string
 	kind   predKind
@@ -43,6 +49,12 @@ func compileSubscriptionFilter(preds []*v1.FieldPredicate) (*subscriptionFilter,
 	if len(preds) == 0 {
 		return nil, nil
 	}
+	// Matching costs O(rows x predicates x |in|) and runs for every snapshot
+	// row and every journal entry, on all three axes chosen by the caller.
+	// Bound the two the caller controls directly.
+	if len(preds) > maxFilterPredicates {
+		return nil, fmt.Errorf("too many filter predicates: %d (max %d)", len(preds), maxFilterPredicates)
+	}
 	compiled := make([]compiledPredicate, 0, len(preds))
 	for i, p := range preds {
 		if p.GetField() == "" {
@@ -58,6 +70,9 @@ func compileSubscriptionFilter(preds []*v1.FieldPredicate) (*subscriptionFilter,
 			cp.prefix = m.Prefix
 		case *v1.FieldPredicate_In:
 			cp.kind = predIn
+			if n := len(m.In.GetValues()); n > maxFilterInValues {
+				return nil, fmt.Errorf("filter[%d]: too many values in `in` list: %d (max %d)", i, n, maxFilterInValues)
+			}
 			for _, v := range m.In.GetValues() {
 				cp.in = append(cp.in, normalize(v.AsInterface()))
 			}

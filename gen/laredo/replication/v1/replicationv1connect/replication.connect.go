@@ -50,9 +50,17 @@ const (
 // LaredoReplicationServiceClient is a client for the laredo.replication.v1.LaredoReplicationService
 // service.
 type LaredoReplicationServiceClient interface {
-	// Primary replication stream. Client connects, declares its state,
-	// receives catch-up data (snapshot or delta), then live changes.
-	Sync(context.Context, *connect.Request[v1.SyncRequest]) (*connect.ServerStreamForClient[v1.SyncResponse], error)
+	// Primary replication stream. The client opens with a SyncStart declaring
+	// its state, receives catch-up data (snapshot or delta), then live changes.
+	//
+	// The stream is bidirectional so the client can acknowledge what it has
+	// actually applied. Server-side status could only ever report what had been
+	// *sent* — and "sent" is not "applied": the receiving client still has to
+	// decode the row, install it, and survive doing so. An operator asking
+	// whether a configuration change has reached the fleet needs the second
+	// answer, not the first, and reporting the first as though it were the
+	// second is worse than reporting nothing.
+	Sync(context.Context) *connect.BidiStreamForClient[v1.SyncClientMessage, v1.SyncResponse]
 	// List available snapshots that clients can use for bootstrapping.
 	ListSnapshots(context.Context, *connect.Request[v1.ListSnapshotsRequest]) (*connect.Response[v1.ListSnapshotsResponse], error)
 	// Fetch a specific snapshot. Streaming response for large snapshots.
@@ -73,7 +81,7 @@ func NewLaredoReplicationServiceClient(httpClient connect.HTTPClient, baseURL st
 	baseURL = strings.TrimRight(baseURL, "/")
 	laredoReplicationServiceMethods := v1.File_laredo_replication_v1_replication_proto.Services().ByName("LaredoReplicationService").Methods()
 	return &laredoReplicationServiceClient{
-		sync: connect.NewClient[v1.SyncRequest, v1.SyncResponse](
+		sync: connect.NewClient[v1.SyncClientMessage, v1.SyncResponse](
 			httpClient,
 			baseURL+LaredoReplicationServiceSyncProcedure,
 			connect.WithSchema(laredoReplicationServiceMethods.ByName("Sync")),
@@ -102,15 +110,15 @@ func NewLaredoReplicationServiceClient(httpClient connect.HTTPClient, baseURL st
 
 // laredoReplicationServiceClient implements LaredoReplicationServiceClient.
 type laredoReplicationServiceClient struct {
-	sync                 *connect.Client[v1.SyncRequest, v1.SyncResponse]
+	sync                 *connect.Client[v1.SyncClientMessage, v1.SyncResponse]
 	listSnapshots        *connect.Client[v1.ListSnapshotsRequest, v1.ListSnapshotsResponse]
 	fetchSnapshot        *connect.Client[v1.FetchSnapshotRequest, v1.FetchSnapshotResponse]
 	getReplicationStatus *connect.Client[v1.GetReplicationStatusRequest, v1.GetReplicationStatusResponse]
 }
 
 // Sync calls laredo.replication.v1.LaredoReplicationService.Sync.
-func (c *laredoReplicationServiceClient) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]) (*connect.ServerStreamForClient[v1.SyncResponse], error) {
-	return c.sync.CallServerStream(ctx, req)
+func (c *laredoReplicationServiceClient) Sync(ctx context.Context) *connect.BidiStreamForClient[v1.SyncClientMessage, v1.SyncResponse] {
+	return c.sync.CallBidiStream(ctx)
 }
 
 // ListSnapshots calls laredo.replication.v1.LaredoReplicationService.ListSnapshots.
@@ -131,9 +139,17 @@ func (c *laredoReplicationServiceClient) GetReplicationStatus(ctx context.Contex
 // LaredoReplicationServiceHandler is an implementation of the
 // laredo.replication.v1.LaredoReplicationService service.
 type LaredoReplicationServiceHandler interface {
-	// Primary replication stream. Client connects, declares its state,
-	// receives catch-up data (snapshot or delta), then live changes.
-	Sync(context.Context, *connect.Request[v1.SyncRequest], *connect.ServerStream[v1.SyncResponse]) error
+	// Primary replication stream. The client opens with a SyncStart declaring
+	// its state, receives catch-up data (snapshot or delta), then live changes.
+	//
+	// The stream is bidirectional so the client can acknowledge what it has
+	// actually applied. Server-side status could only ever report what had been
+	// *sent* — and "sent" is not "applied": the receiving client still has to
+	// decode the row, install it, and survive doing so. An operator asking
+	// whether a configuration change has reached the fleet needs the second
+	// answer, not the first, and reporting the first as though it were the
+	// second is worse than reporting nothing.
+	Sync(context.Context, *connect.BidiStream[v1.SyncClientMessage, v1.SyncResponse]) error
 	// List available snapshots that clients can use for bootstrapping.
 	ListSnapshots(context.Context, *connect.Request[v1.ListSnapshotsRequest]) (*connect.Response[v1.ListSnapshotsResponse], error)
 	// Fetch a specific snapshot. Streaming response for large snapshots.
@@ -149,7 +165,7 @@ type LaredoReplicationServiceHandler interface {
 // and JSON codecs. They also support gzip compression.
 func NewLaredoReplicationServiceHandler(svc LaredoReplicationServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
 	laredoReplicationServiceMethods := v1.File_laredo_replication_v1_replication_proto.Services().ByName("LaredoReplicationService").Methods()
-	laredoReplicationServiceSyncHandler := connect.NewServerStreamHandler(
+	laredoReplicationServiceSyncHandler := connect.NewBidiStreamHandler(
 		LaredoReplicationServiceSyncProcedure,
 		svc.Sync,
 		connect.WithSchema(laredoReplicationServiceMethods.ByName("Sync")),
@@ -192,7 +208,7 @@ func NewLaredoReplicationServiceHandler(svc LaredoReplicationServiceHandler, opt
 // UnimplementedLaredoReplicationServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedLaredoReplicationServiceHandler struct{}
 
-func (UnimplementedLaredoReplicationServiceHandler) Sync(context.Context, *connect.Request[v1.SyncRequest], *connect.ServerStream[v1.SyncResponse]) error {
+func (UnimplementedLaredoReplicationServiceHandler) Sync(context.Context, *connect.BidiStream[v1.SyncClientMessage, v1.SyncResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("laredo.replication.v1.LaredoReplicationService.Sync is not implemented"))
 }
 

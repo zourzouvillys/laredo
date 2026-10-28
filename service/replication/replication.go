@@ -3,17 +3,19 @@ package replication
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
-	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/zourzouvillys/laredo"
 	v1 "github.com/zourzouvillys/laredo/gen/laredo/replication/v1"
 	"github.com/zourzouvillys/laredo/gen/laredo/replication/v1/replicationv1connect"
+	"github.com/zourzouvillys/laredo/internal/rowpb"
+	"github.com/zourzouvillys/laredo/service"
 	"github.com/zourzouvillys/laredo/snapshotter"
 	"github.com/zourzouvillys/laredo/target/fanout"
 )
@@ -83,13 +85,34 @@ func (s *Service) GetReplicationStatus(_ context.Context, req *connect.Request[v
 			}
 
 			// Add per-client state.
+			journalSeq := ft.JournalSequence()
 			for _, ci := range ft.ClientList() {
-				resp.Clients = append(resp.Clients, &v1.ConnectedClient{
+				// behind_count and connected_at are in the proto and were
+				// never assigned, so both read as zero for every client —
+				// behind_count being precisely the number an operator checks
+				// to see whether a subscriber is keeping up.
+				behind := journalSeq - ci.CurrentSequence
+				if behind < 0 {
+					behind = 0
+				}
+				cc := &v1.ConnectedClient{
 					ClientId:        ci.ID,
 					CurrentSequence: ci.CurrentSequence,
 					State:           ci.State,
+					BehindCount:     behind,
 					BufferDepth:     int32(ci.BufferDepth), //nolint:gosec // won't overflow
-				})
+				}
+				if !ci.ConnectedAt.IsZero() {
+					cc.ConnectedAt = timestamppb.New(ci.ConnectedAt)
+				}
+				cc.AppliedSequence = ci.Applied.Sequence
+				cc.AppliedSourcePosition = ci.Applied.SourcePosition
+				cc.AppliedGeneration = ci.Applied.Generation
+				cc.ApplyError = ci.Applied.Error
+				if !ci.Applied.At.IsZero() {
+					cc.LastAckAt = timestamppb.New(ci.Applied.At)
+				}
+				resp.Clients = append(resp.Clients, cc)
 			}
 
 			// Latest snapshot info.
@@ -122,6 +145,10 @@ func (s *Service) ListSnapshots(_ context.Context, req *connect.Request[v1.ListS
 	for _, t := range targets {
 		if ft, ok := t.(*fanout.Target); ok {
 			snaps := ft.ListSnapshots()
+			// The request carries a limit and it was ignored entirely.
+			if lim := int(req.Msg.GetLimit()); lim > 0 && lim < len(snaps) {
+				snaps = snaps[:lim]
+			}
 			var result []*v1.ReplicationSnapshotInfo
 			for _, snap := range snaps {
 				result = append(result, &v1.ReplicationSnapshotInfo{
@@ -138,13 +165,35 @@ func (s *Service) ListSnapshots(_ context.Context, req *connect.Request[v1.ListS
 }
 
 // FetchSnapshot streams a specific snapshot's data to the client.
-func (s *Service) FetchSnapshot(_ context.Context, req *connect.Request[v1.FetchSnapshotRequest], stream *connect.ServerStream[v1.FetchSnapshotResponse]) error {
+func (s *Service) FetchSnapshot(ctx context.Context, req *connect.Request[v1.FetchSnapshotRequest], stream *connect.ServerStream[v1.FetchSnapshotResponse]) error {
 	snapshotID := req.Msg.GetSnapshotId()
 	if snapshotID == "" {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("snapshot_id is required"))
 	}
 
 	// Find the snapshot across all fan-out targets.
+	//
+	// This call takes only a snapshot id — no schema, no table — and streams
+	// the rows verbatim with no subscription filter, while the equivalent Sync
+	// path filters. Ids are formatted fanout-<journalSeq>-<unixMillis>, both
+	// components of which the status and handshake messages disclose, so they
+	// are guessable. Each candidate is therefore authorized against the table
+	// it actually belongs to before a single row is sent.
+	authorizeSnapshot := func(tid laredo.TableIdentifier) error {
+		a, ok := service.AuthorizerFromContext(ctx)
+		if !ok {
+			return nil
+		}
+		if _, aerr := a.Authorize(ctx, service.AuthRequest{
+			Procedure: "/laredo.replication.v1.LaredoReplicationService/FetchSnapshot",
+			Schema:    tid.Schema,
+			Table:     tid.Table,
+		}); aerr != nil {
+			return asAuthError(aerr)
+		}
+		return nil
+	}
+
 	for _, sid := range s.engine.SourceIDs() {
 		for _, t := range s.engine.Targets(sid, laredo.TableIdentifier{}) {
 			ft, ok := t.(*fanout.Target)
@@ -154,6 +203,10 @@ func (s *Service) FetchSnapshot(_ context.Context, req *connect.Request[v1.Fetch
 			for _, snap := range ft.ListSnapshots() {
 				if snap.ID != snapshotID {
 					continue
+				}
+
+				if aerr := authorizeSnapshot(ft.Table()); aerr != nil {
+					return aerr
 				}
 
 				// Found — stream it.
@@ -170,7 +223,10 @@ func (s *Service) FetchSnapshot(_ context.Context, req *connect.Request[v1.Fetch
 				}
 
 				for _, row := range snap.Rows {
-					rowStruct, _ := structpb.NewStruct(map[string]any(row))
+					rowStruct, err := rowpb.RowToStruct(row)
+					if err != nil {
+						return connect.NewError(connect.CodeInternal, fmt.Errorf("encode snapshot row: %w", err))
+					}
 					if err := stream.Send(&v1.FetchSnapshotResponse{
 						Chunk: &v1.FetchSnapshotResponse_Row{
 							Row: &v1.SnapshotRow{Row: rowStruct},
@@ -195,22 +251,68 @@ func (s *Service) FetchSnapshot(_ context.Context, req *connect.Request[v1.Fetch
 	return connect.NewError(connect.CodeNotFound, fmt.Errorf("snapshot %s not found", snapshotID))
 }
 
-// Sync implements the primary server-streaming replication call.
-// Protocol: handshake → snapshot (if needed) → journal catch-up → live streaming.
-func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
-	schema := req.Msg.GetSchema()
-	table := req.Msg.GetTable()
-	clientID := req.Msg.GetClientId()
-	lastSeq := req.Msg.GetLastKnownSequence()
+// syncStream is the bidirectional Sync stream: the server sends replication
+// messages, the client sends its applied-position acknowledgements.
+type syncStream = connect.BidiStream[v1.SyncClientMessage, v1.SyncResponse]
+
+// Sync implements the primary replication call.
+// Protocol: the client opens with SyncStart, then handshake → snapshot (if
+// needed) → journal catch-up → live streaming, with the client acking what it
+// has applied on the same stream throughout.
+func (s *Service) Sync(ctx context.Context, stream *syncStream) error {
+	// The first message declares the subscription. Anything else is a protocol
+	// error — there is nothing to serve without it.
+	first, err := stream.Receive()
+	if err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("receive SyncStart: %w", err))
+	}
+	start := first.GetStart()
+	if start == nil {
+		return connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("first message on a Sync stream must be a SyncStart"))
+	}
+
+	schema := start.GetSchema()
+	table := start.GetTable()
+	clientID := start.GetClientId()
+	lastSeq := start.GetLastKnownSequence()
 
 	if schema == "" || table == "" {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("schema and table are required"))
 	}
 
-	// Compile the optional per-subscription filter once; it is applied uniformly
-	// to the snapshot, journal catch-up, and live phases below. A nil filter
-	// matches everything.
-	filter, err := compileSubscriptionFilter(req.Msg.GetFilters())
+	// Authorize now that the target is known. The stream-level check has
+	// already run; this is the call that can constrain what the subscription
+	// may see, because the schema, table and requested filters only exist once
+	// the client's opening message has been read.
+	predicates := start.GetFilters()
+	if a, ok := service.AuthorizerFromContext(ctx); ok {
+		decision, aerr := a.Authorize(ctx, service.AuthRequest{
+			Procedure: "/laredo.replication.v1.LaredoReplicationService/Sync",
+			Schema:    schema,
+			Table:     table,
+			ClientID:  clientID,
+			Filters:   start.GetFilters(),
+		})
+		if aerr != nil {
+			return asAuthError(aerr)
+		}
+		// Imposed predicates are ANDed in, not merely checked. A client's own
+		// filters only ever subtract, so a caller that sends none is asking
+		// for the whole table; constraining it requires adding to the list.
+		predicates = append(append([]*v1.FieldPredicate{}, predicates...), decision.Require...)
+		// Bind the client id to the authenticated subject. It is otherwise a
+		// free-form string, and the status view is keyed on it, so a caller
+		// could otherwise report itself as another subscriber.
+		if decision.Subject != "" {
+			clientID = decision.Subject
+		}
+	}
+
+	// Compile the per-subscription filter once; it is applied uniformly to the
+	// snapshot, journal catch-up, and live phases below. A nil filter matches
+	// everything.
+	filter, err := compileSubscriptionFilter(predicates)
 	if err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -223,16 +325,42 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 	if clientID == "" {
 		clientID = fmt.Sprintf("anon-%d", time.Now().UnixMilli())
 	}
-	if !ft.RegisterClient(clientID) {
+	session, ok := ft.RegisterClient(clientID)
+	if !ok {
 		return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("max clients reached"))
 	}
-	defer ft.UnregisterClient(clientID)
+	defer ft.UnregisterClient(session)
+
+	// Read the client's acknowledgements for as long as the stream lives. This
+	// is the half that makes GetReplicationStatus able to say what a client has
+	// APPLIED rather than only what was sent to it. A client that never acks is
+	// reported as such; it is not an error, since an older client will not.
+	ackDone := make(chan struct{})
+	go func() {
+		defer close(ackDone)
+		for {
+			msg, err := stream.Receive()
+			if err != nil {
+				return // Stream closed or client gone; the send side reports it.
+			}
+			if ack := msg.GetAck(); ack != nil {
+				ft.RecordApplyAck(session, fanout.ApplyAck{
+					Sequence:       ack.GetAppliedSequence(),
+					SourcePosition: ack.GetAppliedSourcePosition(),
+					Generation:     ack.GetAppliedGeneration(),
+					Error:          ack.GetApplyError(),
+					At:             time.Now(),
+				})
+			}
+		}
+	}()
+	defer func() { <-ackDone }()
 
 	// Determine sync mode.
 	oldestSeq := ft.JournalOldestSequence()
 	currentSeq := ft.JournalSequence()
-	snapshotID := req.Msg.GetLastSnapshotId()
-	clientPosStr := req.Msg.GetLastKnownSourcePosition()
+	snapshotID := start.GetLastSnapshotId()
+	clientPosStr := start.GetLastKnownSourcePosition()
 
 	var mode v1.SyncMode
 	var resumeSeq int64
@@ -309,7 +437,7 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 		return err
 	}
 
-	ft.SetClientState(clientID, "catching_up")
+	ft.SetClientState(session, "catching_up")
 
 	// posToStr serializes a journal entry's source position for the wire, so
 	// clients can resume from it on any instance. Nil when the source is
@@ -326,8 +454,8 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 		snap := ft.TakeSnapshot()
 		// Pin the journal at the snapshot's sequence to prevent pruning
 		// entries needed for catch-up after the snapshot is sent.
-		ft.PinJournal(clientID, snap.Sequence)
-		defer ft.UnpinJournal(clientID)
+		ft.PinJournal(session, snap.Sequence)
+		defer ft.UnpinJournal(session)
 		// Apply the subscription filter to the snapshot rows so RowCount and
 		// RowsSent reflect exactly what the subscriber receives.
 		rows := snap.Rows
@@ -350,7 +478,10 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 			return err
 		}
 		for _, row := range rows {
-			rowStruct, _ := structpb.NewStruct(map[string]any(row))
+			rowStruct, err := rowpb.RowToStruct(row)
+			if err != nil {
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("encode snapshot row: %w", err))
+			}
 			if err := stream.Send(&v1.SyncResponse{
 				Message: &v1.SyncResponse_SnapshotRow{SnapshotRow: &v1.SnapshotRow{Row: rowStruct}},
 			}); err != nil {
@@ -372,8 +503,8 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 	// handoff. The shared catch-up + live loop below then hands off to the hot
 	// journal and live tail from resumeSeq.
 	if mode == v1.SyncMode_SYNC_MODE_REPLAY_ARCHIVE {
-		ft.PinJournal(clientID, cold.resumeSeq)
-		defer ft.UnpinJournal(clientID)
+		ft.PinJournal(session, cold.resumeSeq)
+		defer ft.UnpinJournal(session)
 		if err := streamColdReplay(stream, cold, filter); err != nil {
 			return err
 		}
@@ -390,10 +521,10 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 		if err := sendJournalEntry(stream, e, posToStr); err != nil {
 			return err
 		}
-		ft.UpdateClientSequence(clientID, e.Sequence)
+		ft.UpdateClientSequence(session, e.Sequence)
 	}
 
-	ft.SetClientState(clientID, "live")
+	ft.SetClientState(session, "live")
 	lastSeqSent := ft.JournalSequence()
 	lastSent := time.Now()
 
@@ -423,7 +554,7 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 			}); err != nil {
 				return err
 			}
-			ft.SetClientState(clientID, "draining")
+			ft.SetClientState(session, "draining")
 			goAwaySent = true
 			lastSent = time.Now()
 		}
@@ -443,7 +574,7 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 				if err := sendJournalEntry(stream, e, posToStr); err != nil {
 					return err
 				}
-				ft.UpdateClientSequence(clientID, e.Sequence)
+				ft.UpdateClientSequence(session, e.Sequence)
 				sentAny = true
 			}
 			lastSeqSent = e.Sequence
@@ -457,6 +588,7 @@ func (s *Service) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest]
 					Heartbeat: &v1.Heartbeat{
 						CurrentSequence: ft.JournalSequence(),
 						ServerTime:      timestamppb.Now(),
+						SourcePosition:  posToStr(ft.LatestPosition()),
 					},
 				},
 			}); err != nil {
@@ -503,7 +635,7 @@ func (s *Service) findFanoutTargetAndSource(schema, table string) (*fanout.Targe
 	return s.findFanoutTarget(schema, table), nil
 }
 
-func sendJournalEntry(stream *connect.ServerStream[v1.SyncResponse], e fanout.JournalEntry, posToStr func(laredo.Position) string) error {
+func sendJournalEntry(stream *syncStream, e fanout.JournalEntry, posToStr func(laredo.Position) string) error {
 	entry := &v1.ReplicationJournalEntry{
 		Sequence:       e.Sequence,
 		Timestamp:      timestamppb.New(e.Timestamp),
@@ -511,10 +643,18 @@ func sendJournalEntry(stream *connect.ServerStream[v1.SyncResponse], e fanout.Jo
 		SourcePosition: posToStr(e.Position),
 	}
 	if e.NewValues != nil {
-		entry.NewValues, _ = structpb.NewStruct(map[string]any(e.NewValues))
+		v, err := rowpb.RowToStruct(e.NewValues)
+		if err != nil {
+			return fmt.Errorf("encode journal new values (seq %d): %w", e.Sequence, err)
+		}
+		entry.NewValues = v
 	}
 	if e.OldValues != nil {
-		entry.OldValues, _ = structpb.NewStruct(map[string]any(e.OldValues))
+		v, err := rowpb.RowToStruct(e.OldValues)
+		if err != nil {
+			return fmt.Errorf("encode journal old values (seq %d): %w", e.Sequence, err)
+		}
+		entry.OldValues = v
 	}
 	return stream.Send(&v1.SyncResponse{
 		Message: &v1.SyncResponse_JournalEntry{JournalEntry: entry},
@@ -536,4 +676,14 @@ func columnsToProto(cols []laredo.ColumnDefinition) []*v1.ColumnDefinition {
 		}
 	}
 	return out
+}
+
+// asAuthError normalises an Authorizer refusal, preserving a connect error's
+// own code when it chose one.
+func asAuthError(err error) error {
+	var ce *connect.Error
+	if errors.As(err, &ce) {
+		return ce
+	}
+	return connect.NewError(connect.CodePermissionDenied, err)
 }
