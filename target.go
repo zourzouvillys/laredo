@@ -75,3 +75,24 @@ type PositionedTarget interface {
 	// delivered to this target.
 	SetChangePosition(position Position)
 }
+
+// SweepingTarget is an optional interface for a target that makes a baseline
+// authoritative without emptying itself first.
+//
+// The engine re-baselines a target that already holds rows: after a source
+// reconnects, or when the source asks for a re-baseline. Baseline rows only
+// insert and overwrite, so a row deleted at the source while the target was not
+// streaming would otherwise survive the re-baseline indefinitely. Truncating
+// first is no answer: the target would sit empty, or half full, for as long as
+// the copy takes or keeps failing.
+//
+// The engine calls OnBaselineStart before it delivers a baseline's first row.
+// The target then records the key of every OnBaselineRow, and in
+// OnBaselineComplete — which the engine calls only after a baseline has
+// delivered every row — removes each row it holds that the baseline did not
+// deliver, as a delete. A baseline that fails part way never reaches
+// OnBaselineComplete, and the next OnBaselineStart discards what it recorded,
+// so nothing is removed on the strength of a partial copy.
+type SweepingTarget interface {
+	OnBaselineStart(ctx context.Context, table TableIdentifier) error
+}

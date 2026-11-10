@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"math/rand/v2"
 	"reflect"
 	"strings"
 	"sync"
@@ -112,6 +113,7 @@ type engineConfig struct {
 	snapshotRetention  int // keep N most recent snapshots; 0 = no pruning
 	shutdownTimeout    time.Duration
 	deadLetterStore    DeadLetterStore
+	sourceRetry        SourceRetry
 }
 
 type pipelineConfig struct {
@@ -317,6 +319,56 @@ func WithShutdownTimeout(d time.Duration) Option {
 	}
 }
 
+// SourceRetry configures how the engine recovers a source that has failed.
+//
+// A source fails when Init, a baseline or a stream returns an error the source
+// could not recover from itself. The engine never gives up on it: it waits,
+// closes the source, and runs it again from Init, the way a freshly started
+// process would. It keeps doing so until the engine is stopped. Targets keep
+// the rows they already hold while it does, so a host goes on serving its last
+// good state rather than an empty one.
+//
+// The wait doubles after each consecutive failure, from InitialBackoff up to
+// MaxBackoff, with jitter so that several processes that failed together do
+// not reconnect in lockstep. A stream that stayed up for ResetAfter resets it.
+//
+// A source stopped on purpose is not retried: a pipeline error policy of
+// ErrorStopSource or ErrorStopAll, or every pipeline on the source already in
+// ERROR or STOPPED.
+type SourceRetry struct {
+	// InitialBackoff is the wait before the first retry. Default 1s.
+	InitialBackoff time.Duration
+	// MaxBackoff caps the wait. Default 30s.
+	MaxBackoff time.Duration
+	// ResetAfter is how long a stream must stay up for its failure to count
+	// as a fresh one, starting the wait again from InitialBackoff. Default 1m.
+	ResetAfter time.Duration
+}
+
+func (r SourceRetry) withDefaults() SourceRetry {
+	if r.InitialBackoff <= 0 {
+		r.InitialBackoff = time.Second
+	}
+	if r.MaxBackoff <= 0 {
+		r.MaxBackoff = 30 * time.Second
+	}
+	if r.MaxBackoff < r.InitialBackoff {
+		r.MaxBackoff = r.InitialBackoff
+	}
+	if r.ResetAfter <= 0 {
+		r.ResetAfter = time.Minute
+	}
+	return r
+}
+
+// WithSourceRetry overrides the defaults for recovering a failed source. Zero
+// fields keep their defaults. See SourceRetry.
+func WithSourceRetry(r SourceRetry) Option {
+	return func(c *engineConfig) {
+		c.sourceRetry = r
+	}
+}
+
 // WithDeadLetterStore sets the dead letter store for failed changes.
 // When configured, changes that fail after all retries are written to the
 // store before the error policy is applied.
@@ -388,6 +440,7 @@ func NewEngine(opts ...Option) (Engine, []error) {
 		snapshotRetention:  cfg.snapshotRetention,
 		shutdownTimeout:    cfg.shutdownTimeout,
 		deadLetterStore:    cfg.deadLetterStore,
+		sourceRetry:        cfg.sourceRetry.withDefaults(),
 	}, nil
 }
 
@@ -520,6 +573,7 @@ type coreEngine struct {
 	snapshotRetention  int
 	shutdownTimeout    time.Duration
 	deadLetterStore    DeadLetterStore
+	sourceRetry        SourceRetry
 
 	schemas map[TableIdentifier][]ColumnDefinition // discovered column schemas
 
@@ -739,21 +793,116 @@ func (e *coreEngine) groupPipelinesBySource() map[string][]int {
 	return groups
 }
 
-// runSource runs the lifecycle for a single source: init → baseline → stream.
+// runSource runs a source's lifecycle — init → baseline → stream — and keeps it
+// running until ctx is cancelled. When an attempt fails, it waits and starts a
+// new one from Init (see SourceRetry); it never gives up on its own.
 func (e *coreEngine) runSource(ctx context.Context, sourceID string, pipelineIdxs []int) {
 	defer e.wg.Done()
 
 	source := e.sources[sourceID]
+	retry := e.sourceRetry
+	backoff := retry.InitialBackoff
+	st := &sourceRun{idxs: pipelineIdxs, tables: e.tablesForPipelines(pipelineIdxs)}
 
-	// Collect unique tables for this source.
-	tables := e.tablesForPipelines(pipelineIdxs)
+	for attempt := 1; ; attempt++ {
+		err := e.runSourceAttempt(ctx, sourceID, source, st)
+		if err == nil || ctx.Err() != nil {
+			return // stopped, or the source ended its stream cleanly
+		}
 
-	// Init the source.
+		// The pipelines still live are the ones this failure takes down. One
+		// already in ERROR got there on its own — its error policy isolated it,
+		// or stopped the source on purpose — and stays there.
+		failed := e.livePipelines(st.idxs)
+		e.transitionPipelines(failed, PipelineError)
+		if len(failed) == 0 {
+			e.observer.OnSourceDisconnected(sourceID, err.Error())
+			return
+		}
+
+		if !st.streamStart.IsZero() && time.Since(st.streamStart) >= retry.ResetAfter {
+			backoff = retry.InitialBackoff
+			attempt = 1
+		}
+		delay := jitter(backoff)
+		e.observer.OnSourceDisconnected(sourceID,
+			fmt.Sprintf("%v; retrying in %s (attempt %d)", err, delay.Round(time.Millisecond), attempt))
+
+		t := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C:
+		}
+		backoff = min(backoff*2, retry.MaxBackoff)
+
+		// Close what the failed attempt left open, so the next Init starts from
+		// scratch: new connections, and for a PostgreSQL ephemeral source a new
+		// slot. Bounded, because closing a connection whose peer vanished can
+		// otherwise wait on the network.
+		closeCtx, cancel := context.WithTimeout(ctx, sourceCloseTimeout)
+		_ = source.Close(closeCtx)
+		cancel()
+
+		for _, idx := range failed {
+			e.transitionPipeline(idx, PipelineInitializing)
+		}
+		st.idxs = failed
+	}
+}
+
+// sourceCloseTimeout bounds closing a failed source before a retry.
+const sourceCloseTimeout = 10 * time.Second
+
+// sourceRun is what runSource carries from one attempt to the next.
+type sourceRun struct {
+	idxs   []int // pipelines the next attempt runs
+	tables []TableIdentifier
+
+	// targetsInited records that OnInit ran. A retry does not run it again,
+	// in keeping with a re-baseline, so a target keeps its rows (and anything
+	// it built from them) until the new baseline overwrites them.
+	targetsInited bool
+	// loaded records that the targets hold data from a baseline, a snapshot or
+	// a resumed stream. A snapshot is restored only before that: restoring one
+	// later would replace newer rows with older ones.
+	loaded bool
+	// streamStart is when the latest stream started, zero if none did.
+	streamStart time.Time
+}
+
+// livePipelines returns the pipelines in idxs that are not in ERROR or STOPPED.
+func (e *coreEngine) livePipelines(idxs []int) []int {
+	var live []int
+	for _, idx := range idxs {
+		s := e.pipelines[idx].loadState()
+		if s != PipelineError && s != PipelineStopped {
+			live = append(live, idx)
+		}
+	}
+	return live
+}
+
+// jitter returns a wait between half of d and d, so processes that failed
+// together spread their retries out.
+func jitter(d time.Duration) time.Duration {
+	half := d / 2
+	return half + rand.N(d-half+1) //nolint:gosec // jitter, not security
+}
+
+// runSourceAttempt runs one attempt of a source's lifecycle. It returns nil when
+// ctx is cancelled or the stream ends cleanly, and the error when the source
+// fails. It leaves moving the failed pipelines to ERROR to runSource, which
+// knows which of them the failure took down.
+func (e *coreEngine) runSourceAttempt(ctx context.Context, sourceID string, source SyncSource, st *sourceRun) error {
+	pipelineIdxs := st.idxs
+	tables := st.tables
+	st.streamStart = time.Time{}
+
 	schemas, err := source.Init(ctx, SourceConfig{Tables: tables})
 	if err != nil {
-		e.transitionPipelines(pipelineIdxs, PipelineError)
-		e.observer.OnSourceDisconnected(sourceID, fmt.Sprintf("init failed: %v", err))
-		return
+		return fmt.Errorf("init failed: %w", err)
 	}
 
 	e.observer.OnSourceConnected(sourceID, reflect.TypeOf(source).String())
@@ -768,24 +917,30 @@ func (e *coreEngine) runSource(ctx context.Context, sourceID string, pipelineIdx
 	}
 	e.mu.Unlock()
 
-	// Init each target with the column schema.
-	for _, idx := range pipelineIdxs {
-		p := &e.pipelines[idx]
-		cols := schemas[p.table]
-		if err := p.target.OnInit(ctx, p.table, cols); err != nil {
-			e.transitionPipeline(idx, PipelineError)
-			continue
+	// Init each target with the column schema, once.
+	if !st.targetsInited {
+		st.targetsInited = true
+		for _, idx := range pipelineIdxs {
+			p := &e.pipelines[idx]
+			cols := schemas[p.table]
+			if err := p.target.OnInit(ctx, p.table, cols); err != nil {
+				e.transitionPipeline(idx, PipelineError)
+				continue
+			}
 		}
+	}
+
+	stream := func(pos Position) (rebaseline bool, err error) {
+		st.loaded = true
+		st.streamStart = time.Now()
+		return e.streamFromPosition(ctx, sourceID, source, pipelineIdxs, pos)
 	}
 
 	// Try resume path: if the source supports resume and has a last ACKed
 	// position, skip baseline and go directly to streaming.
-	var position Position
 	if source.SupportsResume() {
 		lastPos, err := source.LastAckedPosition(ctx)
 		if err == nil && lastPos != nil {
-			position = lastPos
-
 			// Skip baseline — transition directly to STREAMING.
 			for _, idx := range pipelineIdxs {
 				p := &e.pipelines[idx]
@@ -795,8 +950,9 @@ func (e *coreEngine) runSource(ctx context.Context, sourceID string, pipelineIdx
 				}
 			}
 
-			if !e.streamFromPosition(ctx, sourceID, source, pipelineIdxs, position) {
-				return // normal exit or error
+			rebaseline, err := stream(lastPos)
+			if !rebaseline {
+				return err // normal exit or error
 			}
 			// Re-baseline needed — fall through to baseline path.
 		}
@@ -804,10 +960,11 @@ func (e *coreEngine) runSource(ctx context.Context, sourceID string, pipelineIdx
 
 	// Try snapshot restore: load latest snapshot, restore targets, resume from
 	// the snapshot's source position.
-	if e.snapshotStore != nil {
+	if e.snapshotStore != nil && !st.loaded {
 		if pos := e.trySnapshotRestore(ctx, sourceID, source, pipelineIdxs); pos != nil {
-			if !e.streamFromPosition(ctx, sourceID, source, pipelineIdxs, pos) {
-				return
+			rebaseline, err := stream(pos)
+			if !rebaseline {
+				return err
 			}
 			// Re-baseline needed — fall through to baseline path.
 		}
@@ -815,15 +972,17 @@ func (e *coreEngine) runSource(ctx context.Context, sourceID string, pipelineIdx
 
 	// Full baseline path. Re-baseline loop handles ErrReBaselineRequired from streaming.
 	for {
-		position = e.runBaseline(ctx, sourceID, source, tables, pipelineIdxs)
-		if position == nil {
-			return // baseline failed or context cancelled
+		position, err := e.runBaseline(ctx, sourceID, source, tables, pipelineIdxs)
+		if err != nil || position == nil {
+			return err // baseline failed, or context cancelled
 		}
+		st.loaded = true
 
-		if !e.streamFromPosition(ctx, sourceID, source, pipelineIdxs, position) {
-			return // normal exit or error (not re-baseline)
+		rebaseline, err := stream(position)
+		if !rebaseline {
+			return err // normal exit or error (not re-baseline)
 		}
-		// streamFromPosition returned true → re-baseline needed. Loop.
+		// Re-baseline needed. Loop.
 	}
 }
 
@@ -908,7 +1067,7 @@ func findSnapshotTableInfo(tables []TableSnapshotInfo, table TableIdentifier) Ta
 	return TableSnapshotInfo{Table: table}
 }
 
-func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source SyncSource, tables []TableIdentifier, pipelineIdxs []int) Position {
+func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source SyncSource, tables []TableIdentifier, pipelineIdxs []int) (Position, error) {
 	e.transitionPipelines(pipelineIdxs, PipelineBaselining)
 
 	rowCounts := make(map[TableIdentifier]int64, len(tables))
@@ -916,10 +1075,17 @@ func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source Sy
 
 	for _, idx := range pipelineIdxs {
 		p := &e.pipelines[idx]
-		if p.loadState() == PipelineBaselining {
-			p.expectedRows.Store(0) // reset before baseline
-			e.observer.OnBaselineStarted(p.id, p.table)
+		if p.loadState() != PipelineBaselining {
+			continue
 		}
+		p.expectedRows.Store(0) // reset before baseline
+		if st, ok := p.target.(SweepingTarget); ok {
+			if err := st.OnBaselineStart(ctx, p.table); err != nil {
+				e.transitionPipeline(idx, PipelineError)
+				continue
+			}
+		}
+		e.observer.OnBaselineStarted(p.id, p.table)
 	}
 
 	position, err := source.Baseline(ctx, tables, func(table TableIdentifier, row Row) {
@@ -928,11 +1094,9 @@ func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source Sy
 	})
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil
+			return nil, nil
 		}
-		e.transitionPipelines(pipelineIdxs, PipelineError)
-		e.observer.OnSourceDisconnected(sourceID, fmt.Sprintf("baseline failed: %v", err))
-		return nil
+		return nil, fmt.Errorf("baseline failed: %w", err)
 	}
 
 	baselineDuration := time.Since(baselineStart)
@@ -999,14 +1163,16 @@ func (e *coreEngine) runBaseline(ctx context.Context, sourceID string, source Sy
 		}
 	}
 
-	return position
+	return position, nil
 }
 
 // streamFromPosition starts streaming changes from the given position.
 // It creates per-pipeline change buffers and consumer goroutines. The source
 // dispatcher puts events into buffers; consumers read and apply changes to targets.
-// Returns true if re-baseline is required (ErrReBaselineRequired).
-func (e *coreEngine) streamFromPosition(ctx context.Context, sourceID string, source SyncSource, pipelineIdxs []int, position Position) bool {
+// It reports rebaseline when the source returned ErrReBaselineRequired, and
+// otherwise the error the stream failed with (nil for a clean end or a
+// cancelled ctx).
+func (e *coreEngine) streamFromPosition(ctx context.Context, sourceID string, source SyncSource, pipelineIdxs []int, position Position) (rebaseline bool, err error) {
 	// Create a cancellable context for this source's streaming session.
 	// Consumer goroutines can cancel this to stop the source (e.g., ErrorStopSource).
 	streamCtx, streamCancel := context.WithCancel(ctx)
@@ -1044,7 +1210,7 @@ func (e *coreEngine) streamFromPosition(ctx context.Context, sourceID string, so
 			return e.dispatchHeartbeatToBuffers(streamCtx, pipelineIdxs, buffers, pos)
 		},
 	}
-	err := source.Stream(streamCtx, position, handler)
+	err = source.Stream(streamCtx, position, handler)
 
 	// Close all buffers so consumers drain remaining items and exit.
 	for _, buf := range buffers {
@@ -1052,17 +1218,17 @@ func (e *coreEngine) streamFromPosition(ctx context.Context, sourceID string, so
 	}
 	consumerWg.Wait()
 
-	if err != nil && ctx.Err() == nil {
-		e.observer.OnSourceDisconnected(sourceID, fmt.Sprintf("stream error: %v", err))
-
-		// ErrReBaselineRequired: signal the caller to re-baseline instead of erroring.
-		if errors.Is(err, ErrReBaselineRequired) {
-			e.observer.OnReBaselineTriggered(sourceID)
-			return true
-		}
-		e.transitionPipelines(pipelineIdxs, PipelineError)
+	if err == nil || ctx.Err() != nil {
+		return false, nil
 	}
-	return false
+
+	// ErrReBaselineRequired: signal the caller to re-baseline instead of erroring.
+	if errors.Is(err, ErrReBaselineRequired) {
+		e.observer.OnSourceDisconnected(sourceID, fmt.Sprintf("stream error: %v", err))
+		e.observer.OnReBaselineTriggered(sourceID)
+		return true, nil
+	}
+	return false, fmt.Errorf("stream error: %w", err)
 }
 
 // tablesForPipelines returns the unique tables referenced by the given pipeline indices.

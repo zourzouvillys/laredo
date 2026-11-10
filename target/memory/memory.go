@@ -62,6 +62,10 @@ type IndexedTarget struct {
 	// Primary store: composite PK string -> Row.
 	store map[string]laredo.Row
 
+	// seen holds the keys delivered since OnBaselineStart, nil outside a
+	// baseline (see laredo.SweepingTarget).
+	seen map[string]struct{}
+
 	// Lookup index (unique, keyed by lookupFields).
 	lookupIndex map[string]laredo.Row
 
@@ -264,14 +268,47 @@ func (t *IndexedTarget) OnBaselineRow(_ context.Context, _ laredo.TableIdentifie
 	defer t.mu.Unlock()
 
 	pkKey := buildKey(row, t.pkCols)
+	if old, exists := t.store[pkKey]; exists {
+		// A re-baseline overwrites the row; drop the old version's index
+		// entries so a changed indexed field does not leave a stale one.
+		t.removeFromIndexes(old)
+	}
 	t.store[pkKey] = row
 	t.addToIndexes(row)
+	if t.seen != nil {
+		t.seen[pkKey] = struct{}{}
+	}
 	t.notifyListeners(nil, row)
 	return nil
 }
 
+// OnBaselineStart begins recording the keys a baseline delivers, so that
+// OnBaselineComplete can remove the rows it did not. See laredo.SweepingTarget.
+func (t *IndexedTarget) OnBaselineStart(_ context.Context, _ laredo.TableIdentifier) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.seen = make(map[string]struct{}, len(t.store))
+	return nil
+}
+
+// OnBaselineComplete removes every row the baseline did not deliver, as a
+// delete, when the baseline was started with OnBaselineStart.
+//
 //nolint:revive // implements SyncTarget.
 func (t *IndexedTarget) OnBaselineComplete(_ context.Context, _ laredo.TableIdentifier) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.seen == nil {
+		return nil
+	}
+	for key, row := range t.store {
+		if _, ok := t.seen[key]; !ok {
+			t.removeFromIndexes(row)
+			delete(t.store, key)
+			t.notifyListeners(row, nil)
+		}
+	}
+	t.seen = nil
 	return nil
 }
 
@@ -573,6 +610,10 @@ type CompiledTarget struct {
 	// Primary store: composite key string -> compiledEntry.
 	store map[string]compiledEntry
 
+	// seen holds the keys delivered since OnBaselineStart, nil outside a
+	// baseline (see laredo.SweepingTarget).
+	seen map[string]struct{}
+
 	// Change listeners.
 	listeners map[int]func(old, new any)
 	nextID    int
@@ -589,7 +630,11 @@ func NewCompiledTarget(opts ...CompiledTargetOption) *CompiledTarget {
 	return t
 }
 
-var _ laredo.SyncTarget = (*CompiledTarget)(nil)
+var (
+	_ laredo.SyncTarget     = (*CompiledTarget)(nil)
+	_ laredo.SweepingTarget = (*CompiledTarget)(nil)
+	_ laredo.SweepingTarget = (*IndexedTarget)(nil)
+)
 
 // notifyCompiledListeners calls all registered listeners with the old and new compiled objects.
 // Must be called under the write lock.
@@ -631,11 +676,41 @@ func (t *CompiledTarget) OnBaselineRow(_ context.Context, _ laredo.TableIdentifi
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	// Record the key before the filter and compiler run, as OnUpdate decides:
+	// a row the filter now rejects is swept (OnUpdate deletes it), and one
+	// that fails to compile keeps its previous version (OnUpdate keeps it).
+	if t.seen != nil && (t.filter == nil || t.filter(row)) {
+		t.seen[buildKey(row, t.keyFields)] = struct{}{}
+	}
 	return t.insertRow(row)
 }
 
+// OnBaselineStart begins recording the keys a baseline delivers, so that
+// OnBaselineComplete can remove the rows it did not. See laredo.SweepingTarget.
+func (t *CompiledTarget) OnBaselineStart(_ context.Context, _ laredo.TableIdentifier) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.seen = make(map[string]struct{}, len(t.store))
+	return nil
+}
+
+// OnBaselineComplete removes every row the baseline did not deliver, as a
+// delete, when the baseline was started with OnBaselineStart.
+//
 //nolint:revive // implements SyncTarget.
 func (t *CompiledTarget) OnBaselineComplete(_ context.Context, _ laredo.TableIdentifier) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.seen == nil {
+		return nil
+	}
+	for key, entry := range t.store {
+		if _, ok := t.seen[key]; !ok {
+			delete(t.store, key)
+			t.notifyCompiledListeners(entry.compiled, nil)
+		}
+	}
+	t.seen = nil
 	return nil
 }
 

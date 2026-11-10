@@ -869,9 +869,10 @@ func TestEngine_SourceInitError(t *testing.T) {
 		t.Error("expected engine to not become ready on init error")
 	}
 
-	// Source disconnected event should have been fired.
+	// Source disconnected event should have been fired. The engine keeps
+	// retrying a failed Init, so there may be more than one by now.
 	testutil.AssertEventually(t, 2*time.Second, func() bool {
-		return obs.EventCount("SourceDisconnected") == 1
+		return obs.EventCount("SourceDisconnected") >= 1
 	}, "expected SourceDisconnected event")
 
 	if err := e.Stop(ctx); err != nil {

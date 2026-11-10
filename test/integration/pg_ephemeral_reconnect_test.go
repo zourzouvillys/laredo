@@ -211,11 +211,13 @@ func TestPGSource_EphemeralReconnect_queryConnectionToo(t *testing.T) {
 	}
 }
 
-// TestPGSource_EphemeralReconnect_givesUpOnAPermanentStreamError drops the
+// TestPGSource_EphemeralReconnect_recoversAfterTheSourceGivesUp drops the
 // publication, so every replacement slot streams for a moment and then fails
-// for the same reason. A new slot cannot fix that, and the source must stop
-// after MaxAttempts slot losses in a row instead of re-baselining forever.
-func TestPGSource_EphemeralReconnect_givesUpOnAPermanentStreamError(t *testing.T) {
+// for the same reason. A new slot cannot fix that, and the source stops after
+// MaxAttempts slot losses in a row instead of re-baselining forever. The engine
+// then starts the source again from Init, which recreates the publication
+// (Create: true), and the pipeline streams again.
+func TestPGSource_EphemeralReconnect_recoversAfterTheSourceGivesUp(t *testing.T) {
 	pgc := testutil.NewTestPostgres(t)
 	pgc.CreateTestTable(t)
 	pgc.InsertTestRows(t, 2)
@@ -237,6 +239,7 @@ func TestPGSource_EphemeralReconnect_givesUpOnAPermanentStreamError(t *testing.T
 		laredo.WithSource("pg", src),
 		laredo.WithPipeline("pg", laredo.Table("public", "test_users"), target),
 		laredo.WithObserver(obs),
+		laredo.WithSourceRetry(laredo.SourceRetry{InitialBackoff: 200 * time.Millisecond, MaxBackoff: 500 * time.Millisecond}),
 	)
 	if len(errs) > 0 {
 		t.Fatalf("engine errors: %v", errs)
@@ -285,13 +288,31 @@ func TestPGSource_EphemeralReconnect_givesUpOnAPermanentStreamError(t *testing.T
 		return false
 	}, "expected the source to give up after repeated slot losses")
 
-	// It stays given up: no further re-baselines.
-	n := obs.EventCount("ReBaselineTriggered")
-	time.Sleep(2 * time.Second)
-	if after := obs.EventCount("ReBaselineTriggered"); after != n {
-		t.Errorf("re-baselines kept coming after the source gave up: %d then %d", n, after)
+	// The engine does not stay given up: it re-inits the source, which
+	// recreates the publication, and streaming resumes.
+	testutil.AssertEventually(t, 60*time.Second, func() bool {
+		for _, e := range obs.EventsByType("SourceDisconnected") {
+			if r, _ := e.Data["reason"].(string); strings.Contains(r, "times in a row") && strings.Contains(r, "retrying in") {
+				return true
+			}
+		}
+		return false
+	}, "expected the engine to schedule a retry after the source gave up")
+	stopWrites()
+	<-writesDone
+
+	if _, err := conn.Exec(ctx, "INSERT INTO test_users (name, email) VALUES ($1, $2)", "after-recovery", "a@r.com"); err != nil {
+		t.Fatalf("insert: %v", err)
 	}
-	if n != maxAttempts+1 {
-		t.Errorf("expected %d re-baselines (the last one refused), got %d", maxAttempts+1, n)
+	testutil.AssertEventually(t, 60*time.Second, func() bool {
+		_, ok := target.Lookup("after-recovery")
+		return ok
+	}, "row written after recovery never arrived")
+	if _, err := conn.Exec(ctx, "DELETE FROM test_users WHERE name = $1", "after-recovery"); err != nil {
+		t.Fatalf("delete: %v", err)
 	}
+	testutil.AssertEventually(t, 30*time.Second, func() bool {
+		_, ok := target.Lookup("after-recovery")
+		return !ok
+	}, "a DELETE did not arrive: the pipeline is not streaming after recovery")
 }
