@@ -13,7 +13,14 @@ import (
 	"github.com/zourzouvillys/laredo"
 	v1 "github.com/zourzouvillys/laredo/gen/laredo/v1"
 	"github.com/zourzouvillys/laredo/gen/laredo/v1/laredov1connect"
+	"github.com/zourzouvillys/laredo/internal/rowpb"
 	"github.com/zourzouvillys/laredo/target/memory"
+)
+
+// Page bounds for ListRows.
+const (
+	defaultListRowsPageSize = 100
+	maxListRowsPageSize     = 10000
 )
 
 // Service implements the LaredoQueryService.
@@ -114,9 +121,14 @@ func (s *Service) ListRows(_ context.Context, req *connect.Request[v1.ListRowsRe
 		return nil, err
 	}
 
+	// Cap the page. There is no page token, so an unbounded page_size was a
+	// way to materialize the whole table into one response.
 	pageSize := int(req.Msg.GetPageSize())
 	if pageSize <= 0 {
-		pageSize = 100
+		pageSize = defaultListRowsPageSize
+	}
+	if pageSize > maxListRowsPageSize {
+		pageSize = maxListRowsPageSize
 	}
 
 	var rows []*structpb.Struct
@@ -159,6 +171,19 @@ func (s *Service) Subscribe(ctx context.Context, req *connect.Request[v1.Subscri
 
 	ch := make(chan *v1.SubscribeResponse, 256)
 
+	// A row that will not encode ends the subscription. Dropping the event
+	// instead would leave the subscriber believing it had seen every change,
+	// which is exactly the silent divergence this conversion path exists to
+	// prevent — unlike the slow-consumer drop below, which the protocol's
+	// buffering contract already allows for.
+	encodeErr := make(chan error, 1)
+	failSubscription := func(err error) {
+		select {
+		case encodeErr <- err:
+		default:
+		}
+	}
+
 	// Register listener. The callback runs under the target's write lock, so
 	// it must not block — use a non-blocking channel send.
 	unsub := target.Listen(func(old, new laredo.Row) {
@@ -179,10 +204,20 @@ func (s *Service) Subscribe(ctx context.Context, req *connect.Request[v1.Subscri
 			Timestamp: timestamppb.Now(),
 		}
 		if new != nil {
-			resp.NewValues, _ = rowToStruct(new)
+			v, err := rowToStruct(new)
+			if err != nil {
+				failSubscription(fmt.Errorf("encode new values: %w", err))
+				return
+			}
+			resp.NewValues = v
 		}
 		if old != nil {
-			resp.OldValues, _ = rowToStruct(old)
+			v, err := rowToStruct(old)
+			if err != nil {
+				failSubscription(fmt.Errorf("encode old values: %w", err))
+				return
+			}
+			resp.OldValues = v
 		}
 
 		select {
@@ -215,6 +250,8 @@ func (s *Service) Subscribe(ctx context.Context, req *connect.Request[v1.Subscri
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case err := <-encodeErr:
+			return connect.NewError(connect.CodeInternal, err)
 		case msg := <-ch:
 			if err := stream.Send(msg); err != nil {
 				return err
@@ -250,11 +287,10 @@ func protoValuesToLaredo(values []*structpb.Value) []laredo.Value {
 	return result
 }
 
-// rowToStruct converts a laredo.Row to a protobuf Struct.
+// rowToStruct converts a laredo.Row to a protobuf Struct. The conversion
+// lives in internal/rowpb because the same row types cross the replication
+// wire, and a plain structpb.NewStruct rejects the time.Time, uuid and
+// numeric values pgx routinely produces.
 func rowToStruct(row laredo.Row) (*structpb.Struct, error) {
-	fields := make(map[string]any, len(row))
-	for k, v := range row {
-		fields[k] = v
-	}
-	return structpb.NewStruct(fields)
+	return rowpb.RowToStruct(row)
 }

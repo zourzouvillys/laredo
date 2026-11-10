@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Rows are no longer silently dropped by the fan-out.** `structpb.NewStruct`
+  rejects `time.Time`, `[16]byte`, `pgtype.Numeric` and `netip.Prefix` — all of
+  which the baseline path produces — and the error was discarded at eight call
+  sites in `service/replication` and `service/query`. The nil Struct went on the
+  wire, the client skipped the row, and the journal sequence advanced anyway, so
+  any table with a `timestamptz`, `uuid` or `numeric` column lost rows on the
+  snapshot path with nothing in any log. Conversion now lives in
+  `internal/rowpb` and returns an error the callers propagate.
+- **Streaming values decode to the same Go types as the baseline path.** The
+  same column arrived as `int64`/`time.Time` from the initial COPY and as raw
+  text from pgoutput, so a row's type depended on how the process learned about
+  it and numeric subscription filters stopped matching after the first change.
+- **The fan-out client no longer deadlocks on a listener that reads it.**
+  `applyJournalEntry` held the write lock across the callback; notifications are
+  now delivered after it is released.
+- **`Listen` supports multiple subscribers.** It assigned a single field, so a
+  second listener silently replaced the first and the first's unsubscribe
+  removed the second's.
+- **The client keys rows on the declared primary key** rather than a column
+  named `id`, which for any other key made every UPDATE insert a duplicate.
+- **A re-snapshot no longer exposes a partial replica.** Snapshots accumulate
+  aside and are installed in one assignment; `OnSnapshotComplete` reports it.
+- **Client sessions are independent of client id.** The GoAway handoff runs two
+  streams under one id by design; the registry keyed on id, so the second
+  displaced the first and the first's teardown released the second's journal pin
+  mid-snapshot — pruning entries that stream still needed.
+- **`behind_count`, `connected_at` and reconnect backoff.** The first two were
+  never populated; the backoff variable was declared outside the retry loop and
+  never reset, pinning a client at the 30s maximum for life after a few early
+  failures. Reconnects are now jittered, including the GoAway path, which had no
+  delay at all.
+- **`WithTLS` no longer starts the server in plaintext** when the certificate
+  fails to load; `Start` returns the error.
+
+### Added
+- **Authorization** (EDR-0007): `service.WithAuthorizer` installs an
+  `Authorizer` consulted for every request on every service. It returns
+  predicates the server ANDs into a subscription — imposing scope rather than
+  approving what the client asked for, which is the only way to constrain a
+  caller that sends no filters — and names the subject used as the client id.
+  `service/auth/oidc` provides discovery + JWKS verification.
+- **Client credentials**: `WithHTTPClient`, `WithClientOptions` and `WithTLS` on
+  the fan-out client, which previously hardcoded `http.DefaultClient` and an
+  `http://` scheme and so could reach neither an authenticated server nor a TLS
+  one.
+- **Connection state on the client**: `LastError`, `Connected`, `LastReceived`
+  and `IsStale`. The client tracked the timestamp `IsStale` needs and read it
+  nowhere.
+- **Heartbeats carry the source position**, so an idle or heavily filtered
+  subscriber's resume point keeps up with the source instead of freezing at the
+  last entry it happened to match.
+- **Resource bounds**: snapshot retention, client cap, filter predicate and `in`
+  list limits, and a request body limit — all previously unbounded.
+
+### Changed
+- **BREAKING — `Sync` is bidirectional** (EDR-0007):
+  `rpc Sync(stream SyncClientMessage) returns (stream SyncResponse)`. The former
+  `SyncRequest` is now `SyncStart`, the stream's first message, and clients send
+  `ApplyAck` to report what they have applied. `GetReplicationStatus` gains
+  `applied_sequence`, `applied_source_position`, `applied_generation`,
+  `apply_error` and `last_ack_at`, so what a subscriber has *installed* is
+  distinguishable from what was *sent* to it. A v0.3.0 client cannot talk to a
+  v0.4.0 server.
+- **The server serves unencrypted HTTP/2** (via the standard library's
+  `Protocols`), because Connect carries bidirectional streams over HTTP/2 only.
+  The Go client dials with the gRPC protocol, since Connect's own streaming
+  protocol is half-duplex and a client holding the stream open to acknowledge
+  would deadlock.
+
 ### Added
 - **Archive source** (`source/archive`, EDR-0006): replay a snapshotter archive
   (base snapshot + diffs + manifest) from disk as a `SyncSource`, so an engine can

@@ -24,22 +24,41 @@ import (
 type testServer struct {
 	replicationv1connect.UnimplementedLaredoReplicationServiceHandler
 	mu      sync.Mutex
-	syncFn  func(context.Context, *connect.Request[v1.SyncRequest], *connect.ServerStream[v1.SyncResponse]) error
+	syncFn  func(context.Context, *v1.SyncStart, *testStream) error
 	syncCnt atomic.Int32
 }
 
-func (s *testServer) Sync(ctx context.Context, req *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
+// testStream is the bidirectional Sync stream as the server sees it.
+type testStream = connect.BidiStream[v1.SyncClientMessage, v1.SyncResponse]
+
+func (s *testServer) Sync(ctx context.Context, stream *testStream) error {
 	s.syncCnt.Add(1)
+	first, err := stream.Receive()
+	if err != nil {
+		return err
+	}
+	start := first.GetStart()
+	if start == nil {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("expected SyncStart"))
+	}
+	// Drain acks so a client that reports its applied position is not blocked.
+	go func() {
+		for {
+			if _, err := stream.Receive(); err != nil {
+				return
+			}
+		}
+	}()
 	s.mu.Lock()
 	fn := s.syncFn
 	s.mu.Unlock()
 	if fn != nil {
-		return fn(ctx, req, stream)
+		return fn(ctx, start, stream)
 	}
 	return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not configured"))
 }
 
-func (s *testServer) setSyncFn(fn func(context.Context, *connect.Request[v1.SyncRequest], *connect.ServerStream[v1.SyncResponse]) error) {
+func (s *testServer) setSyncFn(fn func(context.Context, *v1.SyncStart, *testStream) error) {
 	s.mu.Lock()
 	s.syncFn = fn
 	s.mu.Unlock()
@@ -57,7 +76,12 @@ func startTestServer(t *testing.T, svc *testServer) string {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	// h2c: Sync is bidirectional and Connect carries bidi over HTTP/2 only.
+	srv := &http.Server{
+		Handler:           mux,
+		Protocols:         testProtocols(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 	go func() { _ = srv.Serve(listener) }()
 	t.Cleanup(func() { _ = srv.Close() })
 
@@ -76,9 +100,9 @@ func makeRow(t *testing.T, m map[string]any) *structpb.Struct {
 
 func TestClient_FullSnapshot(t *testing.T) {
 	ts := &testServer{}
-	ts.setSyncFn(func(ctx context.Context, req *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
+	ts.setSyncFn(func(ctx context.Context, start *v1.SyncStart, stream *testStream) error {
 		// Verify request fields.
-		if req.Msg.GetSchema() != "public" || req.Msg.GetTable() != "users" {
+		if start.GetSchema() != "public" || start.GetTable() != "users" {
 			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unexpected table"))
 		}
 
@@ -162,8 +186,8 @@ func TestClient_FullSnapshot(t *testing.T) {
 
 func TestClient_Delta(t *testing.T) {
 	ts := &testServer{}
-	ts.setSyncFn(func(ctx context.Context, req *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
-		lastSeq := req.Msg.GetLastKnownSequence()
+	ts.setSyncFn(func(ctx context.Context, start *v1.SyncStart, stream *testStream) error {
+		lastSeq := start.GetLastKnownSequence()
 		if lastSeq != 5 {
 			return connect.NewError(connect.CodeInternal, fmt.Errorf("expected lastSeq=5, got %d", lastSeq))
 		}
@@ -264,7 +288,7 @@ func TestClient_Delta(t *testing.T) {
 func TestClient_JournalActions(t *testing.T) {
 	// Tests INSERT, UPDATE, DELETE, TRUNCATE journal actions and listener.
 	ts := &testServer{}
-	ts.setSyncFn(func(ctx context.Context, _ *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
+	ts.setSyncFn(func(ctx context.Context, _ *v1.SyncStart, stream *testStream) error {
 		// Handshake + empty snapshot.
 		if err := stream.Send(&v1.SyncResponse{
 			Message: &v1.SyncResponse_Handshake{
@@ -411,7 +435,7 @@ func TestClient_JournalActions(t *testing.T) {
 
 func TestClient_LookupAndAll(t *testing.T) {
 	ts := &testServer{}
-	ts.setSyncFn(func(ctx context.Context, _ *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
+	ts.setSyncFn(func(ctx context.Context, _ *v1.SyncStart, stream *testStream) error {
 		if err := stream.Send(&v1.SyncResponse{
 			Message: &v1.SyncResponse_Handshake{
 				Handshake: &v1.SyncHandshake{Mode: v1.SyncMode_SYNC_MODE_FULL_SNAPSHOT, ServerCurrentSequence: 2},
@@ -483,7 +507,7 @@ func TestClient_Reconnect(t *testing.T) {
 
 	// First call: send snapshot then close the stream.
 	// Second call: send delta then keep alive.
-	ts.setSyncFn(func(ctx context.Context, req *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
+	ts.setSyncFn(func(ctx context.Context, start *v1.SyncStart, stream *testStream) error {
 		callNum := ts.syncCnt.Load()
 
 		if callNum == 1 {
@@ -516,7 +540,7 @@ func TestClient_Reconnect(t *testing.T) {
 		}
 
 		// Second connection: delta with new data.
-		lastSeq := req.Msg.GetLastKnownSequence()
+		lastSeq := start.GetLastKnownSequence()
 		if lastSeq != 2 {
 			return connect.NewError(connect.CodeInternal, fmt.Errorf("expected lastSeq=2 on reconnect, got %d", lastSeq))
 		}
@@ -600,7 +624,7 @@ func TestClient_Reconnect(t *testing.T) {
 func TestClient_SnapshotClearsStore(t *testing.T) {
 	// Verify that a full snapshot clears any existing data.
 	ts := &testServer{}
-	ts.setSyncFn(func(ctx context.Context, _ *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
+	ts.setSyncFn(func(ctx context.Context, _ *v1.SyncStart, stream *testStream) error {
 		if err := stream.Send(&v1.SyncResponse{
 			Message: &v1.SyncResponse_Handshake{
 				Handshake: &v1.SyncHandshake{Mode: v1.SyncMode_SYNC_MODE_FULL_SNAPSHOT, ServerCurrentSequence: 1},
@@ -659,7 +683,7 @@ func TestClient_SnapshotClearsStore(t *testing.T) {
 
 func TestClient_Heartbeat(t *testing.T) {
 	ts := &testServer{}
-	ts.setSyncFn(func(ctx context.Context, _ *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
+	ts.setSyncFn(func(ctx context.Context, _ *v1.SyncStart, stream *testStream) error {
 		if err := stream.Send(&v1.SyncResponse{
 			Message: &v1.SyncResponse_Handshake{
 				Handshake: &v1.SyncHandshake{Mode: v1.SyncMode_SYNC_MODE_FULL_SNAPSHOT, ServerCurrentSequence: 0},
@@ -725,7 +749,7 @@ func TestClient_Heartbeat(t *testing.T) {
 func TestClient_StopBeforeReady(t *testing.T) {
 	// Server that never sends anything useful — just hangs.
 	ts := &testServer{}
-	ts.setSyncFn(func(ctx context.Context, _ *connect.Request[v1.SyncRequest], _ *connect.ServerStream[v1.SyncResponse]) error {
+	ts.setSyncFn(func(ctx context.Context, _ *v1.SyncStart, _ *testStream) error {
 		<-ctx.Done()
 		return ctx.Err()
 	})
@@ -762,7 +786,7 @@ func TestClient_LocalSnapshot(t *testing.T) {
 	ts := &testServer{}
 
 	// First connection: full snapshot with 2 rows.
-	ts.setSyncFn(func(ctx context.Context, req *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
+	ts.setSyncFn(func(ctx context.Context, start *v1.SyncStart, stream *testStream) error {
 		callNum := ts.syncCnt.Load()
 
 		if callNum == 1 {
@@ -798,7 +822,7 @@ func TestClient_LocalSnapshot(t *testing.T) {
 		}
 
 		// Second connection: verify client sends lastSeq=5 (loaded from snapshot).
-		lastSeq := req.Msg.GetLastKnownSequence()
+		lastSeq := start.GetLastKnownSequence()
 		if lastSeq != 5 {
 			return connect.NewError(connect.CodeInternal, fmt.Errorf("expected lastSeq=5, got %d", lastSeq))
 		}
@@ -889,7 +913,7 @@ func TestClient_LocalSnapshot(t *testing.T) {
 
 func TestClient_LookupByIndex(t *testing.T) {
 	ts := &testServer{}
-	ts.setSyncFn(func(ctx context.Context, _ *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
+	ts.setSyncFn(func(ctx context.Context, _ *v1.SyncStart, stream *testStream) error {
 		if err := stream.Send(&v1.SyncResponse{
 			Message: &v1.SyncResponse_Handshake{
 				Handshake: &v1.SyncHandshake{Mode: v1.SyncMode_SYNC_MODE_FULL_SNAPSHOT, ServerCurrentSequence: 3},
@@ -1008,9 +1032,10 @@ func TestRowKey(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := rowKey(tt.row)
+			c := &Client{}
+			got := c.rowKeyLocked(tt.row)
 			if got != tt.want {
-				t.Errorf("rowKey(%v) = %q, want %q", tt.row, got, tt.want)
+				t.Errorf("rowKeyLocked(%v) = %q, want %q", tt.row, got, tt.want)
 			}
 		})
 	}
@@ -1025,7 +1050,7 @@ func TestClient_FailoverByPosition(t *testing.T) {
 	gotResumePos := make(chan string, 1)
 	gotResumeSeq := make(chan int64, 1)
 
-	ts.setSyncFn(func(ctx context.Context, req *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
+	ts.setSyncFn(func(ctx context.Context, start *v1.SyncStart, stream *testStream) error {
 		switch ts.syncCnt.Load() {
 		case 1:
 			// Instance A: deliver one row, then drain.
@@ -1053,8 +1078,8 @@ func TestClient_FailoverByPosition(t *testing.T) {
 
 		default:
 			// Instance B: client resumed by position. Record what it sent.
-			gotResumePos <- req.Msg.GetLastKnownSourcePosition()
-			gotResumeSeq <- req.Msg.GetLastKnownSequence()
+			gotResumePos <- start.GetLastKnownSourcePosition()
+			gotResumeSeq <- start.GetLastKnownSequence()
 			if err := stream.Send(&v1.SyncResponse{Message: &v1.SyncResponse_Handshake{
 				Handshake: &v1.SyncHandshake{Mode: v1.SyncMode_SYNC_MODE_DELTA, ServerCurrentSequence: 7},
 			}}); err != nil {
@@ -1125,13 +1150,13 @@ func TestClient_FailoverByPosition(t *testing.T) {
 }
 
 // TestClient_SendsFilters verifies the WithFilter* options are encoded into the
-// SyncRequest sent to the server.
+// SyncStart sent to the server.
 func TestClient_SendsFilters(t *testing.T) {
 	ts := &testServer{}
 	gotFilters := make(chan []*v1.FieldPredicate, 1)
-	ts.setSyncFn(func(ctx context.Context, req *connect.Request[v1.SyncRequest], stream *connect.ServerStream[v1.SyncResponse]) error {
+	ts.setSyncFn(func(ctx context.Context, start *v1.SyncStart, stream *testStream) error {
 		select {
-		case gotFilters <- req.Msg.GetFilters():
+		case gotFilters <- start.GetFilters():
 		default:
 		}
 		// A minimal empty snapshot so the client reaches ready.

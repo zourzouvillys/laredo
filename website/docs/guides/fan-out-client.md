@@ -371,3 +371,80 @@ func main() {
 - [Replication Fan-Out](/guides/fan-out) for server-side configuration
 - [In-Memory Targets](/guides/in-memory-targets) if you need indexed lookups or compiled domain objects
 - [Monitoring](/guides/monitoring) to add Prometheus or OpenTelemetry metrics
+
+## Connection state
+
+The client reconnects on its own, so these are diagnostic rather than something to act on — but
+without them a quiet table and a client that has never connected look identical.
+
+| Method | Answers |
+|---|---|
+| `Connected()` | Is a Sync stream established right now? |
+| `LastError()` | The most recent stream failure, or nil since the last successful connect. |
+| `LastReceived()` | When anything last arrived, heartbeats included. Zero before the first message. |
+| `IsStale()` | Has nothing arrived for 30s, or has nothing ever arrived? |
+
+`IsStale` is the one to check before trusting the replica. Heartbeats arrive on an idle connection
+every 5s by default, so staleness means the connection is not working rather than that the table
+is quiet.
+
+## Acknowledging what you applied
+
+The client reports its applied position back to the server every second, which is what lets
+`GetReplicationStatus` distinguish a subscriber that has *installed* a change from one that has
+merely been *sent* it.
+
+```go
+client := fanout.New(
+    fanout.ServerAddress("laredo:4002"),
+    fanout.Table("public", "feature_flag"),
+    fanout.AckInterval(500*time.Millisecond),
+    fanout.AppliedGeneration(func() string { return currentStateHash() }),
+)
+```
+
+`AppliedGeneration` is optional and opaque to the server. Supplying a content hash lets a caller
+confirm that two subscribers hold the same state, not merely that both reached the same position.
+
+## Credentials and TLS
+
+```go
+client := fanout.New(
+    fanout.ServerAddress("laredo.internal:4002"),
+    fanout.Table("public", "feature_flag"),
+    fanout.WithTLS(),
+    fanout.WithClientOptions(connect.WithInterceptors(bearerTokenInterceptor(mintToken))),
+)
+```
+
+Put the credential in an **interceptor**, not in a header captured at construction: the client
+re-dials on every reconnect, and a short-lived token captured once will be expired by the time it
+matters.
+
+`WithHTTPClient` replaces the transport entirely. Whatever you supply must speak HTTP/2 — `Sync` is
+bidirectional and Connect carries bidirectional streams over HTTP/2 only. Note that enabling
+HTTP/1.1 alongside it is counterproductive for a plaintext (`http://`) address: the transport will
+prefer HTTP/1.1, since there is nothing to negotiate with, and the stream then cannot be opened at
+all. The default transport enables unencrypted HTTP/2 only.
+
+## Listeners
+
+`Listen` may be called more than once; each registration is independent and its unsubscribe
+function removes only its own.
+
+Callbacks run **after** the client has released its lock, so reading the client from inside one —
+`Get`, `All`, `Count` — is safe. They still run on the stream goroutine, so blocking in a callback
+stalls replication.
+
+Snapshot rows do not produce per-row callbacks. A re-snapshot replaces the entire replica, and
+reporting that as a stream of individual changes would be both misleading and enormous, so use
+`OnSnapshotComplete` to replace derived state in one step:
+
+```go
+client.OnSnapshotComplete(func(rows map[string]laredo.Row, position string) {
+    index.Replace(rows) // the whole new state, installed atomically
+})
+```
+
+Between `SnapshotBegin` and `SnapshotEnd` the client keeps serving the previous contents, so
+readers never observe an empty or half-filled replica.

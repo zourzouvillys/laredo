@@ -165,13 +165,24 @@ The Replication service implements the fan-out replication protocol. It allows d
 
 ### Sync
 
-The primary server-streaming RPC for replication. A client connects, declares its current state, and receives catch-up data followed by a continuous live stream of changes.
+The primary replication RPC. It is **bidirectional**: the client opens with a `SyncStart` declaring its current state, receives catch-up data followed by a continuous live stream of changes, and sends `ApplyAck` messages reporting what it has actually applied.
 
 ```protobuf
-rpc Sync(SyncRequest) returns (stream SyncResponse);
+rpc Sync(stream SyncClientMessage) returns (stream SyncResponse);
+
+message SyncClientMessage {
+  oneof message {
+    SyncStart start = 1;  // first message, required
+    ApplyAck  ack   = 2;  // any number, thereafter
+  }
+}
 ```
 
-**Request fields:**
+The acknowledgements are what let `GetReplicationStatus` report what a subscriber has *installed* rather than only what was *sent* to it. See [ApplyAck](#applyack).
+
+Because the stream is bidirectional it requires HTTP/2, and full-duplex operation requires the **gRPC** protocol — Connect's own streaming protocol is half-duplex, so a client that holds the request open to acknowledge would deadlock. The Go client selects gRPC automatically.
+
+**`SyncStart` fields:**
 
 | Field | Type | Description |
 |---|---|---|
@@ -179,7 +190,7 @@ rpc Sync(SyncRequest) returns (stream SyncResponse);
 | `table` | `string` | Table name (required). |
 | `last_known_sequence` | `int64` | The last sequence number the client has processed. `0` means the client has no state. |
 | `last_snapshot_id` | `string` | ID of the last snapshot the client loaded (used for `DELTA_FROM_SNAPSHOT` mode). |
-| `client_id` | `string` | Unique identifier for this client. If empty, the server assigns an anonymous ID (`anon-<timestamp>`). |
+| `client_id` | `string` | Identifier for this client. If empty, the server assigns an anonymous ID (`anon-<timestamp>`). When an `Authorizer` names a subject, the subject is used instead — the field is client-supplied and the status view is keyed on it. |
 | `last_known_source_position` | `string` | The source position (e.g. WAL LSN) of the last change the client applied. Unlike `last_known_sequence` this is stable across server instances, so it is used to resume after failing over to a different instance. |
 | `filters` | `repeated FieldPredicate` | Optional server-side subscription filter. When non-empty, the client receives only rows and changes whose column values satisfy **all** predicates, applied uniformly across the snapshot, catch-up, and live phases. Empty means no filtering. See [FieldPredicate](#fieldpredicate). |
 
@@ -277,6 +288,19 @@ Each `ReplicationJournalEntry` contains:
 | `Heartbeat` | Live | Periodic keepalive during idle periods. |
 | `GoAway` | Live | Server is draining; client should fail over to another instance and resume by source position. |
 
+#### ApplyAck
+
+Sent by the client on the `Sync` stream to report what it has durably applied.
+
+| Field | Type | Description |
+|---|---|---|
+| `applied_sequence` | `int64` | Journal sequence the client has installed. |
+| `applied_source_position` | `string` | Source position (e.g. WAL LSN) the client has installed. Stable across server instances. |
+| `applied_generation` | `string` | Opaque, client-chosen identifier for the installed state — a content hash, typically. Lets a caller confirm two subscribers hold the same thing, not merely that both reached the same position. |
+| `apply_error` | `string` | Non-empty when the client could not apply what it received. Recorded and surfaced on `GetReplicationStatus`; it does not terminate the stream. |
+
+A client that never acknowledges is reported with empty applied state. That is not an error — an older client will not ack — but it does mean the server cannot say whether it is up to date.
+
 ### ListSnapshots
 
 Returns available snapshots for a fan-out target. Clients can use these to bootstrap by fetching a snapshot via `FetchSnapshot` and then connecting with `Sync` using the snapshot's sequence.
@@ -363,11 +387,16 @@ rpc GetReplicationStatus(GetReplicationStatusRequest) returns (GetReplicationSta
 
 | Field | Type | Description |
 |---|---|---|
-| `client_id` | `string` | The client's identifier (provided in `SyncRequest` or auto-assigned). |
+| `client_id` | `string` | The client's identifier (from `SyncStart`, the authenticated subject, or auto-assigned). |
 | `current_sequence` | `int64` | The last sequence number delivered to this client. |
 | `behind_count` | `int64` | How many journal entries behind the server this client is. |
 | `buffer_depth` | `int32` | Number of entries queued in the client's send buffer. |
 | `connected_at` | `Timestamp` | When the client connected. |
+| `applied_sequence` | `int64` | Sequence the client reports it has **installed**, from `ApplyAck`. Distinct from `current_sequence`, which is only what the server sent. Zero from a client that has never acknowledged. |
+| `applied_source_position` | `string` | Source position the client reports it has installed. |
+| `applied_generation` | `string` | The client's opaque identifier for its installed state. |
+| `apply_error` | `string` | Non-empty when the client reports it could not apply what it received — a subscriber that is connected and receiving but not actually keeping up. |
+| `last_ack_at` | `Timestamp` | When the client last acknowledged. |
 | `state` | `string` | Client state: `"catching_up"` or `"live"`. |
 
 Returns `NOT_FOUND` if no fan-out target exists for the given schema and table.

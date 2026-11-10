@@ -7,9 +7,17 @@ import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
 service LaredoReplicationService {
-  // Primary replication stream. Client connects, declares its state,
-  // receives catch-up data (snapshot or delta), then live changes.
-  rpc Sync(SyncRequest) returns (stream SyncResponse);
+  // Primary replication stream. The client opens with a SyncStart declaring
+  // its state, receives catch-up data (snapshot or delta), then live changes.
+  //
+  // The stream is bidirectional so the client can acknowledge what it has
+  // actually applied. Server-side status could only ever report what had been
+  // *sent* — and "sent" is not "applied": the receiving client still has to
+  // decode the row, install it, and survive doing so. An operator asking
+  // whether a configuration change has reached the fleet needs the second
+  // answer, not the first, and reporting the first as though it were the
+  // second is worse than reporting nothing.
+  rpc Sync(stream SyncClientMessage) returns (stream SyncResponse);
 
   // List available snapshots that clients can use for bootstrapping.
   rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
@@ -25,7 +33,38 @@ service LaredoReplicationService {
 // Sync (primary replication stream)
 // ============================================================
 
-message SyncRequest {
+// SyncClientMessage is anything the client sends on the Sync stream. The first
+// message must be a SyncStart; subsequent ones are acknowledgements.
+message SyncClientMessage {
+  oneof message {
+    SyncStart start = 1;
+    ApplyAck ack = 2;
+  }
+}
+
+// ApplyAck reports what the client has durably applied to its own replica.
+//
+// applied_source_position is the coordinate that matters: it is stable across
+// server instances, so it survives failover, and it advances only once the
+// client has installed the change. A client that is connected and receiving
+// but failing to apply — a decode error, or a consumer that cannot accept the
+// value — reports its error here rather than appearing healthy.
+message ApplyAck {
+  int64 applied_sequence = 1;
+  string applied_source_position = 2;
+
+  // Opaque, client-chosen identifier for the state it has installed (for
+  // example a content hash). Lets a caller confirm that two subscribers hold
+  // the same thing, not merely that both reached the same position.
+  string applied_generation = 3;
+
+  // Non-empty when the client failed to apply what it received. The server
+  // records it and surfaces it on GetReplicationStatus; it does not terminate
+  // the stream, because the client may recover on the next change.
+  string apply_error = 4;
+}
+
+message SyncStart {
   string schema = 1;
   string table = 2;
   int64 last_known_sequence = 3;
@@ -52,7 +91,7 @@ message SyncRequest {
 }
 
 // FieldPredicate is one column-level condition in a subscription filter
-// (SyncRequest.filters). It is evaluated against a row's column values: the
+// (SyncStart.filters). It is evaluated against a row's column values: the
 // post-change row for INSERT and UPDATE, and the pre-change row for DELETE.
 // TRUNCATE and schema-change markers always pass — they are structural and
 // apply to the whole replica. A missing or null column never matches.
@@ -168,6 +207,16 @@ message ColumnDefinition {
 message Heartbeat {
   int64 current_sequence = 1;
   google.protobuf.Timestamp server_time = 2;
+
+  // The source position (e.g. PostgreSQL WAL LSN) the server has reached.
+  //
+  // Without this a subscriber's position only advanced when a journal entry
+  // it was subscribed to arrived, so a filtered or simply idle subscriber
+  // fell arbitrarily far behind the true tail while appearing healthy. On
+  // failover it then resumed from that stale position and forced needless
+  // catch-up, or a full re-snapshot once the position aged out of the
+  // journal. Heartbeats carry it so an idle subscriber stays current.
+  string source_position = 3;
 }
 
 // ============================================================
@@ -226,9 +275,20 @@ message GetReplicationStatusResponse {
 
 message ConnectedClient {
   string client_id = 1;
+
+  // What the server has SENT to this client.
   int64 current_sequence = 2;
   int64 behind_count = 3;
   int32 buffer_depth = 4;
   google.protobuf.Timestamp connected_at = 5;
   string state = 6;
+
+  // What the client reports it has APPLIED, from ApplyAck. Distinct from
+  // current_sequence on purpose: a client can be sent everything and have
+  // applied none of it. Empty/zero from a client that has never acked.
+  int64 applied_sequence = 7;
+  string applied_source_position = 8;
+  string applied_generation = 9;
+  string apply_error = 10;
+  google.protobuf.Timestamp last_ack_at = 11;
 }

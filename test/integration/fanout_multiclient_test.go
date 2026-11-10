@@ -60,15 +60,18 @@ func TestFanOut_MultiClient(t *testing.T) {
 
 	// Register multiple clients and verify they all see the same state.
 	const numClients = 5
+	sessions := make([]fanout.ClientSession, 0, numClients)
 	for i := range numClients {
 		clientID := clientName(i)
-		if !fanoutTarget.RegisterClient(clientID) {
+		sess, ok := fanoutTarget.RegisterClient(clientID)
+		if !ok {
 			t.Fatalf("failed to register client %s", clientID)
 		}
+		sessions = append(sessions, sess)
 	}
 	t.Cleanup(func() {
-		for i := range numClients {
-			fanoutTarget.UnregisterClient(clientName(i))
+		for _, sess := range sessions {
+			fanoutTarget.UnregisterClient(sess)
 		}
 	})
 
@@ -112,9 +115,9 @@ func TestFanOut_MultiClient(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			cid := clientName(idx)
-			fanoutTarget.UpdateClientSequence(cid, latestSeq)
-			fanoutTarget.SetClientState(cid, "live")
+			sess := sessions[idx]
+			fanoutTarget.UpdateClientSequence(sess, latestSeq)
+			fanoutTarget.SetClientState(sess, "live")
 		}(i)
 	}
 	wg.Wait()
@@ -151,7 +154,7 @@ func TestFanOut_MultiClient(t *testing.T) {
 
 	// Unregister half the clients.
 	for i := range numClients / 2 {
-		fanoutTarget.UnregisterClient(clientName(i))
+		fanoutTarget.UnregisterClient(sessions[i])
 	}
 	if fanoutTarget.ConnectedClients() != numClients-numClients/2 {
 		t.Errorf("expected %d clients after unregister, got %d",

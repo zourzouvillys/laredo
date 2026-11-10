@@ -29,7 +29,7 @@ type journal struct {
 	maxEntries int
 	maxAge     time.Duration
 	nextSeq    int64
-	pins       map[string]int64 // clientID → minimum sequence to retain
+	pins       map[uint64]int64 // client session token → minimum sequence to retain
 }
 
 func newJournal(maxEntries int, maxAge time.Duration) *journal {
@@ -37,22 +37,22 @@ func newJournal(maxEntries int, maxAge time.Duration) *journal {
 		maxEntries: maxEntries,
 		maxAge:     maxAge,
 		nextSeq:    1,
-		pins:       make(map[string]int64),
+		pins:       make(map[uint64]int64),
 	}
 }
 
 // pin prevents pruning entries at or after the given sequence for a client.
-func (j *journal) pin(clientID string, seq int64) {
+func (j *journal) pin(token uint64, seq int64) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	j.pins[clientID] = seq
+	j.pins[token] = seq
 }
 
 // unpin removes a client's journal pin.
-func (j *journal) unpin(clientID string) {
+func (j *journal) unpin(token uint64) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	delete(j.pins, clientID)
+	delete(j.pins, token)
 }
 
 // append adds a new entry to the journal and returns its sequence number.

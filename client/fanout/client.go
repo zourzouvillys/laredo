@@ -7,9 +7,13 @@ package fanout
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"math/rand/v2"
 	"net/http"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -37,9 +41,27 @@ type Client struct {
 	// is what the client resumes from when failing over to another instance.
 	lastSourcePosition string
 	lastReceived       time.Time
-	listener           func(old, new laredo.Row)
-	posListener        func(old, new laredo.Row, position string)
+	lastError          error
+	connected          bool
 	columns            []laredo.ColumnDefinition
+
+	// Listeners are keyed by id so that several may coexist and each
+	// unsubscribe removes only its own. A single field meant a second
+	// subscriber silently replaced the first, and the first's unsubscribe
+	// then removed the second's.
+	listeners      map[uint64]func(old, new laredo.Row)
+	posListeners   map[uint64]func(old, new laredo.Row, position string)
+	snapListeners  map[uint64]func(rows map[string]laredo.Row, position string)
+	nextListenerID uint64
+
+	// pkColumns is the primary key as declared in the handshake, in ordinal
+	// order. It is how a row's identity is derived; see (*Client).rowKey.
+	pkColumns []string
+
+	// pending accumulates a snapshot in progress. Rows are applied here and
+	// swapped into store as one assignment at SnapshotEnd, so a reader never
+	// observes the replica empty or half-filled.
+	pending map[string]laredo.Row
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -64,10 +86,84 @@ type config struct {
 	localSnapshotPath string
 	indexes           []indexConfig
 	filters           []*v1.FieldPredicate
+	ackInterval       time.Duration
+	generation        func() string
+	httpClient        connect.HTTPClient
+	clientOpts        []connect.ClientOption
+	scheme            string
 }
+
+// defaultH2CClient speaks HTTP/2 over a plaintext connection. The default used
+// to be http.DefaultClient, which negotiates HTTP/1.1 — fine for a
+// server-streaming call, but Connect carries bidirectional streams over
+// HTTP/2 only, and Sync is now bidirectional so the client can acknowledge
+// what it has applied.
+var defaultH2CClient = &http.Client{Transport: unencryptedHTTP2Transport()}
+
+// unencryptedHTTP2Transport speaks HTTP/2 over a plaintext connection.
+//
+// HTTP/1.1 is deliberately NOT enabled: with both available the transport
+// prefers HTTP/1.1 for an http:// URL, since there is nothing to negotiate
+// with, and a bidirectional Sync then cannot be opened at all.
+func unencryptedHTTP2Transport() *http.Transport {
+	tr := &http.Transport{}
+	p := new(http.Protocols)
+	p.SetUnencryptedHTTP2(true)
+	tr.Protocols = p
+	return tr
+}
+
+// defaultAckInterval is how often the applied position is reported when the
+// caller does not choose. Frequent enough that an operator waiting on a
+// configuration change is not left guessing, cheap enough to ignore.
+const defaultAckInterval = 1 * time.Second
 
 // Option configures the fan-out client.
 type Option func(*config)
+
+// AckInterval sets how often the client reports its applied position to the
+// server (default 1s). The report is what lets an operator see that a change
+// has been applied rather than merely sent; a shorter interval converges
+// faster at the cost of one small message per interval per subscriber.
+func AckInterval(d time.Duration) Option {
+	return func(c *config) {
+		if d > 0 {
+			c.ackInterval = d
+		}
+	}
+}
+
+// WithHTTPClient supplies the HTTP client used for the Sync stream, which is
+// how a caller attaches credentials, TLS, or a custom transport. The client
+// previously hardcoded http.DefaultClient and an http:// scheme, so there was
+// no way to authenticate to a server that required it, and no way to reach one
+// over TLS at all.
+//
+// A client supplied here must speak HTTP/2: Sync is bidirectional, and Connect
+// carries bidirectional streams over HTTP/2 only.
+func WithHTTPClient(hc connect.HTTPClient) Option {
+	return func(c *config) { c.httpClient = hc }
+}
+
+// WithClientOptions passes Connect client options through — interceptors, in
+// particular, which is where a per-request credential belongs so that it is
+// re-read on every reconnect rather than captured once at construction.
+func WithClientOptions(opts ...connect.ClientOption) Option {
+	return func(c *config) { c.clientOpts = append(c.clientOpts, opts...) }
+}
+
+// WithTLS makes the client dial https:// rather than http://.
+func WithTLS() Option {
+	return func(c *config) { c.scheme = "https://" }
+}
+
+// AppliedGeneration supplies an opaque identifier for the state the consumer
+// currently holds — a content hash, typically. It rides on each ack, so a
+// caller can confirm that two subscribers hold the same thing rather than
+// merely that both reached the same position.
+func AppliedGeneration(fn func() string) Option {
+	return func(c *config) { c.generation = fn }
+}
 
 // ServerAddress sets the gRPC server address (e.g. "localhost:4002").
 func ServerAddress(addr string) Option {
@@ -148,7 +244,7 @@ func WithFilterIn(field string, values ...any) Option {
 
 // New creates a new fan-out client.
 func New(opts ...Option) *Client {
-	cfg := config{}
+	cfg := config{ackInterval: defaultAckInterval}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -218,31 +314,70 @@ func (c *Client) Count() int {
 	return len(c.store)
 }
 
-// Listen registers a change listener. For inserts, old is nil.
-// For deletes, new is nil. Returns an unsubscribe function.
+// Listen registers a change listener. For inserts, old is nil. For deletes,
+// new is nil. Returns an unsubscribe function that removes only this listener.
+//
+// The callback runs after the client has released its lock, so it may read
+// the client freely — Get, All and Count are all safe from inside it. It still
+// runs on the stream goroutine, so blocking in it stalls replication.
 func (c *Client) Listen(fn func(old, new laredo.Row)) func() {
 	c.mu.Lock()
-	c.listener = fn
+	id := c.nextListenerID
+	c.nextListenerID++
+	if c.listeners == nil {
+		c.listeners = make(map[uint64]func(old, new laredo.Row))
+	}
+	c.listeners[id] = fn
 	c.mu.Unlock()
 	return func() {
 		c.mu.Lock()
-		c.listener = nil
+		delete(c.listeners, id)
+		c.mu.Unlock()
+	}
+}
+
+// OnSnapshotComplete registers a callback fired once a full snapshot has been
+// received and installed, with the complete row set and the source position it
+// corresponds to.
+//
+// A consumer maintaining derived state needs this: a re-snapshot replaces the
+// whole replica, and reporting it as a stream of individual changes would be
+// both misleading and enormous. Between SnapshotBegin and SnapshotEnd the
+// client keeps serving the previous contents, so this callback is the point at
+// which the new state becomes visible.
+func (c *Client) OnSnapshotComplete(fn func(rows map[string]laredo.Row, position string)) func() {
+	c.mu.Lock()
+	id := c.nextListenerID
+	c.nextListenerID++
+	if c.snapListeners == nil {
+		c.snapListeners = make(map[uint64]func(rows map[string]laredo.Row, position string))
+	}
+	c.snapListeners[id] = fn
+	c.mu.Unlock()
+	return func() {
+		c.mu.Lock()
+		delete(c.snapListeners, id)
 		c.mu.Unlock()
 	}
 }
 
 // ListenWithPosition registers a change listener that also receives the source
 // position (e.g. WAL LSN) of each change. Conventions match Listen (insert →
-// old nil; delete → new nil; truncate → both nil). The callback runs while the
-// client holds its lock, so it must not block or call back into the client.
-// Returns an unsubscribe function.
+// old nil; delete → new nil; truncate → both nil), including that the callback
+// runs after the lock is released. Returns an unsubscribe function that removes
+// only this listener.
 func (c *Client) ListenWithPosition(fn func(old, new laredo.Row, position string)) func() {
 	c.mu.Lock()
-	c.posListener = fn
+	id := c.nextListenerID
+	c.nextListenerID++
+	if c.posListeners == nil {
+		c.posListeners = make(map[uint64]func(old, new laredo.Row, position string))
+	}
+	c.posListeners[id] = fn
 	c.mu.Unlock()
 	return func() {
 		c.mu.Lock()
-		c.posListener = nil
+		delete(c.posListeners, id)
 		c.mu.Unlock()
 	}
 }
@@ -255,7 +390,93 @@ func (c *Client) Columns() []laredo.ColumnDefinition {
 	return append([]laredo.ColumnDefinition(nil), c.columns...)
 }
 
+// goAwayRedialDelay bounds how long a client waits before answering a drain.
+const goAwayRedialDelay = 2 * time.Second
+
+// staleAfter is how long without any message — including heartbeats, which the
+// server sends on an idle connection — before the replica is considered stale.
+// The server's default heartbeat interval is 5s, so this allows several to go
+// missing before saying so.
+const staleAfter = 30 * time.Second
+
+// LastError returns the most recent stream failure, or nil if the client has
+// not failed since it last connected successfully. Reconnection is automatic,
+// so this is diagnostic rather than actionable — but without it a consumer had
+// no way to tell a healthy quiet table from a client that had been failing to
+// connect since startup.
+func (c *Client) LastError() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastError
+}
+
+// Connected reports whether a Sync stream is currently established.
+func (c *Client) Connected() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.connected
+}
+
+// LastReceived returns when the client last received any message from the
+// server, heartbeats included. Zero before the first message.
+func (c *Client) LastReceived() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastReceived
+}
+
+// IsStale reports whether the replica may be behind: nothing has arrived for
+// longer than staleAfter, or the client has never received anything at all.
+//
+// This is the question a consumer actually needs answered before trusting the
+// data — the client tracked the timestamp it needs to answer it but exposed no
+// way to ask, and read the timestamp nowhere itself.
+func (c *Client) IsStale() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.lastReceived.IsZero() {
+		return true
+	}
+	return time.Since(c.lastReceived) > staleAfter
+}
+
+func (c *Client) setLastError(err error) {
+	c.mu.Lock()
+	c.lastError = err
+	c.connected = false
+	c.mu.Unlock()
+}
+
+func (c *Client) setConnected() {
+	c.mu.Lock()
+	c.connected = true
+	c.lastError = nil
+	c.mu.Unlock()
+}
+
 // columnsFromProto converts replication column definitions to laredo's.
+// primaryKeyColumns returns the declared primary-key column names in
+// primary-key ordinal order, which is the order the server joins them in when
+// it builds a row's key. Empty when the table declares no key.
+func primaryKeyColumns(cols []*v1.ColumnDefinition) []string {
+	type pk struct {
+		name    string
+		ordinal int
+	}
+	var keys []pk
+	for _, col := range cols {
+		if col.GetIsPrimaryKey() {
+			keys = append(keys, pk{col.GetColumnName(), int(col.GetPrimaryKeyOrdinal())})
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i].ordinal < keys[j].ordinal })
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		out[i] = k.name
+	}
+	return out
+}
+
 func columnsFromProto(cols []*v1.ColumnDefinition) []laredo.ColumnDefinition {
 	out := make([]laredo.ColumnDefinition, len(cols))
 	for i, col := range cols {
@@ -351,10 +572,14 @@ func (c *Client) Stop() {
 }
 
 func (c *Client) runWithReconnect(ctx context.Context) {
-	backoff := 1 * time.Second
-	const maxBackoff = 30 * time.Second
+	const (
+		baseBackoff = 1 * time.Second
+		maxBackoff  = 30 * time.Second
+	)
+	backoff := baseBackoff
 
 	for {
+		started := time.Now()
 		err := c.run(ctx)
 		if ctx.Err() != nil {
 			return // Clean shutdown.
@@ -362,12 +587,21 @@ func (c *Client) runWithReconnect(ctx context.Context) {
 		if err == nil {
 			return
 		}
+		c.setLastError(err)
 
-		// Exponential backoff before reconnect.
+		// Reset the backoff after a connection that actually did some work.
+		// It used to be declared outside this loop and never reset, so a
+		// client that saw a few transient failures early on waited the full
+		// 30s before every subsequent reconnect for the rest of its life,
+		// however long it had been healthy in between.
+		if time.Since(started) >= healthyRunDuration {
+			backoff = baseBackoff
+		}
+
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(backoff):
+		case <-time.After(jitter(backoff)):
 		}
 
 		backoff *= 2
@@ -377,7 +611,24 @@ func (c *Client) runWithReconnect(ctx context.Context) {
 	}
 }
 
-type syncStream = connect.ServerStreamForClient[v1.SyncResponse]
+// healthyRunDuration is how long a stream must last before its failure is
+// treated as a fresh problem rather than a continuation of the last one.
+const healthyRunDuration = 30 * time.Second
+
+// jitter spreads reconnects so that a fleet of clients dropped at the same
+// moment — every subscriber of a draining server, for instance — does not
+// return in lockstep. Full jitter: uniform over [d/2, d].
+func jitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	half := d / 2
+	return half + time.Duration(rand.Int64N(int64(half)+1)) //nolint:gosec // spreading reconnects, not a secret
+}
+
+// syncStream is the bidirectional Sync stream. The client sends its SyncStart
+// and its applied-position acks on it; the server sends replication messages.
+type syncStream = connect.BidiStreamForClient[v1.SyncClientMessage, v1.SyncResponse]
 
 // run opens a Sync stream and processes it as the primary. When the server
 // sends GoAway (it is draining), run performs an overlapping handoff: it brings
@@ -396,7 +647,8 @@ func (c *Client) run(ctx context.Context) error {
 		if !pendingGoAway {
 			goAway, perr := c.process(ctx, stream)
 			if perr != nil || !goAway {
-				_ = stream.Close()
+				_ = stream.CloseRequest()
+				_ = stream.CloseResponse()
 				return perr
 			}
 		}
@@ -404,6 +656,17 @@ func (c *Client) run(ctx context.Context) error {
 		// Handoff: keep draining the old stream while a new one catches up.
 		oldStream := stream
 		stopOld, oldDone := c.drainInBackground(oldStream)
+
+		// A drain broadcasts GoAway to every subscriber at once, and this path
+		// re-dialled with no delay at all — so the whole fleet came back
+		// simultaneously, and if the load balancer routed any of them to
+		// another draining task they looped again immediately. Spread them.
+		select {
+		case <-ctx.Done():
+			c.stopDrain(stopOld, oldDone, oldStream)
+			return ctx.Err()
+		case <-time.After(jitter(goAwayRedialDelay)):
+		}
 
 		newStream, derr := c.dial(ctx, true)
 		if derr != nil {
@@ -417,7 +680,8 @@ func (c *Client) run(ctx context.Context) error {
 		c.stopDrain(stopOld, oldDone, oldStream)
 
 		if cerr != nil {
-			_ = newStream.Close()
+			_ = newStream.CloseRequest()
+			_ = newStream.CloseResponse()
 			return cerr
 		}
 
@@ -431,13 +695,27 @@ func (c *Client) run(ctx context.Context) error {
 // is not portable, so it is omitted to avoid matching an unrelated entry on the
 // new instance.
 func (c *Client) dial(ctx context.Context, resumeByPosition bool) (*syncStream, error) {
+	hc := c.cfg.httpClient
+	if hc == nil {
+		hc = defaultH2CClient
+	}
+	scheme := c.cfg.scheme
+	if scheme == "" {
+		scheme = "http://"
+	}
+	// The gRPC protocol, not Connect's own. Connect's streaming protocol is
+	// half-duplex: the server may not send until the client has finished
+	// sending, which never happens here because the client holds the request
+	// open to acknowledge what it has applied. Under Connect that deadlocks
+	// on the first message. gRPC is full-duplex and is what a bidirectional
+	// stream needs. Caller options come after, so a caller may still override.
+	opts := append([]connect.ClientOption{connect.WithGRPC()}, c.cfg.clientOpts...)
 	rpcClient := replicationv1connect.NewLaredoReplicationServiceClient(
-		http.DefaultClient,
-		"http://"+c.cfg.serverAddress,
+		hc, scheme+c.cfg.serverAddress, opts...,
 	)
 
 	c.mu.RLock()
-	req := &v1.SyncRequest{
+	start := &v1.SyncStart{
 		Schema:                  c.cfg.schema,
 		Table:                   c.cfg.table,
 		ClientId:                c.cfg.clientID,
@@ -448,14 +726,53 @@ func (c *Client) dial(ctx context.Context, resumeByPosition bool) (*syncStream, 
 	}
 	c.mu.RUnlock()
 	if resumeByPosition {
-		req.LastKnownSequence = 0
+		start.LastKnownSequence = 0
 	}
 
-	stream, err := rpcClient.Sync(ctx, connect.NewRequest(req))
-	if err != nil {
-		return nil, fmt.Errorf("sync: %w", err)
+	stream := rpcClient.Sync(ctx)
+	if err := stream.Send(&v1.SyncClientMessage{
+		Message: &v1.SyncClientMessage_Start{Start: start},
+	}); err != nil {
+		return nil, fmt.Errorf("sync: send start: %w", err)
 	}
 	return stream, nil
+}
+
+// sendAck reports the client's applied position back to the server. Errors are
+// returned but not fatal to the caller: an ack that does not land costs the
+// operator visibility, not correctness of the replica.
+func (c *Client) sendAck(stream *syncStream) error {
+	c.mu.RLock()
+	ack := &v1.ApplyAck{
+		AppliedSequence:       c.lastSeq,
+		AppliedSourcePosition: c.lastSourcePosition,
+	}
+	gen := c.cfg.generation
+	c.mu.RUnlock()
+	if gen != nil {
+		ack.AppliedGeneration = gen()
+	}
+	return stream.Send(&v1.SyncClientMessage{Message: &v1.SyncClientMessage_Ack{Ack: ack}})
+}
+
+// ackLoop periodically reports the applied position for as long as the stream
+// lives. It is the only sender after the initial SyncStart, so no two
+// goroutines ever call Send on the same stream.
+func (c *Client) ackLoop(ctx context.Context, stream *syncStream, stop <-chan struct{}) {
+	t := time.NewTicker(c.cfg.ackInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-stop:
+			return
+		case <-t.C:
+			if err := c.sendAck(stream); err != nil {
+				return
+			}
+		}
+	}
 }
 
 // process reads and applies messages from the primary stream until it ends, the
@@ -463,16 +780,39 @@ func (c *Client) dial(ctx context.Context, resumeByPosition bool) (*syncStream, 
 // (true, nil) with the stream still open so the caller can keep draining it
 // during handoff.
 func (c *Client) process(ctx context.Context, stream *syncStream) (goAway bool, err error) {
-	for stream.Receive() {
+	stop := make(chan struct{})
+	go c.ackLoop(ctx, stream, stop)
+	defer close(stop)
+
+	// Receive on a bidirectional stream does not observe context
+	// cancellation, so closing the stream is what unblocks it. Without this,
+	// Stop() waits forever on a client whose server is holding the stream
+	// open — which is the normal, healthy case.
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = stream.CloseRequest()
+			_ = stream.CloseResponse()
+		case <-stop:
+		}
+	}()
+
+	for {
+		msg, rerr := stream.Receive()
+		if rerr != nil {
+			if ctx.Err() != nil {
+				return false, ctx.Err()
+			}
+			if errors.Is(rerr, io.EOF) {
+				return false, nil
+			}
+			return false, fmt.Errorf("stream error: %w", rerr)
+		}
 		c.touch()
-		if c.applyMessage(stream.Msg()) {
+		if c.applyMessage(msg) {
 			return true, nil
 		}
 	}
-	if e := stream.Err(); e != nil && ctx.Err() == nil {
-		return false, fmt.Errorf("stream error: %w", e)
-	}
-	return false, ctx.Err()
 }
 
 // catchUp reads and applies messages from a freshly dialed stream until it has
@@ -483,9 +823,18 @@ func (c *Client) process(ctx context.Context, stream *syncStream) (goAway bool, 
 func (c *Client) catchUp(ctx context.Context, stream *syncStream) (sawGoAway bool, err error) {
 	var target int64
 	var haveTarget bool
-	for stream.Receive() {
+	for {
+		msg, rerr := stream.Receive()
+		if rerr != nil {
+			if ctx.Err() != nil {
+				return false, ctx.Err()
+			}
+			if errors.Is(rerr, io.EOF) {
+				return false, nil
+			}
+			return false, fmt.Errorf("stream error: %w", rerr)
+		}
 		c.touch()
-		msg := stream.Msg()
 		if hs := msg.GetHandshake(); hs != nil {
 			target = hs.GetServerCurrentSequence()
 			haveTarget = true
@@ -502,10 +851,6 @@ func (c *Client) catchUp(ctx context.Context, stream *syncStream) (sawGoAway boo
 			}
 		}
 	}
-	if e := stream.Err(); e != nil && ctx.Err() == nil {
-		return false, fmt.Errorf("stream error: %w", e)
-	}
-	return false, ctx.Err()
 }
 
 // drainInBackground keeps applying messages from a stream (the old instance,
@@ -523,12 +868,13 @@ func (c *Client) drainInBackground(stream *syncStream) (stop chan struct{}, done
 				return
 			default:
 			}
-			if !stream.Receive() {
+			msg, err := stream.Receive()
+			if err != nil {
 				return
 			}
 			c.touch()
 			// Ignore GoAway on the old stream: we are already leaving it.
-			_ = c.applyMessage(stream.Msg())
+			_ = c.applyMessage(msg)
 		}
 	}()
 	return stop, done
@@ -539,7 +885,8 @@ func (c *Client) drainInBackground(stream *syncStream) (stop chan struct{}, done
 // channel only guards against applying further messages between iterations.
 func (c *Client) stopDrain(stop, done chan struct{}, stream *syncStream) {
 	close(stop)
-	_ = stream.Close()
+	_ = stream.CloseRequest()
+	_ = stream.CloseResponse()
 	<-done
 }
 
@@ -548,44 +895,76 @@ func (c *Client) stopDrain(stop, done chan struct{}, stream *syncStream) {
 func (c *Client) applyMessage(msg *v1.SyncResponse) (goAway bool) {
 	switch m := msg.GetMessage().(type) {
 	case *v1.SyncResponse_Handshake:
+		c.setConnected()
 		if cols := m.Handshake.GetColumns(); len(cols) > 0 {
 			c.mu.Lock()
 			c.columns = columnsFromProto(cols)
+			c.pkColumns = primaryKeyColumns(cols)
 			c.mu.Unlock()
 		}
 
 	case *v1.SyncResponse_SnapshotBegin:
-		// Clear local state for full snapshot. The source position is reset; it
-		// is repopulated from subsequent journal entries.
+		// Start accumulating into a fresh map rather than clearing the live
+		// one. A re-snapshot on reconnect used to wipe the replica in place
+		// while ready stayed true, so AwaitReady kept passing and concurrent
+		// readers saw the table empty and then refill row by row.
 		c.mu.Lock()
-		c.store = make(map[string]laredo.Row)
-		c.clearIndexes()
+		c.pending = make(map[string]laredo.Row, len(c.store))
 		c.lastSnapshotID = m.SnapshotBegin.GetSnapshotId()
-		c.lastSourcePosition = ""
 		c.mu.Unlock()
 
 	case *v1.SyncResponse_SnapshotRow:
 		if m.SnapshotRow.GetRow() != nil {
 			row := laredo.Row(m.SnapshotRow.GetRow().AsMap())
-			key := rowKey(row)
 			c.mu.Lock()
-			c.store[key] = row
-			c.addToIndexes(key, row)
+			if c.pending == nil {
+				// A row outside a Begin/End pair; tolerate it rather than
+				// panicking, treating it as the start of a snapshot.
+				c.pending = make(map[string]laredo.Row)
+			}
+			c.pending[c.rowKeyLocked(row)] = row
 			c.mu.Unlock()
 		}
 
 	case *v1.SyncResponse_SnapshotEnd:
 		c.mu.Lock()
+		if c.pending != nil {
+			c.store = c.pending
+			c.pending = nil
+			c.rebuildIndexes()
+			// The snapshot supersedes any position carried over from a
+			// previous connection; subsequent journal entries repopulate it.
+			c.lastSourcePosition = ""
+		}
 		c.ready = true
 		c.lastSeq = m.SnapshotEnd.GetSequence()
+		rows := make(map[string]laredo.Row, len(c.store))
+		for k, v := range c.store {
+			rows[k] = v
+		}
+		pos := c.lastSourcePosition
+		snapFns := make([]func(map[string]laredo.Row, string), 0, len(c.snapListeners))
+		for _, fn := range c.snapListeners {
+			snapFns = append(snapFns, fn)
+		}
 		c.mu.Unlock()
+		for _, fn := range snapFns {
+			fn(rows, pos)
+		}
 
 	case *v1.SyncResponse_JournalEntry:
 		c.applyJournalEntry(m.JournalEntry)
 
 	case *v1.SyncResponse_Heartbeat:
-		// Heartbeat — connection is alive.
-		_ = m
+		// A heartbeat is not just a liveness ping: it carries the position the
+		// server has reached, which is how an idle or heavily filtered
+		// subscriber stays current instead of drifting arbitrarily far behind
+		// the tail and forcing a re-snapshot on its next resume.
+		if pos := m.Heartbeat.GetSourcePosition(); pos != "" {
+			c.mu.Lock()
+			c.lastSourcePosition = pos
+			c.mu.Unlock()
+		}
 
 	case *v1.SyncResponse_SchemaChange:
 		// Schema change — could trigger re-baseline.
@@ -605,8 +984,14 @@ func (c *Client) touch() {
 }
 
 func (c *Client) applyJournalEntry(entry *v1.ReplicationJournalEntry) {
+	// notifyOld/notifyNew describe the change to hand to listeners once the
+	// lock is released. Calling them while holding c.mu deadlocked any
+	// listener that read the client back, because sync.RWMutex is not
+	// reentrant and the accessors all take RLock.
+	var notifyOld, notifyNew laredo.Row
+	var notifyDo bool
+
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	c.lastSeq = entry.GetSequence()
 	if pos := entry.GetSourcePosition(); pos != "" {
@@ -617,63 +1002,106 @@ func (c *Client) applyJournalEntry(entry *v1.ReplicationJournalEntry) {
 	case "INSERT":
 		if entry.GetNewValues() != nil {
 			row := laredo.Row(entry.GetNewValues().AsMap())
-			key := rowKey(row)
+			key := c.rowKeyLocked(row)
 			c.store[key] = row
 			c.addToIndexes(key, row)
-			c.notify(nil, row)
+			notifyOld, notifyNew, notifyDo = nil, row, true
 		}
 	case "UPDATE":
 		if entry.GetNewValues() != nil {
 			row := laredo.Row(entry.GetNewValues().AsMap())
-			key := rowKey(row)
+			key := c.rowKeyLocked(row)
 			old := c.store[key]
 			if old != nil {
 				c.removeFromIndexes(key, old)
 			}
 			c.store[key] = row
 			c.addToIndexes(key, row)
-			c.notify(old, row)
+			notifyOld, notifyNew, notifyDo = old, row, true
 		}
 	case "DELETE":
 		if entry.GetOldValues() != nil {
 			row := laredo.Row(entry.GetOldValues().AsMap())
-			key := rowKey(row)
+			key := c.rowKeyLocked(row)
 			old := c.store[key]
 			if old != nil {
 				c.removeFromIndexes(key, old)
 			}
 			delete(c.store, key)
-			c.notify(old, nil)
+			notifyOld, notifyNew, notifyDo = old, nil, true
 		}
 	case "TRUNCATE":
 		c.store = make(map[string]laredo.Row)
 		c.clearIndexes()
-		c.notify(nil, nil)
+		notifyOld, notifyNew, notifyDo = nil, nil, true
 	}
 
 	// Mark ready after first journal entry if not already ready (delta mode).
 	if !c.ready {
 		c.ready = true
 	}
+
+	// Copy the listener sets and the position before unlocking, so the
+	// delivery below is not racing a concurrent Listen or unsubscribe.
+	pos := c.lastSourcePosition
+	var fns []func(laredo.Row, laredo.Row)
+	var posFns []func(laredo.Row, laredo.Row, string)
+	if notifyDo {
+		fns = make([]func(laredo.Row, laredo.Row), 0, len(c.listeners))
+		for _, fn := range c.listeners {
+			fns = append(fns, fn)
+		}
+		posFns = make([]func(laredo.Row, laredo.Row, string), 0, len(c.posListeners))
+		for _, fn := range c.posListeners {
+			posFns = append(posFns, fn)
+		}
+	}
+	c.mu.Unlock()
+
+	for _, fn := range fns {
+		fn(notifyOld, notifyNew)
+	}
+	for _, fn := range posFns {
+		fn(notifyOld, notifyNew, pos)
+	}
 }
 
-func (c *Client) notify(old, new laredo.Row) {
-	if c.listener != nil {
-		c.listener(old, new)
+// rowKeyLocked derives a row's identity. Caller must hold c.mu.
+//
+// The key must match how the server identifies the row, which is by the
+// primary-key columns it declares in the handshake. Assuming a column called
+// "id" was wrong for every table keyed on anything else: the fallback below
+// stringifies the whole row, so any column changing produced a *different*
+// key and an UPDATE inserted a duplicate instead of replacing the original.
+func (c *Client) rowKeyLocked(row laredo.Row) string {
+	if len(c.pkColumns) > 0 {
+		if len(c.pkColumns) == 1 {
+			return fmt.Sprintf("%v", row[c.pkColumns[0]])
+		}
+		key := ""
+		for i, col := range c.pkColumns {
+			if i > 0 {
+				key += "\x00"
+			}
+			key += fmt.Sprintf("%v", row[col])
+		}
+		return key
 	}
-	if c.posListener != nil {
-		// Called under c.mu from applyJournalEntry, where lastSourcePosition is
-		// already the position of this change.
-		c.posListener(old, new, c.lastSourcePosition)
-	}
-}
-
-func rowKey(row laredo.Row) string {
+	// No declared key (an older server, or a table without one): fall back to
+	// a conventional "id", then to the whole row.
 	if id, ok := row["id"]; ok {
 		return fmt.Sprintf("%v", id)
 	}
-	// Fallback: use all values concatenated.
 	return fmt.Sprintf("%v", row)
+}
+
+// rebuildIndexes recomputes every secondary index from the current store.
+// Caller must hold c.mu.
+func (c *Client) rebuildIndexes() {
+	c.clearIndexes()
+	for k, row := range c.store {
+		c.addToIndexes(k, row)
+	}
 }
 
 // addToIndexes adds a row to all secondary indexes. Caller must hold c.mu.
