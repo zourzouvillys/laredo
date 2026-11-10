@@ -164,21 +164,27 @@ func (t *IndexedTarget) addToIndexes(row laredo.Row) {
 }
 
 // removeFromIndexes removes a row from lookup and all secondary indexes.
+//
+// A unique entry is removed only while it still points at this row: another
+// row may have taken the value since (a re-baseline indexes the new holder
+// before it sweeps or overwrites the old one), and that entry is not ours.
 func (t *IndexedTarget) removeFromIndexes(row laredo.Row) {
+	pkKey := buildKey(row, t.pkCols)
+	ownedBy := func(r laredo.Row) bool { return buildKey(r, t.pkCols) == pkKey }
 	if t.lookupIndex != nil {
 		key := buildKey(row, t.lookupFields)
-		delete(t.lookupIndex, key)
+		if cur, ok := t.lookupIndex[key]; ok && ownedBy(cur) {
+			delete(t.lookupIndex, key)
+		}
 	}
 	for _, idx := range t.indexes {
 		key := buildKey(row, idx.def.Fields)
 		if idx.def.Unique {
-			delete(idx.unique, key)
+			if cur, ok := idx.unique[key]; ok && ownedBy(cur) {
+				delete(idx.unique, key)
+			}
 		} else {
-			rows := idx.nonuniq[key]
-			pkKey := buildKey(row, t.pkCols)
-			rows = slices.DeleteFunc(rows, func(r laredo.Row) bool {
-				return buildKey(r, t.pkCols) == pkKey
-			})
+			rows := slices.DeleteFunc(idx.nonuniq[key], ownedBy)
 			if len(rows) == 0 {
 				delete(idx.nonuniq, key)
 			} else {

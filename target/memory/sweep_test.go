@@ -100,3 +100,32 @@ func TestCompiledTarget_sweep(t *testing.T) {
 		t.Errorf("count=%d removed=%v, want 1 and [b]", tg.Count(), removed)
 	}
 }
+
+// TestIndexedTarget_sweepKeepsReassignedUniqueEntries: row 1 is deleted and row
+// 2 takes its unique value while the target is not streaming. The re-baseline
+// indexes row 2 before it sweeps row 1, and the sweep must not take row 2's
+// entry with it.
+func TestIndexedTarget_sweepKeepsReassignedUniqueEntries(t *testing.T) {
+	ctx := context.Background()
+	tg := memory.NewIndexedTarget(
+		memory.LookupFields("name"),
+		memory.AddIndex(laredo.IndexDefinition{Name: "u_name", Fields: []string{"name"}, Unique: true}),
+	)
+	if err := tg.OnInit(ctx, testutil.SampleTable(), testutil.SampleColumns()); err != nil {
+		t.Fatal(err)
+	}
+	baseline(t, tg, true, true, testutil.SampleRow(1, "x"), testutil.SampleRow(2, "y"))
+	// Row 1 gone; row 2 renamed to "x". Then an overwrite moves a value too:
+	// row 3 arrives as "y", the name row 2 just gave up.
+	baseline(t, tg, true, true, testutil.SampleRow(2, "x"), testutil.SampleRow(3, "y"))
+
+	for name, want := range map[string]int{"x": 2, "y": 3} {
+		r, ok := tg.Lookup(name)
+		if !ok || r["id"] != want {
+			t.Errorf("Lookup(%q) = %v, %v; want row %d", name, r, ok, want)
+		}
+		if got := tg.LookupAll("u_name", name); len(got) != 1 || got[0]["id"] != want {
+			t.Errorf("u_name[%q] = %v; want row %d", name, got, want)
+		}
+	}
+}

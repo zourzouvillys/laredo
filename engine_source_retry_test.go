@@ -334,3 +334,29 @@ func TestEngine_SourceRetry_reBaselineRemovesRowsDeletedDuringOutage(t *testing.
 		})
 	}
 }
+
+// TestEngine_SourceRetry_failedBaselineIsNotResumedPast: a baseline that fails
+// on a source which then offers a resume position (a persistent slot the failed
+// attempt created) must be retried, not skipped. Resuming would mark ready a
+// target holding only part of the copy.
+func TestEngine_SourceRetry_failedBaselineIsNotResumedPast(t *testing.T) {
+	src := configuredSource()
+	src.AddRow(testutil.SampleTable(), testutil.SampleRow(1, "alice"))
+	src.SetBaselineError(errors.New("conn closed"))
+	target := memory.NewIndexedTarget()
+	obs := &testutil.TestObserver{}
+	e := startRetryEngine(t, src, target, obs)
+
+	testutil.AssertEventually(t, 5*time.Second, func() bool {
+		return disconnectedWith(obs, "baseline failed", "retrying in")
+	}, "no failed baseline")
+	src.SetLastAck(42) // the slot now exists and has a confirmed position
+	src.SetBaselineError(nil)
+
+	if !e.AwaitReady(5 * time.Second) {
+		t.Fatal("not ready")
+	}
+	if _, ok := target.Get(1); !ok {
+		t.Fatal("ready without the baseline: the retry resumed past a failed copy")
+	}
+}

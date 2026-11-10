@@ -109,6 +109,14 @@ func (s *Source) SetNoResume(v bool) {
 	s.noResume = v
 }
 
+// SetLastAck sets the position the source offers to resume from, as a
+// persistent slot that now exists does.
+func (s *Source) SetLastAck(pos uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastAck = &pos
+}
+
 // InitCount returns how many times Init has been called, failed calls included.
 func (s *Source) InitCount() int {
 	s.mu.Lock()

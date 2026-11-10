@@ -870,6 +870,11 @@ type sourceRun struct {
 	loaded bool
 	// streamStart is when the latest stream started, zero if none did.
 	streamStart time.Time
+	// baselinePending records a baseline that started and has not completed.
+	// Until one completes, a retry must not resume: the source may now offer a
+	// position (a persistent slot created by the failed attempt) while the
+	// targets hold only part of the copy, and the WAL cannot supply the rest.
+	baselinePending bool
 }
 
 // livePipelines returns the pipelines in idxs that are not in ERROR or STOPPED.
@@ -938,7 +943,7 @@ func (e *coreEngine) runSourceAttempt(ctx context.Context, sourceID string, sour
 
 	// Try resume path: if the source supports resume and has a last ACKed
 	// position, skip baseline and go directly to streaming.
-	if source.SupportsResume() {
+	if source.SupportsResume() && !st.baselinePending {
 		lastPos, err := source.LastAckedPosition(ctx)
 		if err == nil && lastPos != nil {
 			// Skip baseline — transition directly to STREAMING.
@@ -972,10 +977,12 @@ func (e *coreEngine) runSourceAttempt(ctx context.Context, sourceID string, sour
 
 	// Full baseline path. Re-baseline loop handles ErrReBaselineRequired from streaming.
 	for {
+		st.baselinePending = true
 		position, err := e.runBaseline(ctx, sourceID, source, tables, pipelineIdxs)
 		if err != nil || position == nil {
 			return err // baseline failed, or context cancelled
 		}
+		st.baselinePending = false
 		st.loaded = true
 
 		rebaseline, err := stream(position)

@@ -60,6 +60,10 @@ func (s *Source) Init(ctx context.Context, config laredo.SourceConfig) (map[lare
 	// A reused Source starts a fresh lifecycle: a previous run's lost slot or
 	// exhausted repeat budget must not count against the slot created below.
 	s.slotLost, s.lostInARow, s.lastLoss = false, 0, time.Time{}
+	// Nor may a previous run's slot: if it reused a persistent slot that has
+	// since been dropped, the slot created below is new, and only a baseline
+	// can cover what happened in between. Init rediscovers all of this.
+	s.slotExisted, s.slotLSN, s.slotSnapshot = false, 0, ""
 
 	if s.cfg.connString == "" {
 		s.setState(laredo.SourceError)
