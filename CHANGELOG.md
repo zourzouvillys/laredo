@@ -35,6 +35,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gRPC, with no external services.
 
 ### Fixed
+- **Engine: a failed source is retried forever instead of abandoned.** A
+  failed `Init`, a failed baseline, or a stream that ends in an error used to
+  end the source's goroutine and leave every pipeline on it in `ERROR`, serving
+  the rows it already held, until the process restarted. The engine now waits
+  (1s doubling to 30s, jittered, reset after a stream that stayed up a minute),
+  closes the source, and runs it again from `Init`, as a new process would. It
+  keeps doing so until `Stop`. Targets keep their rows meanwhile, and `OnInit`
+  is not run again. A source stopped on purpose (`ErrorStopSource`,
+  `ErrorStopAll`, or every pipeline already in `ERROR`) is not retried, and a
+  pipeline isolated by `ErrorIsolate` stays isolated. Tune it with
+  `WithSourceRetry(SourceRetry{...})`. Each failure's `OnSourceDisconnected`
+  reason ends `; retrying in <d> (attempt <n>)`.
+- **A re-baseline removes rows the source no longer has.** Baseline rows only
+  inserted and overwrote, so a row deleted at the source while a pipeline was
+  not streaming survived every later re-baseline. Targets that implement the new
+  optional `SweepingTarget` interface (`memory.IndexedTarget` and
+  `memory.CompiledTarget` do) record the keys a baseline delivers and, once it
+  completes, remove the rest as deletes, notifying listeners. A baseline that
+  fails part way removes nothing. `IndexedTarget` also no longer leaves a
+  duplicate entry in a non-unique index when a re-baseline overwrites a row.
 - **Engine**: a `Reload` (or any streaming-dependent operation) issued immediately
   after `AwaitReady` could permanently drop a pipeline's streamed changes.
   Readiness was signaled before the per-pipeline change buffers were created, and

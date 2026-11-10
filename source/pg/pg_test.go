@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/zourzouvillys/laredo"
@@ -303,5 +304,27 @@ func TestFormatTableSpec(t *testing.T) {
 				t.Errorf("formatTableSpec = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestNoteSlotLost_countsRepeatsLossToLoss pins how repeated slot losses are
+// counted. A permanent error that surfaces only when a change arrives can fail
+// each replacement stream more than a minute after it started, so losses are
+// timed from the previous loss, not from stream start: losses 70s apart are
+// repeats and reach the cap, while losses an hour apart each start afresh.
+func TestNoteSlotLost_countsRepeatsLossToLoss(t *testing.T) {
+	s := New()
+	t0 := time.Date(2026, 10, 23, 17, 0, 0, 0, time.UTC)
+
+	for i := range 4 {
+		s.noteSlotLost(t0.Add(time.Duration(i) * 70 * time.Second))
+	}
+	if s.lostInARow != 4 {
+		t.Fatalf("losses 70s apart: lostInARow = %d, want 4", s.lostInARow)
+	}
+
+	s.noteSlotLost(t0.Add(time.Hour))
+	if s.lostInARow != 1 {
+		t.Fatalf("a loss an hour later: lostInARow = %d, want 1", s.lostInARow)
 	}
 }

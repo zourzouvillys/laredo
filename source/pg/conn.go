@@ -44,6 +44,22 @@ func (cm *connManager) connect(ctx context.Context) error {
 	return nil
 }
 
+// ensureOpen reconnects the query connection if it has died. A re-baseline
+// after a lost replication connection runs on this connection, and whatever
+// dropped the one may well have dropped the other.
+//
+// Only a connection pgx has closed is replaced. pgx closes it on a fatal
+// network error, so a ping that fails on a connection still open means the
+// connection is busy (GetLag and Reload share it), not dead.
+func (cm *connManager) ensureOpen(ctx context.Context) error {
+	if cm.queryConn != nil && !cm.queryConn.IsClosed() {
+		if err := cm.queryConn.Ping(ctx); err == nil || !cm.queryConn.IsClosed() {
+			return nil
+		}
+	}
+	return cm.connect(ctx)
+}
+
 // close closes all open connections.
 func (cm *connManager) close(ctx context.Context) error {
 	if cm.queryConn != nil {

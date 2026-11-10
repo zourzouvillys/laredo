@@ -34,6 +34,9 @@ type Source struct {
 	lastAck  *uint64
 	changeCh chan changeRequest
 	closed   bool
+	inits    int        // Init calls, failed ones included
+	noResume bool       // SetNoResume: behave like an ephemeral source
+	failCh   chan error // FailStream hands the running Stream its error here
 
 	// Error injection.
 	initErr     error
@@ -56,6 +59,7 @@ func New() *Source {
 		rows:     make(map[laredo.TableIdentifier][]laredo.Row),
 		state:    laredo.SourceClosed,
 		changeCh: make(chan changeRequest),
+		failCh:   make(chan error, 1),
 	}
 }
 
@@ -73,11 +77,51 @@ func (s *Source) AddRow(table laredo.TableIdentifier, row laredo.Row) {
 	s.rows[table] = append(s.rows[table], row)
 }
 
+// ClearRows removes every baseline row for a table, as rows deleted at the
+// source; the next Baseline no longer delivers them.
+func (s *Source) ClearRows(table laredo.TableIdentifier) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.rows, table)
+}
+
 // SetInitError injects an error that Init will return.
 func (s *Source) SetInitError(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.initErr = err
+}
+
+// FailStream makes the running (or next) Stream return err, as a source does
+// when it loses its connection.
+func (s *Source) FailStream(err error) {
+	select {
+	case s.failCh <- err:
+	default:
+	}
+}
+
+// SetNoResume makes the source never offer a resume position, like a
+// PostgreSQL source on an ephemeral slot: every Init is followed by a baseline.
+func (s *Source) SetNoResume(v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.noResume = v
+}
+
+// SetLastAck sets the position the source offers to resume from, as a
+// persistent slot that now exists does.
+func (s *Source) SetLastAck(pos uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastAck = &pos
+}
+
+// InitCount returns how many times Init has been called, failed calls included.
+func (s *Source) InitCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.inits
 }
 
 // SetBaselineError injects an error that Baseline will return.
@@ -193,8 +237,15 @@ func (s *Source) Init(_ context.Context, config laredo.SourceConfig) (map[laredo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.inits++
 	if s.initErr != nil {
 		return nil, s.initErr
+	}
+
+	// Init after Close starts afresh, as a real source reconnecting does.
+	if s.closed {
+		s.changeCh = make(chan changeRequest)
+		s.closed = false
 	}
 
 	result := make(map[laredo.TableIdentifier][]laredo.ColumnDefinition, len(config.Tables))
@@ -233,9 +284,9 @@ func (s *Source) ValidateTables(_ context.Context, tables []laredo.TableIdentifi
 func (s *Source) Baseline(_ context.Context, tables []laredo.TableIdentifier, rowCallback func(laredo.TableIdentifier, laredo.Row)) (laredo.Position, error) {
 	s.mu.Lock()
 
-	if s.baselineErr != nil {
+	if err := s.baselineErr; err != nil {
 		s.mu.Unlock()
-		return nil, s.baselineErr
+		return nil, err
 	}
 
 	// Copy data and config under lock.
@@ -280,6 +331,11 @@ func (s *Source) Stream(ctx context.Context, _ laredo.Position, handler laredo.C
 			s.state = laredo.SourceClosed
 			s.mu.Unlock()
 			return ctx.Err()
+		case err := <-s.failCh:
+			s.mu.Lock()
+			s.state = laredo.SourceError
+			s.mu.Unlock()
+			return err
 		case req, ok := <-ch:
 			if !ok {
 				s.mu.Lock()
@@ -321,7 +377,7 @@ func (s *Source) Ack(_ context.Context, position laredo.Position) error {
 func (s *Source) SupportsResume() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.lastAck != nil
+	return s.lastAck != nil && !s.noResume
 }
 
 //nolint:revive // implements SyncSource.
